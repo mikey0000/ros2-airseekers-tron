@@ -40,6 +40,16 @@
 #              0.14 m from the boundary, and at 402), the sim restarts docked and START
 #              resumes there (scripts/sim_gate/resume_cursor.py; the mission's
 #              coverage_resume_path is pointed into the run's maps/)
+#   --rtk-loss T0:DUR[:KIND]  (repeatable, before the short options) RTK injection
+#              (mower_sim/rtk.py): KIND float (random-walk offset 0.3-1 m, /fix_status FLOAT)
+#              or dropout (default: no /fix, no /fix_status), T0 sim seconds after the first
+#              blade-on. Written into a run copy of the world ($OUT/world.yaml); any RTK
+#              injection (this or the world's rtk: block) turns on loc_drift (unless -L) and
+#              starts the real localization_monitor, so the mission's loc_hold is exercised
+#   --kill NODE:T  (repeatable) SIGKILL a stack process at T sim seconds after START: coverage
+#              (coverage_action_server), map_server, controller_server, mission (mission_node),
+#              or any pgrep -f pattern; the kill / respawn times go to $OUT/kills.jsonl and
+#              evaluate.py reports recovery
 #   -- ARGS    extra sim.launch.py arguments (e.g. mission_params_file:=/abs/path.yaml)
 #
 # Preflight: refuses to start (exit 2) unless `powerprofilesctl get` is performance (skipped
@@ -51,6 +61,18 @@ IMG=mower:jazzy-dev-amd64
 DOMAIN="${MOWER_SIM_ROS_DOMAIN_ID:-175}"
 WORLD="$STACK/src/mower_sim/worlds/real_run5.yaml"
 NAME="gate-$(date +%Y%m%d-%H%M%S)"
+RTK_SPECS=(); KILL_SPECS=(); ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --rtk-loss) RTK_SPECS+=("$2"); shift 2 ;;
+    --rtk-loss=*) RTK_SPECS+=("${1#*=}"); shift ;;
+    --kill) KILL_SPECS+=("$2"); shift 2 ;;
+    --kill=*) KILL_SPECS+=("${1#*=}"); shift ;;
+    --) ARGS+=("$@"); break ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
 DISTURB=0; SEED=1; TIMEOUT=2700; KEEP=0; DRIFT=""; LOCMODEL=field; RESUME=""; RATE="${SIM_GATE_RATE:-1}"
 while getopts "w:n:ds:t:klLM:r:x:" o; do
   case "$o" in
@@ -60,12 +82,12 @@ while getopts "w:n:ds:t:klLM:r:x:" o; do
     s) SEED="$OPTARG" ;;
     t) TIMEOUT="$OPTARG" ;;
     k) KEEP=1 ;;
-    l) DRIFT=1 ;;
-    L) DRIFT=0 ;;
+    l) DRIFT=1; DRIFT_SET=1 ;;
+    L) DRIFT=0; DRIFT_SET=1 ;;
     M) LOCMODEL="$OPTARG" ;;
     r) RESUME="$OPTARG" ;;
     x) RATE="$OPTARG" ;;
-    *) sed -n '2,46p' "$0"; exit 2 ;;
+    *) sed -n '2,56p' "$0"; exit 2 ;;
   esac
 done
 shift $((OPTIND - 1))
@@ -105,12 +127,26 @@ ENV=(-e ROS_DOMAIN_ID="$DOMAIN" -e ROS_LOCALHOST_ONLY=1 -e ROS_AUTOMATIC_DISCOVE
 MOUNT=(-v "$STACK:/work" -w /work)
 case "$OUT" in "$STACK"/*) ;; *) MOUNT+=(-v "$OUT:$OUT") ;; esac
 CWORLD="/work/${WORLD#"$STACK"/}"
+EVAL_WORLD="$CWORLD"
+RTK=0
+if command -v python3 >/dev/null 2>&1; then
+  rtk_out="$(python3 -I "$SCRIPT_DIR/sim_gate/run_world.py" "$WORLD" "$OUT/world.yaml" \
+    "$(dirname "$CWORLD")" "${RTK_SPECS[@]+"${RTK_SPECS[@]}"}")" || exit 2
+  [ "$rtk_out" = "rtk=1" ] && RTK=1
+  if [ ${#RTK_SPECS[@]} -gt 0 ]; then
+    case "$OUT" in "$STACK"/*) CWORLD="/work/${OUT#"$STACK"/}/world.yaml" ;; *) CWORLD="$OUT/world.yaml" ;; esac
+  fi
+elif [ ${#RTK_SPECS[@]} -gt 0 ]; then
+  echo "sim_gate: --rtk-loss needs python3 + yaml on the host" >&2; exit 2
+fi
 COUT="$OUT"; case "$OUT" in "$STACK"/*) COUT="/work/${OUT#"$STACK"/}" ;; esac
 DARGS=""
 if [ "$DISTURB" = 1 ]; then
   DARGS="disturb_wheel_bias:=0.04 disturb_slip_std:=0.05 disturb_pivot_eff:=0.85 disturb_seed:=$SEED"
 fi
 [ -n "$DRIFT" ] || DRIFT="$DISTURB"
+# RTK injection: the localization monitor needs a map-frame pose (/odometry/filtered_map)
+[ "$RTK" = 1 ] && [ -z "${DRIFT_SET:-}" ] && DRIFT=1
 if [ "$DRIFT" = 1 ]; then
   DARGS="$DARGS loc_drift:=true loc_drift_seed:=$SEED loc_model:=$LOCMODEL"
 fi
@@ -136,7 +172,8 @@ trap cleanup EXIT
 
 {
   echo "world=$WORLD"; echo "domain=$DOMAIN"; echo "disturb=$DISTURB drift=$DRIFT seed=$SEED args=$DARGS"
-  echo "extra=$EXTRA"; echo "rate=$RATE"; echo "commit=$(git -C "$STACK" rev-parse --short HEAD 2>/dev/null)"
+  echo "extra=$EXTRA"; echo "rate=$RATE"; echo "rtk=$RTK ${RTK_SPECS[*]+"${RTK_SPECS[*]}"}"
+  echo "kill=${KILL_SPECS[*]+"${KILL_SPECS[*]}"}"; echo "commit=$(git -C "$STACK" rev-parse --short HEAD 2>/dev/null)"
   echo "dirty=$(git -C "$STACK" status --porcelain 2>/dev/null | grep -c . || true)"
 } > "$OUT/run.txt"
 echo "sim_gate: run $NAME -> $OUT (container $C, domain $DOMAIN, rate x$RATE, disturbance $DISTURB, drift $DRIFT${RESUME:+, resume at pose $RESUME})"
@@ -178,6 +215,13 @@ if [ -n "$RESUME" ]; then
   echo "resume=$RESUME" >> "$OUT/run.txt"
 fi
 launch_sim launch.log
+if [ "$RTK" = 1 ]; then
+  # the real localization_monitor (not part of sim.launch's localization:=sim): it turns the
+  # sim's /fix_status + /odometry/filtered(_map) into /localization/status for loc_hold
+  docker exec -d "$C" bash -c "$ROS; exec ros2 run mower_localization localization_monitor \
+    --ros-args -p use_sim_time:=true > $COUT/locmon.log 2>&1"
+  sleep 3
+fi
 docker exec -d "$C" bash -c "$ROS; cd $COUT && exec ros2 bag record -s sqlite3 -o bag --use-sim-time \
   --include-hidden-topics --max-cache-size 0 \
   /sim/ground_truth /sim/status /behavior_tree_node/high_level_status \
@@ -188,6 +232,7 @@ docker exec -d "$C" bash -c "$ROS; cd $COUT && exec ros2 bag record -s sqlite3 -
   /odometry/filtered_map /odometry/filtered /mission/incident /plan /rosout /navigate_to_pose/_action/status \
   /obstacle_tracker/nogo_zones /obstacle_tracker/obstacles \
   /follow_path/_action/status /spin/_action/status /mower_docking/dock/_action/status \
+  /tilt/status /localization/status /fix_status /odom /gps/status \
   > $COUT/rec.log 2>&1"
 sleep 5
 # START time on the sim clock (the bag and evaluate.py are in sim time)
@@ -196,6 +241,52 @@ t_start="$(simsec)"
 echo "$t_start" > "$OUT/start_epoch"
 cx "ros2 service call /behavior_tree_node/high_level_control mowgli_interfaces/srv/HighLevelControl '{command: 1}'" | tail -1
 echo "sim_gate: START sent ($ready)"
+
+# --kill NODE:T: SIGKILL the process at T sim s after START, then time its respawn
+kill_pattern() {
+  case "$1" in
+    coverage) echo 'coverage_action_server' ;;
+    map_server) echo 'map_server_node' ;;
+    controller_server) echo 'nav2_controller/controller_server' ;;
+    mission) echo 'mission_node' ;;
+    *) echo "$1" ;;
+  esac
+}
+# pids of a pattern, oldest first; [x]yz keeps the pgrep's own bash -c line out
+kpids() { docker exec "$C" bash -c "pgrep -f -- '[${1:0:1}]${1:1}' | sort -n | tr '\n' ' '" 2>/dev/null || true; }
+kill_one() {
+  local node="${1%%:*}" at="${1##*:}" pat; pat="$(kill_pattern "$node")"
+  local tgt; tgt=$(awk "BEGIN{printf \"%.3f\", ${t_start} + $at}")
+  while :; do
+    t="$(simsec)"; [ -n "$t" ] && awk "BEGIN{exit !($t >= $tgt)}" && break
+    docker inspect "$C" >/dev/null 2>&1 || return 0
+    sleep 1
+  done
+  local before; before="$(kpids "$pat")"
+  if [ -z "$before" ]; then
+    echo "{\"node\": \"$node\", \"pattern\": \"$pat\", \"t\": $at, \"error\": \"no process\"}" >> "$OUT/kills.jsonl"
+    echo "  $(date +%T) --kill $node: no process matches $pat"; return 0
+  fi
+  local tk; tk="$(simsec)"
+  docker exec "$C" bash -c "kill -9 $before" >/dev/null 2>&1 || true
+  echo "  $(date +%T) --kill $node: SIGKILL pid $before at sim +$(awk "BEGIN{printf \"%.1f\", $tk - $t_start}") s"
+  local tr="" after=""
+  for _ in $(seq 1 120); do
+    sleep 1
+    after="$(kpids "$pat")"
+    local new=""
+    for p in $after; do case " $before " in *" $p "*) ;; *) new="$p" ;; esac; done
+    if [ -n "$new" ]; then tr="$(simsec)"; break; fi
+  done
+  echo "{\"node\": \"$node\", \"pattern\": \"$pat\", \"t\": $at, \"t_kill\": $(awk "BEGIN{printf \"%.2f\", $tk - $t_start}"), \"pids\": \"${before% }\", \"respawn_s\": ${tr:+$(awk "BEGIN{printf \"%.2f\", $tr - $tk}")}${tr:-null}, \"new_pids\": \"${after% }\"}" >> "$OUT/kills.jsonl"
+  echo "  $(date +%T) --kill $node: ${tr:+respawned after $(awk "BEGIN{printf \"%.1f\", $tr - $tk}") s sim}${tr:-NOT respawned within 120 s wall}"
+}
+rm -f "$OUT/kills.jsonl"
+KILL_PIDS=()
+for k in "${KILL_SPECS[@]+"${KILL_SPECS[@]}"}"; do
+  [[ "$k" =~ ^[A-Za-z0-9_./-]+:[0-9]+(\.[0-9]+)?$ ]] || { echo "sim_gate: --kill $k: want NODE:T" >&2; continue; }
+  kill_one "$k" & KILL_PIDS+=($!)
+done
 
 # -t is sim seconds; the wall cap only guards against a stalled sim clock
 end_sim=$(awk "BEGIN{printf \"%d\", ${t_start%.*} + $TIMEOUT}")
@@ -217,6 +308,7 @@ while [ "$(date +%s)" -lt "$end_wall" ] && [ "$now_sim" -lt "$end_sim" ]; do
   esac
 done
 [ -n "$verdict_state" ] || echo "sim_gate: timeout after $(( now_sim - ${t_start%.*} )) s sim (limit ${TIMEOUT}s, last state $last)"
+for p in "${KILL_PIDS[@]+"${KILL_PIDS[@]}"}"; do kill "$p" 2>/dev/null || true; done
 cx "pkill -INT -f 'ros2 bag record'" >/dev/null; sleep 4
 grep "behavior_tree_node\]" "$OUT/launch.log" | sed 's/\x1b\[[0-9;]*m//g' > "$OUT/mission.log" || true
 docker stop -t 5 "$C" >/dev/null 2>&1 || true
@@ -227,7 +319,7 @@ docker run --rm --name "${C}-eval" --network none --user "$(id -u):$(id -g)" -e 
   -e SIM_GATE_MEASURE="${SIM_GATE_MEASURE:-body}" \
   "${MOUNT[@]}" "$IMG" bash -c \
   "$ROS; python3 scripts/sim_gate/extract.py $COUT/bag $COUT/data.json >/dev/null && \
-   python3 scripts/sim_gate/evaluate.py $COUT $CWORLD" | tee "$OUT/verdict.txt"
+   python3 scripts/sim_gate/evaluate.py $COUT $EVAL_WORLD" | tee "$OUT/verdict.txt"
 rc=${PIPESTATUS[0]}
 set -e
 echo "sim_gate: $NAME exit $rc (output $OUT)"

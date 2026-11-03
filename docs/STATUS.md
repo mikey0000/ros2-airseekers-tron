@@ -776,6 +776,13 @@ The sim gate's `-d` disturbance (wheel bias 0.04, per-wheel slip std 0.05) is mi
 sim publishes no roll on /tilt/status, so a 3x wheel-vs-RTK slip and the slope rule never
 occur there: the slip and slope paths are unit-tested only.
 
+2026-11-03 (ws/sim-fidelity): the sim now has slope regions with tilt, `/tilt/status`, encoder
+`/odom` and calibrated slip (docs/simulation.md "Terrain"), RTK float / dropout / multipath
+injection and process kills in the gate. `real_run5_slope -d -s 2 -x 3`: no STUCK, but base_link
+0.28 m out (485 samples) and corner deviations to 0.72 m on the west-edge slope with no
+BOUNDARY OUT; the downhill creep stays under the body limits, so the recovery and the slip
+check were not reached. Plain real_run5 unchanged (PASS, a 0.084, i 0.096 / 0.087 / 0.091, 0.364).
+
 ## GUI UX batch (2026-11-02, branch ws/ux-batch, vitest + sim GUI check)
 
 Fixes from the GUI UX audit (`docs/gui.md` "Owner-facing states, alerts and layout"). The

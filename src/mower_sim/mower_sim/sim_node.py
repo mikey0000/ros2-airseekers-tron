@@ -75,7 +75,13 @@ from .loc_drift import params_for as loc_params_for
 from .detections import DetectionSource, DetParams, disc_base
 from .marker import RearCamera, RearCameraParams
 from .sensors import StereoParams, StereoRaycaster, bumper_sides
+from .rtk import DROPOUT, FLOAT, RtkModel, parse_spec
 from .world import antenna_xy, enu_to_latlon, load_world
+
+try:  # /tilt/status contract (terrain worlds): the real tilt_monitor's band logic
+    from mower_control.tilt_logic import TiltBands
+except ImportError:  # pragma: no cover
+    TiltBands = None
 
 try:  # scripted ranged detections (world obstacles with ``detect``)
     from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
@@ -88,6 +94,14 @@ LATCHED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
 
 def _quat(yaw):
     return 0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0)
+
+
+def _quat_rpy(roll, pitch, yaw):
+    cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
+    cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
+    cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
+    return (sr * cp * cy - cr * sp * sy, cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy, cr * cp * cy + sr * sp * sy)
 
 
 def make_cloud(points, frame_id, stamp) -> PointCloud2:
@@ -187,6 +201,12 @@ class SimNode(Node):
         # the field's 6.4 s period (3.2 s without); docs/simulation.md "Localisation drift"
         d('field_slip_lead_m', 0.055)
         d('field_fix_latency_s', 0.1)
+        # RTK degradation (mower_sim/rtk.py): extra events 't0:dur:kind' on top of the world's
+        # ``rtk:`` block (sim_gate.sh --rtk-loss writes them into a run world instead)
+        d('rtk_loss', [''])
+        # with loc_drift: fraction of the FLOAT offset that reaches the map estimate (gps_gate
+        # fuses float with a >= 0.4 m sigma, the EKF follows it only partly)
+        d('rtk_float_map_gain', 0.3)
         gp = self.get_parameter
         path = gp('world_file').value
         if not path or not os.path.isfile(path):
@@ -230,6 +250,34 @@ class SimNode(Node):
                     dp.model, dp.seed, self.drift.k_v, dp.jitter_std, dp.map_err_std,
                     dp.map_err_tau_s, dp.jump_rate_hz, dp.jump_std, dp.rate_hz,
                     dp.fix_latency_s, self.drive.p.rot_centre_x_m, self.drive.p.slip_lead_m))
+        # terrain (world ``terrain:``): tilt from the slope, /tilt/status, encoder /odom
+        self.terrain = self.world.terrain
+        self.tilt = None
+        self.roll = self.pitch = 0.0
+        if self.terrain is not None:
+            self.tilt = TiltBands() if TiltBands is not None else None
+            self.pub_tilt = None    # created with the publishers below
+            sp = self.terrain.slip
+            self.get_logger().warn(
+                'terrain ON: %d slope regions (%s), slip fwd %.2f / rev %.2f, creep drive %.3f '
+                '/ pivot %.3f m/s at >= %.0f deg' % (
+                    len(self.terrain.regions), ', '.join(
+                        '%s %.0f deg' % (r.name, r.slope_deg) for r in self.terrain.regions),
+                    sp.fwd_max, sp.rev_max, sp.creep_drive, sp.creep_pivot, sp.full_deg))
+        rp = self.world.rtk
+        extra = [x for x in (gp('rtk_loss').value or []) if str(x).strip()]
+        if extra:
+            from .rtk import RtkParams
+            rp = rp or RtkParams()
+            rp.events = list(rp.events) + [parse_spec(str(x).strip()) for x in extra]
+        self.rtk = RtkModel(rp) if rp is not None and rp.active() else None
+        self.rtk_mode = 'fixed'
+        self._rtk_hold = None          # map -> odom held through a dropout (loc_drift)
+        self._rtk_off = (0.0, 0.0)
+        if self.rtk is not None:
+            self.get_logger().warn('RTK degradation ON: anchor %s, events %s%s' % (
+                rp.anchor, ['%g:%g:%s' % (e.t0, e.dur, e.kind) for e in rp.events],
+                ', multipath house' if rp.multipath is not None else ''))
         self.stereo = StereoRaycaster(StereoParams(noise_m=float(gp('stereo_noise_m').value)))
         self.rear = RearCamera(RearCameraParams(
             marker_size=float(gp('rear_marker_size').value),
@@ -305,6 +353,8 @@ class SimNode(Node):
         self.pub_truth = P(Odometry, '/sim/ground_truth', 10)
         self.pub_sim = P(String, '/sim/status', 10)
         self.pub_markers = P(MarkerArray, '/sim/markers', 10)
+        if self.terrain is not None:
+            self.pub_tilt = P(String, '/tilt/status', LATCHED)
         if self.det_on:
             self.pub_dets = P(Detection2DArray, '/ai/det/detections_ranged', 10)
             self.pub_det_pts = P(PointCloud2, '/ai/det/obstacle_points', 10)
@@ -501,6 +551,10 @@ class SimNode(Node):
             self.last_contact = ','.join(o.name for o in res.contacts)
         self.min_clearance = min(self.min_clearance, self.world.clearance(
             pose.x, pose.y, pose.yaw, t))
+        if self.terrain is not None:
+            self.roll, self.pitch = self.terrain.roll_pitch(pose.x, pose.y, pose.yaw)
+            if self.tilt is not None:
+                self.tilt.update(t, self.roll, self.pitch)
         stamp = self.stamp()
         self.tick_n += 1
         # odom pose: the truth, or with loc_drift the drifting wheel odometry
@@ -520,7 +574,23 @@ class SimNode(Node):
             odom.pose.covariance[7 * i] = v
         for i, v in enumerate((0.001, 0.001, 1e6, 1e6, 1e6, 0.01)):
             odom.twist.covariance[7 * i] = v
-        self.pub_odom.publish(odom)
+        if self.terrain is None:
+            self.pub_odom.publish(odom)
+        else:
+            # terrain: /odom is the encoder odometry (mcu_node), which a slipping wheel runs
+            # ahead of the real motion; TF / filtered stay the localisation output
+            wo, dr = self.drive.wheel_odom, self.drive
+            enc = Odometry()
+            enc.header = odom.header
+            enc.child_frame_id = 'base_link'
+            enc.pose.pose.position.x, enc.pose.pose.position.y = wo.x, wo.y
+            (enc.pose.pose.orientation.x, enc.pose.pose.orientation.y,
+             enc.pose.pose.orientation.z, enc.pose.pose.orientation.w) = _quat(wo.yaw)
+            enc.twist.twist.linear.x = 0.5 * (dr.left + dr.right)
+            enc.twist.twist.angular.z = (dr.right - dr.left) / dr.p.ground_track_width
+            enc.pose.covariance = odom.pose.covariance
+            enc.twist.covariance = odom.twist.covariance
+            self.pub_odom.publish(enc)
         if self.loc_sim:
             self.pub_filtered.publish(odom)
             tf = TransformStamped()
@@ -548,7 +618,11 @@ class SimNode(Node):
         imu = Imu()
         imu.header.stamp = stamp
         imu.header.frame_id = 'imu_link'
-        imu.orientation = truth.pose.pose.orientation
+        if self.terrain is None:
+            imu.orientation = truth.pose.pose.orientation
+        else:
+            (imu.orientation.x, imu.orientation.y, imu.orientation.z,
+             imu.orientation.w) = _quat_rpy(self.roll, self.pitch, pose.yaw)
         imu.orientation_covariance = [0.02, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 1.0]
         imu.angular_velocity.z = self.drive.w
         imu.angular_velocity_covariance = [0.005, 0.0, 0.0, 0.0, 0.005, 0.0, 0.0, 0.0, 0.005]
@@ -564,6 +638,20 @@ class SimNode(Node):
     def _publish_map_odom(self, stamp, pose, odom):
         """loc_drift: ekf_map's outputs, a new map estimate and the map -> odom it implies."""
         (mx, my, myaw), (tx, ty, tyaw) = self.drift.sample((pose.x, pose.y, pose.yaw))
+        if self.rtk is not None and self.rtk_mode != 'fixed':
+            from .loc_drift import compose, inverse
+            if self.rtk_mode == DROPOUT:
+                # no GNSS: ekf_map dead-reckons on odom, map -> odom freezes
+                if self._rtk_hold is None:
+                    self._rtk_hold = self.drift.map_to_odom
+                mx, my, myaw = compose(self._rtk_hold, self.drift.odom)
+            else:
+                g = float(self.get_parameter('rtk_float_map_gain').value)
+                mx, my = mx + g * self._rtk_off[0], my + g * self._rtk_off[1]
+            tx, ty, tyaw = compose((mx, my, myaw), inverse(self.drift.odom))
+            self.drift.map_est, self.drift.map_to_odom = (mx, my, myaw), (tx, ty, tyaw)
+        if self.rtk is not None and self.rtk_mode != DROPOUT:
+            self._rtk_hold = None
         tf = TransformStamped()
         tf.header.stamp = stamp
         tf.header.frame_id, tf.child_frame_id = 'map', 'odom'
@@ -632,10 +720,20 @@ class SimNode(Node):
         self._driver_hb_seq += 1
         if self._driver_hb_seq % 5 == 0:                 # 2 Hz like mcu_node
             self.pub_driver_hb.publish(UInt32(data=self._driver_hb_seq // 5))
+        if self.tilt is not None:
+            self.pub_tilt.publish(String(data=json.dumps(self.tilt.status(t), sort_keys=True)))
 
         pose = self.drive.pose
         ax, ay = antenna_xy(pose.x, pose.y, pose.yaw, float(self.get_parameter('gps_antenna_x').value),
                             float(self.get_parameter('gps_antenna_y').value))
+        mode = 'fixed'
+        if self.rtk is not None:
+            self.rtk.notify(t, s.is_docking_done, self.cutting)
+            mode, dx, dy = self.rtk.step(t, 0.1, ax, ay)
+            if mode != self.rtk_mode:
+                self.get_logger().warn('RTK %s -> %s (sim injection)' % (self.rtk_mode, mode))
+            self.rtk_mode, self._rtk_off = mode, (dx, dy)
+            ax, ay = ax + dx, ay + dy
         lat, lon = enu_to_latlon(ax, ay, self.world.datum_lat, self.world.datum_lon)
         fix = NavSatFix()
         fix.header.stamp = stamp
@@ -645,16 +743,21 @@ class SimNode(Node):
                               | NavSatStatus.SERVICE_COMPASS | NavSatStatus.SERVICE_GALILEO)
         fix.latitude, fix.longitude, fix.altitude = lat, lon, 300.0
         sig2 = float(self.get_parameter('gps_sigma_m').value) ** 2
+        if mode == FLOAT:
+            sig2 = max(sig2, 0.5 ** 2)       # um960 BESTNAV float sigma (decimetres)
         fix.position_covariance = [sig2, 0.0, 0.0, 0.0, sig2, 0.0, 0.0, 0.0, 4 * sig2]
         fix.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
-        self.pub_fix.publish(fix)
-        self.pub_fix_status.publish(String(
-            data='um960=connected quality=RTK_FIXED solution=NARROW_INT sats=24/30 '
-                 'hdop=0.60 diff_age=1.0s age=0.10s (sim)'))
-        vel = TwistStamped()
-        vel.header = fix.header
-        vel.twist.linear.x = self.drive.v
-        self.pub_vel.publish(vel)
+        if mode != DROPOUT:                  # dropout: the receiver sends nothing
+            self.pub_fix.publish(fix)
+            self.pub_fix_status.publish(String(
+                data='um960=connected quality=RTK_FIXED solution=NARROW_INT sats=24/30 '
+                     'hdop=0.60 diff_age=1.0s age=0.10s (sim)' if mode != FLOAT else
+                     'um960=connected quality=RTK_FLOAT solution=NARROW_FLOAT sats=19/30 '
+                     'hdop=1.20 diff_age=3.0s age=0.10s (sim)'))
+            vel = TwistStamped()
+            vel.header = fix.header
+            vel.twist.linear.x = self.drive.v
+            self.pub_vel.publish(vel)
 
         st = {'t': round(t, 2), 'x': round(pose.x, 3), 'y': round(pose.y, 3),
               'yaw': round(pose.yaw, 3), 'v': round(self.drive.v, 3), 'w': round(self.drive.w, 3),
@@ -667,6 +770,13 @@ class SimNode(Node):
               'docked': s.is_docking_done, 'charging': s.is_charging,
               'cutting': self.cutting, 'estop': self.estop_latched,
               'battery': round(self.battery, 4), 'rate': self.rate, 'lag': self.lag_events}
+        if self.terrain is not None:
+            st.update({'roll_deg': round(math.degrees(self.roll), 2),
+                       'pitch_deg': round(math.degrees(self.pitch), 2),
+                       'wheel_dist': round(self.drive.wheel_dist, 3),
+                       'creep': [round(c, 4) for c in self.drive.creep]})
+        if self.rtk is not None:
+            st['rtk'] = self.rtk_mode
         self.pub_sim.publish(String(data=json.dumps(st)))
 
     def _slow_tick(self):

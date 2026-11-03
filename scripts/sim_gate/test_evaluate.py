@@ -41,3 +41,36 @@ def test_run_rate(tmp_path):
     assert E.run_rate(str(tmp_path)) == 1.0
     (tmp_path / 'run.txt').write_text('world=w.yaml\nrate=3\ncommit=abc\n')
     assert E.run_rate(str(tmp_path)) == 3.0
+
+
+# ---- 2026-11-03 sim fidelity: slip windows, RTK-loss handling ------------------------------
+
+def test_slip_events_flag_spinning_wheels_only():
+    gt = [[t * 0.1, 0.0, 0.001 * t, 0.0] for t in range(200)]          # 1 cm/s real
+    spin = [[t * 0.1, 0.0, -0.01 * t] for t in range(200)]             # 0.1 m/s wheels
+    ev = E.slip_events(spin, gt)
+    assert len(ev) == 1 and ev[0][0] == 0.0 and ev[0][2] >= 0.29
+    honest = [[t * 0.1, 0.0, 0.001 * t] for t in range(200)]
+    assert E.slip_events(honest, gt) == []
+
+
+def test_rtk_windows():
+    simx = [[t, None, None, None, m] for t, m in
+            [(0, 'fixed'), (1, 'float'), (2, 'float'), (3, 'fixed'), (5, 'dropout'), (6, 'dropout')]]
+    assert E.rtk_windows(simx) == [[1, 3, 'float'], [5, 6, 'dropout']]
+
+
+def test_rtk_handling_hold_resume():
+    win = [[100.0, 160.0, 'dropout']]
+    loc = [[90.0, 'ok'], [130.0, 'degraded'], [175.0, 'ok']]
+    bt = [(131.0, 'localization degraded (estimated drift 0.31 m > budget 0.30 m (rtk stale)): '
+                  'stopped, blade off, waiting for RTK fixed'),
+          (179.0, 'localization ok again after 48 s: resuming')]
+    cut = [(130.5, True), (131.5, False), (133.0, False)]
+    e, = E.rtk_handling(win, loc, bt, cut, [])
+    assert e['held'] and e['blade_off'] and e['resumed'] and e['ok']
+    late = [(136.0, bt[0][1]), bt[1]]
+    assert not E.rtk_handling(win, loc, late, cut, [])[0]['ok']
+    assert not E.rtk_handling(win, loc, bt, cut, [150.0])[0]['ok']     # excursion
+    quiet, = E.rtk_handling(win, [[90.0, 'ok']], [], cut, [])
+    assert quiet['ok'] and 'no hold needed' in quiet['note']
