@@ -721,7 +721,32 @@ def test_side_slope_withdraws_the_front_corner_allowance_logged_once():
     assert len([e for e in h.fsm._fx if isinstance(e, f.Log) and 'side slope' in e.text]) == 1
     assert h.fsm._hb_body_eval(pose, 'hard')['excess'] > 0.0          # hard: unchanged rule
     h.fsm.inputs.tilt_roll_deg = 3.0
+    assert h.fsm._hb_body_eval(pose, 'soft')['excess'] > 0.0          # held edge_slope_hold_s
+    h.fsm._now += 5.1
+    h.fsm.inputs.tilt_stamp = h.fsm._now
     assert h.fsm._hb_body_eval(pose, 'soft')['excess'] < 0.0
+
+
+def test_edge_slope_hysteresis_and_hold_at_a_fade_edge():
+    """2026-11-03 slope sim: roll -8.0 / 8.0 around the threshold flapped the rule within
+    2 s. On above 8; off only below 8 - 2 = 6 deg AND after edge_slope_hold_s (5 s)."""
+    h = mowing_h([line(1, 2, 4, 2)], (1.0, 2.0, 0.0))
+    fsm, i = h.fsm, h.fsm.inputs
+
+    def at(roll, dt=0.0):
+        fsm._now += dt
+        i.tilt_roll_deg, i.tilt_stamp = roll, fsm._now
+        return fsm._edge_slope()
+    assert not at(7.9)
+    assert at(-8.2)
+    assert at(7.0, 1.0)            # inside the band
+    assert at(5.0, 1.0)            # below the band but held 2 s < 5 s
+    assert at(7.5, 3.5)            # held 5.5 s but back in the band: stays on
+    assert not at(5.5, 0.5)        # below the band and held: off
+    assert not at(7.9, 0.5)        # off: needs > 8 again
+    logs = [e.text for e in fsm._fx if isinstance(e, f.Log) and 'side slope' in e.text]
+    assert len([t for t in logs if 'side slope (roll' in t]) == 1
+    assert len([t for t in logs if 'off the side slope' in t]) == 1
 
 
 def test_edge_slope_zero_keeps_the_front_allowance():

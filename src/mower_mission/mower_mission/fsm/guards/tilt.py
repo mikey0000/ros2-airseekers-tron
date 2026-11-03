@@ -56,12 +56,26 @@ class TiltGuardMixin:
         n = int(float(self.p.tilt_trail_m) / max(0.01, float(self.p.tilt_trail_step_m))) + 1
         del tr[:-n]
 
+    def _slope_caution(self):
+        """|roll| (fresh /tilt/status) above slope_caution_roll_deg, with hysteresis: a side
+        slope the monitor still calls ok (caution at 15 deg) gets the caution cap too."""
+        p, i = self.p, self.inputs
+        thr = float(p.slope_caution_roll_deg)
+        was = getattr(self, '_slope_roll_on', False)
+        if thr <= 0.0 or i.tilt_roll_deg is None:
+            on = False
+        else:
+            roll = abs(float(i.tilt_roll_deg))
+            on = roll > (thr - max(0.0, float(p.slope_caution_roll_hyst_deg)) if was else thr)
+        self._slope_roll_on = on
+        return on
+
     def _tilt_speed(self, band):
         """Caution cap on the coverage + transit controllers; restored when back to ok.
         'unknown' keeps the current state (no flapping on a lost status)."""
         if band == 'unknown':
             return
-        want = band in ('caution', 'limit', 'critical')
+        want = band in ('caution', 'limit', 'critical') or self._slope_caution()
         if want == self._tilt_capped:
             return
         self._tilt_capped = want

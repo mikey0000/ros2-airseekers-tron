@@ -543,6 +543,8 @@ behavior_tree_node:
     boundary_recover_slip_ratio: 3.0
     boundary_recover_slip_min_m: 0.3
     edge_slope_roll_deg: 8.0               # |roll| above: front corners get the side limit (0 = off)
+    edge_slope_roll_hyst_deg: 2.0          # off only below roll_deg - hyst ...
+    edge_slope_hold_s: 5.0                 # ... and after this long on (no flapping at a fade edge)
     spin_drift_m: 0.15                   # pivot Spin slid > this ...
     spin_drift_body_margin_m: 0.05       # ... and the body within this of its limit: stop, pivot again from here
     spin_drift_hard_m: 0.30              # ... or slid more than this (field 2026-10-23: 47 % of wet-turf pivots walked 0.14 m)
@@ -632,6 +634,8 @@ behavior_tree_node:
     tilt_guard: true
     tilt_status_timeout_s: 2.0        # older /tilt/status -> band unknown, nothing acted on
     tilt_caution_speed_mps: 0.15
+    slope_caution_roll_deg: 8.0       # |roll| above (band ok): caution cap too (0 = off)
+    slope_caution_roll_hyst_deg: 2.0  # released below roll_deg - hyst
     # FollowPath.vx_max (2026-10-09): the transit controller is MPPI now (no desired_linear_vel;
     # vx_max is a dynamic MPPI param).
     tilt_transit_speed_param: FollowPath.vx_max

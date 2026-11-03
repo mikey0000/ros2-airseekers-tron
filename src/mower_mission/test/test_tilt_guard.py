@@ -260,3 +260,31 @@ def test_limit_in_idle_does_nothing():
     for kind in (f.DriveCmd, f.BladeOff, f.BladeOn, f.CancelActions, f.RecordIncident,
                  f.StartAction, f.ZeroBurst, f.SuppressStuckGuard):
         assert not h.since(m, kind), kind
+
+
+def test_side_slope_roll_in_the_ok_band_caps_with_hysteresis():
+    """2026-11-03 slope sim: 10 deg roll stays in the ok band (caution 15); above
+    slope_caution_roll_deg (8) the caution cap applies, released below 8 - 2 = 6 deg."""
+    h = Harness()
+    mowing(h)
+    m = h.mark()
+    step(h, 'ok', 7.5, n=3)
+    assert speed_calls(h, m) == []
+    step(h, 'ok', 10.0, n=3)
+    assert speed_calls(h, m) == [{'FollowCoveragePathMPPI.vx_max': 0.15,
+                                  'FollowPath.vx_max': 0.15}]
+    m2 = h.mark()
+    step(h, 'ok', 7.0, n=3)                 # inside the hysteresis band: still capped
+    step(h, 'ok', -8.5, n=3)                # either side
+    assert speed_calls(h, m2) == []
+    step(h, 'ok', 5.5, n=3)
+    calls = speed_calls(h, m2)
+    assert len(calls) == 1 and calls[0]['FollowPath.vx_max'] == 0.3
+
+
+def test_side_slope_cap_off_when_zero():
+    h = Harness(slope_caution_roll_deg=0.0)
+    mowing(h)
+    m = h.mark()
+    step(h, 'ok', 12.0, n=3)
+    assert speed_calls(h, m) == []
