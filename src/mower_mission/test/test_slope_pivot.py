@@ -38,18 +38,18 @@ def test_flat_pivot_is_unchanged():
 
 
 def test_side_slope_pivot_faces_upslope_drives_up_then_pivots():
-    h, y0 = _h(10.0)
+    h, y0 = _h(-10.0)
     yaw = h.fsm.inputs.pose[2]
     assert h.pending_action(f.ACT_SPIN).purpose == 'nogo_step'
-    # roll +10: right side down -> downhill = yaw - 90 deg, upslope = yaw + 90 deg
-    assert abs(h.goal(f.ACT_SPIN)['angle'] - math.pi / 2) < 1e-6
-    h.fsm.inputs.pose = (h.fsm.inputs.pose[0], h.fsm.inputs.pose[1], yaw + math.pi / 2)
+    # roll -10: left side down -> upslope = yaw - 90 deg, inside the -140 deg sweep
+    assert abs(h.goal(f.ACT_SPIN)['angle'] + math.pi / 2) < 1e-6
+    h.fsm.inputs.pose = (h.fsm.inputs.pose[0], h.fsm.inputs.pose[1], yaw - math.pi / 2)
     h.fsm.inputs.tilt_stamp = h.t
     h.finish(f.ACT_SPIN)
     h.pending_action(f.ACT_DRIVE)
-    # 90 deg + (140 deg back the other way, wrapped) of pivot at 0.3 rad/s, 0.045 m/s, x1.3
-    t = (math.pi / 2 + math.radians(130)) / 0.3
-    assert abs(h.goal(f.ACT_DRIVE)['distance_m'] - min(0.4, 0.045 * t * 1.3)) < 0.02
+    # half the creep of the 140 deg pivot at 0.3 rad/s, 0.045 m/s, x1.3, capped at 0.2 m
+    t = math.radians(140) / 0.3
+    assert abs(h.goal(f.ACT_DRIVE)['distance_m'] - min(0.2, 0.5 * 0.045 * t * 1.3)) < 0.02
     h.fsm.inputs.tilt_stamp = h.t
     h.finish(f.ACT_DRIVE)
     h.fsm.inputs.tilt_stamp = h.t
@@ -57,6 +57,11 @@ def test_side_slope_pivot_faces_upslope_drives_up_then_pivots():
     s = h.pending_action(f.ACT_SPIN)
     assert s is not None and s.purpose == 'cov_pivot'     # no second pre-drive
     assert h.fsm.mission.slope_pivot_key is None
+
+
+def test_upslope_outside_the_sweep_adds_no_rotation():
+    h, _ = _h(10.0)                 # upslope = yaw + 90, the pivot turns -140: not in it
+    assert h.pending_action(f.ACT_SPIN).purpose == 'cov_pivot'
 
 
 def test_below_threshold_or_off_pivots_as_planned():

@@ -1206,18 +1206,20 @@ class Params:
     # below edge_slope_roll_deg - edge_slope_roll_hyst_deg and after edge_slope_hold_s on
     edge_slope_roll_hyst_deg: float = 2.0
     # --- Pivot creep on a side slope (2026-11-03 slope sim: corner pivots slid 0.42-0.72 m
-    # downhill). A coverage pivot with |roll| > pivot_creep_roll_deg is split: pivot to face
-    # upslope, drive upslope by the creep the whole pivot is expected to cause
-    # (pivot_creep_mps x min(1, tilt / pivot_creep_ref_deg) x pivot time at
-    # pivot_creep_spin_rps, x pivot_creep_drive_gain for the forward slip of the drive,
-    # at most pivot_creep_max_m), then pivot onto the leg. Skipped when the drive would put
-    # the body past the edge-mode limit or the distance is under 0.03 m. 0 = off.
+    # downhill). A coverage pivot with |roll| > pivot_creep_roll_deg whose sweep passes the
+    # upslope heading is split there: pivot to face upslope, drive up pivot_creep_share of
+    # the creep the whole pivot is expected to cause (pivot_creep_mps x min(1, tilt /
+    # pivot_creep_ref_deg) x pivot time at pivot_creep_spin_rps, x pivot_creep_drive_gain
+    # for the drive's forward slip, at most pivot_creep_max_m), then pivot onto the leg.
+    # No extra rotation is ever added. Skipped when the drive would put the body past the
+    # edge-mode limit or the distance is under 0.03 m. 0 = off.
     pivot_creep_roll_deg: float = 6.0
     pivot_creep_mps: float = 0.045
     pivot_creep_ref_deg: float = 10.0
     pivot_creep_spin_rps: float = 0.3
     pivot_creep_drive_gain: float = 1.3
-    pivot_creep_max_m: float = 0.4
+    pivot_creep_max_m: float = 0.2
+    pivot_creep_share: float = 0.5
     edge_slope_hold_s: float = 5.0
     # --- Spin drift (field 2026-10-21 07:05:32: a 64 deg route-corner Spin slid 0.40 m on the
     # west-edge slope, then the drive out tripped the boundary). base_link more than

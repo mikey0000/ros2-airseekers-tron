@@ -115,10 +115,17 @@ class PivotsMixin:
         down = yaw + math.atan2(-sr, sp)
         up = geo.wrap_angle(down + math.pi)
         a1 = geo.wrap_angle(up - yaw)
-        a2 = geo.wrap_angle(yaw + delta - up)
+        if a1 * delta <= 0.0:
+            a1 += math.copysign(2.0 * math.pi, delta)
+        if abs(a1) >= abs(delta):
+            return None                  # upslope is not inside the sweep: no extra rotation
+        a2 = delta - a1
         rate = float(p.pivot_creep_mps) * min(1.0, tilt / max(1e-3, float(p.pivot_creep_ref_deg)))
-        t = (abs(a1) + abs(a2)) / max(0.05, float(p.pivot_creep_spin_rps))
-        d = min(float(p.pivot_creep_max_m), rate * t * float(p.pivot_creep_drive_gain))
+        t = abs(delta) / max(0.05, float(p.pivot_creep_spin_rps))
+        # drive up pivot_creep_share of the creep: the robot ends that far below the vertex
+        # instead of the whole creep, and the deviation peaks at share x creep at the drive
+        d = min(float(p.pivot_creep_max_m), float(p.pivot_creep_share) * rate * t *
+                float(p.pivot_creep_drive_gain))
         if d < 0.03:
             return None
         x, y = float(pose[0]), float(pose[1])
@@ -126,7 +133,7 @@ class PivotsMixin:
         worst = self._nogo_body([(x, y, up), (ex, ey, up), (ex, ey, up + a2)])
         if worst is not None and worst > 0.0:
             return None
-        return [('spin', a1), ('drive', d)], math.degrees(tilt), d
+        return [('spin', a1), ('drive', d)], tilt, d
 
     def _slope_pivot(self, key, pose, delta):
         """Start the upslope pre-drive of a coverage pivot on a side slope. True = started
