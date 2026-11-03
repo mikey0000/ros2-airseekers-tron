@@ -31,6 +31,11 @@ behavior_tree_node:
     # Nav2 needs an absolute heading; the JY61P yaw is arbitrary until aligned.
     require_heading_alignment: true   # source dock|cog required before PLANNING/TRANSIT
     heading_status_timeout_s: 5.0     # stale status = not aligned
+    # one slow-manoeuvre speed (back-ups, retraces, stuck steps, no-go moves), one caution cap
+    # (tilt caution, camera blocked, localisation degraded), one back-out distance
+    slow_maneuver_mps: 0.10
+    caution_speed_mps: 0.15
+    backout_m: 0.30
     heading_wait_s: 30.0              # after undock + RTK: wait for COG, then stop (no Nav2)
     # Heading calibration drive (2026-10-13). START off the dock without an aligned heading
     # but with a saved one whose IMU continuity held (aligner file_check yaw_ok: the stack
@@ -49,7 +54,6 @@ behavior_tree_node:
     heading_calibration_cone_deg: 10.0      # saved-heading error the map check tolerates
     heading_calibration_settle_s: 3.0       # RTK fixed this long first: the saved heading
                                             # may verify on its own (no drive needed)
-    heading_calibration_status_wait_s: 3.0  # after the drive: wait this long for the COG fix
     heading_calibration_blind: true         # no pose prior: drive blind (no Nav2) to get a COG heading
     heading_calibration_blind_distance_m: 0.8  # blind drive length: 0.6 m COG window + margin
     # Stale / poor COG heading at START (2026-10-14: the second START planned on "aligned
@@ -73,12 +77,10 @@ behavior_tree_node:
     loc_status_stale_s: 5.0           # received, then silent this long: 'degraded' (hold)
     loc_resume_s: 3.0                 # 'ok' this long before resuming
     # graded RTK-loss policy 2026-11-03 (docs/localization.md "RTK-loss policy")
-    loc_degraded_speed_mps: 0.15      # degraded: both controllers capped (tilt caution mechanism)
     loc_degraded_edge_margin_m: 0.3   # degraded: finish the swath while est_drift + this <= edge distance
     loc_degraded_swath_turn_deg: 20.0 # heading change that ends the current straight swath
     loc_lost_retrace_s: 120.0         # held this long: retrace the driven track toward the last fix
     loc_lost_retrace_max_m: 3.0       # ... at most this far, then wait
-    loc_lost_retrace_speed_mps: 0.10
     loc_lost_dock_s: 600.0            # held this long: MOWING_INCOMPLETE; RTK fixed -> dock, else stay + alert
     loc_hold_dock_exempt_max_s: 60.0  # dock transit / docking held only when lost longer than this
     loc_trail_step_m: 0.1             # driven-track sample spacing for the retrace
@@ -95,10 +97,8 @@ behavior_tree_node:
     nogo_replan_check_s: 1.0
     nogo_progress_tol_m: 0.02         # + swath/2: a re-planned pose counts as mowed
     nogo_pivot_check: true            # pre-pivot sweep check (a)-(e)
-    nogo_pivot_backup_m: 0.30
     nogo_pivot_shifts_m: [0.3, 0.15, -0.15]
     nogo_pivot_max_maneuvers: 2
-    nogo_move_speed_mps: 0.10         # maneuver back-up / drive (both wheels >= 0.06 m/s)
     nogo_edge_detour: true            # edge laps (B6): detour inward around it, rejoin
     nogo_edge_lookahead_m: 2.5
     nogo_edge_clearance_m: 0.10
@@ -196,7 +196,6 @@ behavior_tree_node:
     pivot_retries: 2
     stretch_min_retry_m: 0.5             # skipped stretches shorter than this are not re-tried
     offgraph_goal_insets_m: [0.3, 0.6]   # off-graph transit goal: re-ask moved inside; then skip (no costmap transit to it)
-    route_pivot_backout_m: 0.30          # transit route corner pivot refused pivot_retries times: back off, re-plan (field 2026-10-23)
     pivot_retry_pause_s: 2.0           # real back-off between pivot attempts (field 2026-10-22)
     # 2026-10-21 owner rule (stock firmware): a blocked COVERAGE pivot (Spin aborted / timed
     # out, e.g. "Collision Ahead") is not re-sent: its leg is skipped ("blocked pivot: skip"),
@@ -219,8 +218,6 @@ behavior_tree_node:
     # plan time: poses near static obstacle marks are excluded (blocked_static) up front
     exclude_mark_merge_m: 0.5
     # refused coverage pivot: back straight up this far, pivot ONCE more, then skip. 0 = off.
-    pivot_backout_m: 0.35
-    pivot_backout_speed_mps: 0.1
     # STUCK while mowing: the failing piece is recorded as skipped and the resume cursor
     # moved past it (START never re-runs the same pivot first).
     # 2026-10-20 error budget: a pivot Spin is sent this much short (rad) so the robot comes to
@@ -461,7 +458,7 @@ behavior_tree_node:
     # outside the area is an immediate fail"). Robot centre > hard_boundary_m outside (mowing
     # areas U drawn paths U dock corridor; map_server ~/outside_m) in TRANSIT, MOWING or a
     # dock phase: cancel, zero, blade off, then reverse along the driven EKF track (last
-    # hard_boundary_trail_m) at hard_boundary_retrace_speed_mps (<= 0.10, /cmd_vel_emergency)
+    # hard_boundary_trail_m) at slow_maneuver_mps (/cmd_vel_emergency)
     # until back inside + hard_boundary_retrace_extra_m (max hard_boundary_retrace_max_m, and
     # never beyond the recorded track: no blind reverse). Back inside = a fresh ~/outside_m
     # <= 0 (2026-10-15 sim fix: not <= hard_boundary_m); the track or the max running out
@@ -490,7 +487,6 @@ behavior_tree_node:
     hard_boundary_trail_m: 1.5
     hard_boundary_trail_step_m: 0.05
     hard_boundary_pause_s: 0.5
-    hard_boundary_retrace_speed_mps: 0.10
     hard_boundary_retrace_extra_m: 0.10
     hard_boundary_retrace_max_m: 1.0
     hard_boundary_lookahead_m: 0.25
@@ -510,8 +506,6 @@ behavior_tree_node:
     hard_boundary_plan_radius_m: 1.0     # soft: within this of a planned corner whose swept body is out by b ...
     hard_boundary_plan_margin_m: 0.20    # ... any point may reach b + this (plan-relative trip; sim p99 0.13 + lap-join transient)
     hard_boundary_body_clear_m: 0.02
-    hard_boundary_back_m: 0.30           # stock onBoundaryOut 0.3 m straight
-    hard_boundary_back_speed_mps: 0.10   # owner cap (stock 0.2)
     hard_boundary_back_timeout_s: 5.0
     hard_boundary_inward_tries: 3        # recovery ended still outside: bounded inward moves
     hard_boundary_inward_max_m: 0.6
@@ -522,7 +516,6 @@ behavior_tree_node:
     # boundary recovery on a side slope (field 2026-11-02; mission_fsm Params)
     boundary_recover_footprint_plan: true  # simulate the footprint per candidate motion, never worsen
     boundary_recover_max_worsen_m: 0.05
-    boundary_recover_move_m: 0.30          # stock onBoundaryOut distance
     boundary_recover_pivot_rad: 0.35
     boundary_recover_max_moves: 4
     boundary_recover_reverse_bias_m: 0.02
@@ -618,7 +611,6 @@ behavior_tree_node:
     stuck_recovery_period_s: 120.0
     stuck_pause_s: 1.0
     stuck_step_m: 0.3
-    stuck_step_speed: 0.1
     stuck_arc_deg: 30.0
     stuck_step_progress_s: 3.0
     stuck_step_progress_m: 0.05
@@ -630,7 +622,7 @@ behavior_tree_node:
     # --- tilt guard (2026-10-09; mower_control tilt_monitor /tilt/status) ----
     # The monitor filters / debounces the IMU roll + pitch into ok|caution|limit|critical
     # (thresholds, hysteresis, mount offset: tilt_monitor params, mower_control/tilt_logic.py).
-    # caution: both controllers capped at tilt_caution_speed_mps, blade stays on.
+    # caution: both controllers capped at caution_speed_mps, blade stays on.
     # limit (mission / docking phases): cancel, blade off, 'steep' terrain incident, back out
     #   along the driven track on /cmd_vel_emergency until the band drops (>= min, <= max m),
     #   then resume (mowing: detour past the spot). Same spot / too many -> STUCK_NEEDS_HELP.
@@ -638,18 +630,15 @@ behavior_tree_node:
     # critical: emergency cause (tilt_monitor also zeroes /cmd_vel_emergency + /cutter_off).
     tilt_guard: true
     tilt_status_timeout_s: 2.0        # older /tilt/status -> band unknown, nothing acted on
-    tilt_caution_speed_mps: 0.15
     slope_caution_roll_deg: 8.0       # |roll| above (band ok): caution cap too (0 = off)
     slope_caution_roll_hyst_deg: 2.0  # released below roll_deg - hyst
     # FollowPath.vx_max (2026-10-09): the transit controller is MPPI now (no desired_linear_vel;
     # vx_max is a dynamic MPPI param).
     tilt_transit_speed_param: FollowPath.vx_max
     tilt_transit_speed_mps: 0.3       # restored after caution: keep = nav2_params FollowPath
-    camera_blocked_speed_mps: 0.15    # front camera blocked (mower_vision camera_blocked): speed cap; 0 = off
     tilt_trail_m: 2.0                 # driven track remembered for the back-out
     tilt_trail_step_m: 0.05
     tilt_backout_pause_s: 0.5
-    tilt_backout_speed: 0.1
     tilt_backout_min_m: 0.3
     tilt_backout_max_m: 1.0
     tilt_backout_lookahead_m: 0.3

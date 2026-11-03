@@ -619,6 +619,14 @@ class Params:
     rtk_timeout_s: float = 120.0
     require_heading_alignment: bool = True    # dock|cog heading before any Nav2 motion
     heading_status_timeout_s: float = 5.0     # older /heading_aligner/status = unaligned
+    # Unified 2026-11-03 (param diet): one slow-manoeuvre speed for every back-up / retrace /
+    # step / nogo move (both wheels above the 0.06 m/s floor; owner cap 0.10, also the old
+    # hard-coded clamp), one caution cap for tilt caution / camera blocked / localisation
+    # degraded, one straight back-out distance (boundary move, pivot / route / no-go back-ups;
+    # stock onBoundaryOut 0.3 m). heading_status_timeout_s is also the post-calibration wait.
+    slow_maneuver_mps: float = 0.10
+    caution_speed_mps: float = 0.15
+    backout_m: float = 0.30
     heading_wait_s: float = 30.0              # after undock + RTK, wait this long for COG
     # 2026-10-13 heading calibration drive (_hcal_*): START off the dock with only a saved
     # 'file' heading whose IMU continuity held (status file_check yaw_ok) drives a short
@@ -642,7 +650,6 @@ class Params:
     heading_calibration_blind_distance_m: float = 0.8   # aligner COG window 0.6 m + margin
     heading_calibration_settle_s: float = 3.0       # RTK fixed this long first (the saved
                                                     # heading may still verify without a drive)
-    heading_calibration_status_wait_s: float = 3.0  # after the drive: aligner status latency
     # 2026-10-14: the second START of the day planned on "aligned (cog)" with quality poor and
     # a 1200 s old COG fix and drove its transit 65 deg off. A START off the dock with a cog
     # heading older than heading_max_cog_age_s (0 = no age limit) or with a quality in
@@ -806,7 +813,6 @@ class Params:
     # inside by these insets; never the costmap planner to it (field 2026-10-23: that fallback
     # cut the area / dock-path junction, 6 trips). None fits: the piece is skipped.
     offgraph_goal_insets_m: list = field(default_factory=lambda: [0.3, 0.6])
-    route_pivot_backout_m: float = 0.30   # refused route corner pivot: back off, re-plan
     pivot_retry_pause_s: float = 2.0    # wait between a refused pivot and its re-send
     # 2026-10-21 owner rule (stock firmware): a COVERAGE pivot Spin (leg start / pivot vertex)
     # that ends without SUCCEEDED ("Collision Ahead", costmap blocked, Spin abort / timeout)
@@ -846,10 +852,8 @@ class Params:
     # the start and never driven; gaps shorter than exclude_mark_merge_m are merged in.
     exclude_mark_merge_m: float = 0.5
     # refused coverage pivot (policy skip): back straight up this far (Nav2 BackUp at
-    # pivot_backout_speed_mps, both wheels above the 0.06 m/s floor) and pivot ONCE more
+    # slow_maneuver_mps, both wheels above the 0.06 m/s floor) and pivot ONCE more
     # before skipping. 0 = off.
-    pivot_backout_m: float = 0.35
-    pivot_backout_speed_mps: float = 0.1
     # STUCK_NEEDS_HELP while mowing: the failing piece (leg start -> next pivot vertex / at
     # most edge_blocked_skip_m) is recorded as skipped and the resume cursor moved past it,
     # so START never re-runs the identical failing pivot first.
@@ -1075,7 +1079,7 @@ class Params:
     # dock corridor; map_server ~/outside_m, fresher than hard_boundary_stale_s) in TRANSIT,
     # MOWING or a dock phase: cancel the goal, zero, blade off, then retrace the driven EKF
     # track (the last hard_boundary_trail_m, newest first) in reverse at
-    # hard_boundary_retrace_speed_mps on /cmd_vel_emergency until back inside plus
+    # slow_maneuver_mps on /cmd_vel_emergency until back inside plus
     # hard_boundary_retrace_extra_m (at most hard_boundary_retrace_max_m, never beyond the
     # recorded track: no blind reverse; inside = a fresh ~/outside_m <= 0, the track / max
     # running out while still outside or without a fresh reading -> STUCK_NEEDS_HELP). Steering keeps
@@ -1113,7 +1117,6 @@ class Params:
     hard_boundary_trail_m: float = 1.5
     hard_boundary_trail_step_m: float = 0.05
     hard_boundary_pause_s: float = 0.5
-    hard_boundary_retrace_speed_mps: float = 0.10
     hard_boundary_retrace_extra_m: float = 0.10
     hard_boundary_retrace_max_m: float = 1.0
     hard_boundary_lookahead_m: float = 0.25
@@ -1135,7 +1138,7 @@ class Params:
     # _soft_nose_m, tail
     # _soft_tail_m (soft lap 0 puts the sides 0.235 out, a row end the nose 0.15 / the front
     # corners <= 0.195 out; + tracking p99 0.07..0.13). Recovery (stock): stop, blade off,
-    # move hard_boundary_back_m straight (reverse; forward when the worst point is behind
+    # move backout_m straight (reverse; forward when the worst point is behind
     # base_link) at <= 0.10 m/s, hard_boundary_back_timeout_s; resume (the leg-start pivot
     # turns to the path heading at the nearest point). Still beyond the limit after the move
     # -> the track retrace above (fallback). The retry cap / STUCK escalation is unchanged.
@@ -1148,8 +1151,6 @@ class Params:
     hard_boundary_plan_radius_m: float = 1.0      # plan-relative soft limit near a corner
     hard_boundary_plan_margin_m: float = 0.20     # ... its planned body out + this (p99 0.13 + lap-join transient)
     hard_boundary_body_clear_m: float = 0.02      # back-move success: excess <= -this
-    hard_boundary_back_m: float = 0.30
-    hard_boundary_back_speed_mps: float = 0.10
     hard_boundary_back_timeout_s: float = 5.0
     # A boundary reading (outside_m / body worst point) that jumps by more than
     # hard_boundary_jump_m since the previous fresh one is ignored for up to
@@ -1181,7 +1182,6 @@ class Params:
     # inward moves.
     boundary_recover_footprint_plan: bool = True
     boundary_recover_max_worsen_m: float = 0.05
-    boundary_recover_move_m: float = 0.30
     boundary_recover_pivot_rad: float = 0.35
     boundary_recover_max_moves: int = 4
     boundary_recover_reverse_bias_m: float = 0.02
@@ -1365,7 +1365,6 @@ class Params:
     stuck_recovery_period_s: float = 120.0
     stuck_pause_s: float = 1.0
     stuck_step_m: float = 0.3
-    stuck_step_speed: float = 0.1
     stuck_arc_deg: float = 30.0
     stuck_step_progress_s: float = 3.0
     stuck_step_progress_m: float = 0.05
@@ -1383,7 +1382,6 @@ class Params:
     # on /cmd_vel_emergency and calls /cutter_off itself).
     tilt_guard: bool = True
     tilt_status_timeout_s: float = 2.0  # older /tilt/status -> band unknown (no action)
-    tilt_caution_speed_mps: float = 0.15
     # |roll| above this (fresh /tilt/status, band ok) also applies the caution speed cap
     # (2026-11-03 slope sim: a 10 deg side slope sat in the ok band, caution at 15 deg);
     # off again below slope_caution_roll_deg - slope_caution_roll_hyst_deg. 0 = off.
@@ -1393,11 +1391,9 @@ class Params:
     tilt_transit_speed_mps: float = 0.3     # restored after caution (nav2_params FollowPath)
     # front camera blocked (mower_vision camera_blocked, stock CameraBlocked 100105): both
     # controllers capped at this while a mission runs; 0 disables
-    camera_blocked_speed_mps: float = 0.15
     tilt_trail_m: float = 2.0           # driven track kept for the back-out
     tilt_trail_step_m: float = 0.05
     tilt_backout_pause_s: float = 0.5
-    tilt_backout_speed: float = 0.1
     tilt_backout_min_m: float = 0.3      # back-out at least this far, until the band < limit
     tilt_backout_max_m: float = 1.0     # still 'limit' after this -> STUCK_NEEDS_HELP
     tilt_backout_lookahead_m: float = 0.3
@@ -1411,7 +1407,7 @@ class Params:
     # (docs/localization.md "RTK-loss policy"). No status ever received = no hold (monitor
     # not launched); received but older than loc_status_stale_s = 'degraded' (fail closed,
     # review 2026-11-02 H3a). Resume after loc_resume_s of 'ok'.
-    #   degraded: both controllers capped at loc_degraded_speed_mps; a mow follow finishes
+    #   degraded: both controllers capped at caution_speed_mps; a mow follow finishes
     #     the current straight swath while est_drift + loc_degraded_edge_margin_m <= the
     #     swath's distance to the area edge, else (and at the swath end, and in a transit)
     #     it holds: stop, blade off.
@@ -1424,12 +1420,10 @@ class Params:
     loc_hold: bool = True
     loc_status_stale_s: float = 5.0
     loc_resume_s: float = 3.0
-    loc_degraded_speed_mps: float = 0.15
     loc_degraded_edge_margin_m: float = 0.3
     loc_degraded_swath_turn_deg: float = 20.0   # heading change that ends the straight swath
     loc_lost_retrace_s: float = 120.0
     loc_lost_retrace_max_m: float = 3.0
-    loc_lost_retrace_speed_mps: float = 0.10
     loc_lost_dock_s: float = 600.0
     loc_hold_dock_exempt_max_s: float = 60.0
     loc_trail_step_m: float = 0.1
@@ -1447,10 +1441,8 @@ class Params:
     nogo_progress_tol_m: float = 0.02        # + swath/2: a re-plan pose that counts as mowed
     # pre-pivot sweep check (coverage pivots, K-turn about-turns, route corners)
     nogo_pivot_check: bool = True
-    nogo_pivot_backup_m: float = 0.30        # (b) / (c) back-up, capped by the body limits
     nogo_pivot_shifts_m: list = field(default_factory=lambda: [0.3, 0.15, -0.15])   # (d)
     nogo_pivot_max_maneuvers: int = 2        # per pivot, then (e) re-plan / skip
-    nogo_move_speed_mps: float = 0.10        # maneuver back-up / drive (both wheels >= 0.06)
     # edge laps (B6, owner): detour inward around a zone / static mark on the lap, rejoin
     nogo_edge_detour: bool = True
     nogo_edge_lookahead_m: float = 2.5

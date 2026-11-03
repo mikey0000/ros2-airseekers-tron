@@ -325,7 +325,7 @@ class PivotsMixin:
                       'stop' % (m.pivot_skips, cap))
             return False
         key = (m.area_idx, m.sub_i, m.start_local)
-        back = self._safe_backoff(float(p.pivot_backout_m))
+        back = self._safe_backoff(float(p.backout_m))
         if back > 0.0 and m.stretch is None and m.pivot_backout_key != key:
             m.pivot_backout_key = key
             self._log('warn', 'blocked pivot (%s, %.0f deg off) at (%.2f, %.2f): back up %.2f m, '
@@ -335,8 +335,8 @@ class PivotsMixin:
             if not self._keep_blade_inside('pivot back-up'):
                 self._blade_off('pivot back-up')        # outside the body rules: off
             self._start_action(ACT_BACKUP, {'distance_m': back,
-                                            'speed_mps': float(p.pivot_backout_speed_mps)},
-                               back / max(0.02, float(p.pivot_backout_speed_mps))
+                                            'speed_mps': float(p.slow_maneuver_mps)},
+                               back / max(0.02, float(p.slow_maneuver_mps))
                                + 15.0, purpose='pivot_backout')
             return True
         m.pivot_skips += 1

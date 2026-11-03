@@ -293,7 +293,7 @@ class BoundaryGuardMixin:
         if side is not None:
             how = 'reverse onto the planned leg (side-aware), then resume'
         elif mode:
-            how = 'move %.2f m %s, then resume' % (float(self.p.hard_boundary_back_m),
+            how = 'move %.2f m %s, then resume' % (float(self.p.backout_m),
                                                    'forward' if ev['rear'] else 'back')
         else:
             how = 'retrace the driven track'
@@ -399,7 +399,7 @@ class BoundaryGuardMixin:
         u, s_ = k['u'], k['dir']
         want = math.atan2(u[1] * s_, u[0] * s_)   # travel along u: heading u fwd, -u reverse
         err = geo.wrap_angle(want - float(pose[2]))
-        v = min(abs(float(p.hard_boundary_back_speed_mps)), 0.10)
+        v = abs(float(p.slow_maneuver_mps))
         half = 0.5 * float(p.hard_boundary_track_width_m)
         wmax = max(0.0, (v - float(p.hard_boundary_min_inner_mps)) / max(1e-3, half))
         self._fx.append(DriveCmd(s_ * v, max(-wmax, min(wmax, 1.5 * err))))
@@ -428,15 +428,15 @@ class BoundaryGuardMixin:
         return ev['excess'] <= -float(self.p.hard_boundary_body_clear_m), max(ev['outs'].values())
 
     def _hb_back_tick(self, pose):
-        """Stock onBoundaryOut: hard_boundary_back_m straight (reverse, or forward for a rear
+        """Stock onBoundaryOut: backout_m straight (reverse, or forward for a rear
         trip) at <= 0.10 m/s, hard_boundary_back_timeout_s. Then inside -> resume; still
         beyond the limit -> the track retrace (fallback)."""
         k, p = self._hb, self.p
         o = k['back_from']
         moved = math.hypot(pose[0] - o[0], pose[1] - o[1])
-        if moved < float(p.hard_boundary_back_m) and \
+        if moved < float(p.backout_m) and \
                 self._now - k['t'] < float(p.hard_boundary_back_timeout_s):
-            v = min(abs(float(p.hard_boundary_back_speed_mps)), 0.10)
+            v = abs(float(p.slow_maneuver_mps))
             self._fx.append(DriveCmd(k['dir'] * v, 0.0))
             return
         self._fx.append(DriveCmd(0.0, 0.0))
@@ -464,11 +464,11 @@ class BoundaryGuardMixin:
 
     def _hb_motions(self):
         p = self.p
-        v = min(abs(float(p.hard_boundary_back_speed_mps)), 0.10)
+        v = abs(float(p.slow_maneuver_mps))
         half = 0.5 * float(p.hard_boundary_track_width_m)
         w_arc = max(0.0, (v - float(p.hard_boundary_min_inner_mps)) / max(1e-3, half))
         return bbody.candidate_motions(v, w_arc, max(0.25, abs(float(p.hard_boundary_pivot_rps))),
-                                       float(p.boundary_recover_move_m),
+                                       float(p.backout_m),
                                        float(p.boundary_recover_pivot_rad))
 
     def _hb_plan_start(self, pose, exclude=()):
@@ -511,7 +511,7 @@ class BoundaryGuardMixin:
         why = None
         if worst > mv['worst0'] + float(p.boundary_recover_max_worsen_m):
             why = 'worst corner grew %.2f -> %.2f m' % (mv['worst0'], worst)
-        elif (mv['v'] != 0.0 and moved >= float(p.boundary_recover_move_m)) or \
+        elif (mv['v'] != 0.0 and moved >= float(p.backout_m)) or \
                 (mv['v'] == 0.0 and mv['yaw_acc'] >= float(p.boundary_recover_pivot_rad)):
             why = 'done'
         elif self._now - k['t'] > 2.0 * mv['dur'] + 2.0:

@@ -5,7 +5,7 @@ Subscribes ``image_topic`` (front stereo right image, taken raw: only the sample
 while the mission is MOWING
 (``/behavior_tree_node/high_level_status``) and samples it at ``sample_hz``; the verdict is
 :class:`mower_vision.camera_blocked.BlockedMonitor`. Publishes ``blocked_topic`` (latched
-``std_msgs/Bool``: mower_mission caps the speed at ``camera_blocked_speed_mps`` while true)
+``std_msgs/Bool``: mower_mission caps the speed at ``caution_speed_mps`` while true)
 and raises / clears the ``camera_blocked`` mower_alerts notice.
 """
 

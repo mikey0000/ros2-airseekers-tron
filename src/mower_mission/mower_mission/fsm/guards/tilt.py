@@ -82,7 +82,7 @@ class TiltGuardMixin:
         self._tilt_capped = want
         if want:
             self._log('warn', 'slope caution (%s): controller speed capped at %.2f m/s'
-                      % (self._tilt_text(), float(self.p.tilt_caution_speed_mps)))
+                      % (self._tilt_text(), float(self.p.caution_speed_mps)))
         else:
             self._log('info', 'slope ok: controller speed restored')
         self._push_speed_caps()
@@ -93,11 +93,11 @@ class TiltGuardMixin:
         None = no cap (the area cut speed applies)."""
         caps = []
         if self._tilt_capped:
-            caps.append(float(self.p.tilt_caution_speed_mps))
-        if self._camera_capped and float(self.p.camera_blocked_speed_mps) > 0.0:
-            caps.append(float(self.p.camera_blocked_speed_mps))
+            caps.append(float(self.p.caution_speed_mps))
+        if self._camera_capped and float(self.p.caution_speed_mps) > 0.0:
+            caps.append(float(self.p.caution_speed_mps))
         if self._loc_capped:
-            caps.append(float(self.p.loc_degraded_speed_mps))
+            caps.append(float(self.p.caution_speed_mps))
         return min(caps) if caps else None
 
     def _push_speed_caps(self):
@@ -195,7 +195,7 @@ class TiltGuardMixin:
         """(v, w) toward the next back-out path point: pure pursuit, forward or reverse
         (whichever side the track lies on), straight reverse once the track is used up."""
         k, p = self._tob, self.p
-        v0, la = abs(float(p.tilt_backout_speed)), float(p.tilt_backout_lookahead_m)
+        v0, la = abs(float(p.slow_maneuver_mps)), float(p.tilt_backout_lookahead_m)
         path = k['path']
         while k['i'] < len(path) and math.hypot(path[k['i']][0] - pose[0],
                                                 path[k['i']][1] - pose[1]) < la:
@@ -224,7 +224,7 @@ class TiltGuardMixin:
             k['stage'], k['best_t'] = 'drive', now
             self.sub_state = 'steep slope (%s): backing out' % self._tilt_text()
             self._log('info', 'steep slope: backing out along %d track points at %.2f m/s'
-                      % (len(k['path']), abs(float(p.tilt_backout_speed))))
+                      % (len(k['path']), abs(float(p.slow_maneuver_mps))))
         d = math.hypot(pose[0] - k['origin'][0], pose[1] - k['origin'][1])
         if d >= k['best'] + float(p.tilt_backout_progress_m):
             k['best'], k['best_t'] = d, now

@@ -133,7 +133,7 @@ def test_tilt_cap_survives_loc_restore():
     m = h.mark()
     run(h, 'ok', 0.5)
     caps = speed_calls(h, m)
-    assert caps and all(v == h.fsm.p.tilt_caution_speed_mps for v in caps[-1].values())
+    assert caps and all(v == h.fsm.p.caution_speed_mps for v in caps[-1].values())
 
 
 # ---- lost: retrace -------------------------------------------------------------------------
@@ -280,19 +280,19 @@ def test_dock_hold_timeout_without_fix_fails_docking():
 
 
 def test_camera_and_loc_caps_lift_independently():
-    """All caps go through _push_speed_caps: the lowest wins, each lifts on its own."""
-    h = big_mow(camera_blocked_speed_mps=0.2, loc_degraded_speed_mps=0.1)
+    """All caps go through _push_speed_caps (one caution_speed_mps); each lifts on its own."""
+    h = big_mow()
     h.fsm.inputs.camera_blocked = True
     run(h, 'degraded', 0.5, est=0.4)
     m = h.mark()
     h.fsm.inputs.camera_blocked = False
     run(h, 'degraded', 0.5, est=0.4)
-    assert all(v == 0.1 for v in speed_calls(h, m)[-1].values())
+    assert all(v == 0.15 for v in speed_calls(h, m)[-1].values())     # loc cap holds
     h.fsm.inputs.camera_blocked = True
     run(h, 'degraded', 0.5, est=0.4)
     m = h.mark()
     run(h, 'ok', 0.5)                   # loc lifts, camera cap stays
-    assert all(v == 0.2 for v in speed_calls(h, m)[-1].values())
+    assert all(v == 0.15 for v in speed_calls(h, m)[-1].values())     # camera cap holds
 
 
 def test_trail_is_continuous_so_a_late_loss_still_retraces():

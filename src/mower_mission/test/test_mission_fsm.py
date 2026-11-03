@@ -2156,7 +2156,7 @@ def test_hcal_no_prior_no_cog_after_the_blind_drive_goes_idle():
     h = hcal_harness(prior='yaw_failed')
     start_hcal(h)
     h.finish(f.ACT_DRIVE)
-    h.tick(dt=1.0, n=4)
+    h.tick(dt=1.0, n=6)                  # heading_status_timeout_s 5 s after the drive
     assert h.name == 'IDLE' and 'no COG alignment after the drive' in h.fsm.sub_state
     assert not h.fsm.motion_enabled()
 
@@ -2271,7 +2271,7 @@ def test_hcal_no_cog_after_the_drive_goes_idle():
     h.tick(dt=1.0, n=2)
     assert h.name == 'WAITING_FOR_RTK'
     m = h.mark()
-    h.tick(dt=1.0, n=2)
+    h.tick(dt=1.0, n=4)
     assert h.name == 'IDLE' and 'no COG alignment after the drive' in h.fsm.sub_state
     assert not h.since(m, f.StartAction)       # never docks / navigates on a wrong heading
 
@@ -2280,11 +2280,11 @@ def test_hcal_drive_aborted_or_timed_out_goes_idle():
     h = hcal_harness()
     start_hcal(h)
     h.finish(f.ACT_DRIVE, f.ABORTED)
-    h.tick(dt=1.0, n=4)
+    h.tick(dt=1.0, n=6)
     assert h.name == 'IDLE' and 'drive aborted (obstacle / costmap)' in h.fsm.sub_state
     h = hcal_harness()
     start_hcal(h)
-    h.tick(dt=1.0, n=50)                 # heading_calibration_timeout_s watchdog
+    h.tick(dt=1.0, n=55)                 # heading_calibration_timeout_s watchdog
     assert h.name == 'IDLE' and 'drive timeout' in h.fsm.sub_state
     assert h.since(0, f.CancelActions)
 
@@ -2394,7 +2394,7 @@ def test_stale_cog_no_fresh_fix_after_the_drive_goes_idle():
     h.fsm.inputs.pose = (1.0, 0.0, 0.0)
     h.finish(f.ACT_DRIVE)
     m = h.mark()
-    h.tick(dt=1.0, n=4)
+    h.tick(dt=1.0, n=6)                  # heading_status_timeout_s 5 s after the drive
     assert h.name == 'IDLE' and 'no COG alignment after the drive' in h.fsm.sub_state
     assert not h.since(m, f.StartAction)
 

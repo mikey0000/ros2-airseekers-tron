@@ -21,7 +21,7 @@ class StuckGuardMixin:
     # stuck guard (mower_control slip_detector /stuck -> escape / STUCK_NEEDS_HELP)
     # ==================================================================
     def _stuck_steps(self):
-        v = abs(float(self.p.stuck_step_speed))
+        v = abs(float(self.p.slow_maneuver_mps))
         w = v * math.radians(float(self.p.stuck_arc_deg)) / max(0.05, float(self.p.stuck_step_m))
         return [(-v, 0.0, 'reverse'), (v, w, 'forward arc'), (-v, -w, 'reverse opposite arc')]
 

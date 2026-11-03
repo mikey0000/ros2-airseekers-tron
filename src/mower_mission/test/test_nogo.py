@@ -103,7 +103,7 @@ def test_e_blocked_when_nothing_is_clear():
 def _cov_pivot_h(monkeypatch, plans, zs=None, **params):
     """ring_h with the planned pivot's check answered by ``plans`` (a list, one per call)."""
     params.setdefault('path_conditioning', True)
-    params.setdefault('pivot_backout_m', 0.0)
+    params.setdefault('backout_m', 0.0)
     calls = []
 
     def fake(x, y, yaw, delta, discs, **kw):

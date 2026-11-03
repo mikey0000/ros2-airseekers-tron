@@ -620,11 +620,11 @@ class TransitMixin:
     def _route_pivot_backout(self, outcome, key, heading, lim):
         """A mission-transit route corner pivot refused pivot_retries times (field 2026-10-23
         20:30:52: a Spin refused 0.71 m from a trunk went to STUCK_NEEDS_HELP): back off
-        route_pivot_backout_m, then re-plan the transit (a transit abort: re-routed from there;
+        backout_m, then re-plan the transit (a transit abort: re-routed from there;
         transit_retries used up -> the sub-path is skipped). A second refusal at the same
         corner re-plans at once. True = handled."""
         m, p, pose = self.mission, self.p, self.inputs.pose
-        dist = float(p.route_pivot_backout_m)
+        dist = float(p.backout_m)
         if dist <= 0.0 or m is None or outcome == CANCELED or heading is None or \
                 pose is None or len(pose) < 3:
             return False
@@ -651,8 +651,8 @@ class TransitMixin:
         if not self._keep_blade_inside('route pivot back-off'):
             self._blade_off('route pivot back-off')
         self._start_action(ACT_BACKUP, {'distance_m': dist,
-                                        'speed_mps': float(p.pivot_backout_speed_mps)},
-                           dist / max(0.02, float(p.pivot_backout_speed_mps)) + 15.0,
+                                        'speed_mps': float(p.slow_maneuver_mps)},
+                           dist / max(0.02, float(p.slow_maneuver_mps)) + 15.0,
                            purpose='route_pivot_backout')
         return True
 

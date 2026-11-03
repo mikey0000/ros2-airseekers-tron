@@ -497,7 +497,7 @@ class HoldsMixin:
             self._loc_capped = want
             if want:
                 self._log('warn', 'localization %s: controller speed capped at %.2f m/s'
-                          % (state, float(self.p.loc_degraded_speed_mps)))
+                          % (state, float(self.p.caution_speed_mps)))
             else:
                 self._log('info', 'localization speed cap lifted')
             self._push_speed_caps()
@@ -573,7 +573,7 @@ class HoldsMixin:
             self._loc_swath = {'sub': m.sub_i, 'area': m.area_idx, 'end': r[0], 'clear': r[1]}
             self._log('warn', 'localization degraded (drift %.2f m): finishing the current '
                       'swath at %.2f m/s (edge clearance %.2f m >= drift + %.2f m)'
-                      % (est, float(self.p.loc_degraded_speed_mps), r[1], margin))
+                      % (est, float(self.p.caution_speed_mps), r[1], margin))
             return True
         if est is None or est + margin > sw['clear']:
             self._log('warn', 'localization degraded: drift %s + %.2f m > edge clearance '
@@ -735,7 +735,7 @@ class HoldsMixin:
         self._log('warn', 'localization not ok for %.0f s: retracing %.2f m of the driven track '
                   'toward the last RTK-fixed pose at %.2f m/s'
                   % (self._now - d['since'], d['rt']['len'],
-                     float(self.p.loc_lost_retrace_speed_mps)))
+                     float(self.p.slow_maneuver_mps)))
         self._go(self.phase, 'localization lost: retracing toward the last fix')
 
     def _loc_retrace_stop(self, why):
@@ -774,7 +774,7 @@ class HoldsMixin:
         dx, dy = tx - pose[0], ty - pose[1]
         c, s = math.cos(pose[2]), math.sin(pose[2])
         xr, yr = c * dx + s * dy, -s * dx + c * dy
-        v0 = abs(float(self.p.loc_lost_retrace_speed_mps))
+        v0 = abs(float(self.p.slow_maneuver_mps))
         v = v0 if xr > 0 else -v0
         w = max(-0.3, min(0.3, v * 2.0 * yr / max(1e-6, xr * xr + yr * yr)))
         self._fx.append(DriveCmd(v, w))

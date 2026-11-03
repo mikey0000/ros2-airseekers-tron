@@ -227,7 +227,7 @@ def test_docking_is_not_held():
 
 # ---- 10: param plumbing --------------------------------------------------------------------
 LOC_DEFAULTS = (('loc_status_stale_s', 5.0), ('loc_resume_s', 3.0),
-                ('loc_degraded_speed_mps', 0.15), ('loc_degraded_edge_margin_m', 0.3),
+                ('caution_speed_mps', 0.15), ('loc_degraded_edge_margin_m', 0.3),
                 ('loc_lost_retrace_s', 120.0), ('loc_lost_retrace_max_m', 3.0),
                 ('loc_lost_dock_s', 600.0), ('loc_hold_dock_exempt_max_s', 60.0))
 

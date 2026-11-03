@@ -33,7 +33,7 @@ def ring_h(yaw=None, **params):
 
 
 def _blocked(**params):
-    params.setdefault('pivot_backout_m', 0.0)
+    params.setdefault('backout_m', 0.0)
     r = ring()
     y0 = math.atan2(r[1][1] - r[0][1], r[1][0] - r[0][0])
     h = ring_h(yaw=y0 + math.radians(140), **params)
@@ -151,13 +151,13 @@ def test_edge_lap_collision_monitor_stop_held_skips_the_segment():
 
 
 def test_refused_pivot_backs_up_then_pivots_once_more_then_skips():
-    h = _blocked(pivot_backout_m=0.35)
+    h = _blocked(backout_m=0.30)     # unified back-out (pivot_backout_m 0.35 until 2026-11-03)
     m = h.fsm.mission
     h.finish(f.ACT_SPIN, f.ABORTED)
     a = h.pending_action(f.ACT_BACKUP)
     assert a.purpose == 'pivot_backout'
     g = h.goal(f.ACT_BACKUP)
-    assert abs(g['distance_m'] - 0.35) < 1e-6 and g['speed_mps'] >= 0.06
+    assert abs(g['distance_m'] - 0.30) < 1e-6 and g['speed_mps'] >= 0.06
     # owner 2026-10-23: inside the area the blade stays on
     assert h.blade and any('blade kept on (pivot back-up)' in t for t in _logs(h))
     h.finish(f.ACT_BACKUP)

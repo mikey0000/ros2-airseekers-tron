@@ -330,7 +330,7 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 | `follow_chunk_min_tail_m` / `follow_chunk_end_straight_deg` / `follow_chunk_end_straight_m` | 1.5 / 10 / 0.4 |
 | `boundary_recover_after_s` / `boundary_max_recoveries` / `boundary_recovery_advance_m` | 3 / 2 / 1.0 |
 | `hard_boundary_body_soft_side_m` / `_soft_front_m` / `_soft_nose_m` / `_soft_tail_m` / `hard_boundary_body_hard_m` | 0.35 / 0.55 / 0.40 / 0.30 / 0.10 |
-| `hard_boundary_back_m` / `hard_boundary_back_speed_mps` / `hard_boundary_back_timeout_s` | 0.30 / 0.10 / 5 |
+| `backout_m` / `slow_maneuver_mps` / `caution_speed_mps` / `hard_boundary_back_timeout_s` | 0.30 / 0.10 / 0.15 / 5 |
 | `hard_boundary_max_aborts` / `hard_boundary_spot_max` / `hard_boundary_spot_m` | 6 / 2 / 1.0 |
 | `hard_boundary_jump_m` / `hard_boundary_jump_hold_s` | 1.0 / 2.0 |
 | `spin_drift_m` | 0.15 |
