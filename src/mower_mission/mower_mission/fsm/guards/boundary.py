@@ -211,6 +211,7 @@ class BoundaryGuardMixin:
             self._hb_retrace_tick()
             return True
         self._hb_trail_add()
+        self._hb_grace_travel()
         hcal = self.phase == 'WAITING_FOR_RTK' and self._hcal is not None
         if self.phase not in HARD_BOUNDARY_PHASES and not hcal:
             self._hb_jump = None
@@ -272,7 +273,13 @@ class BoundaryGuardMixin:
             self._hcal_fail('%s at %s' % (what, where) if line is not None else
                             'left the mowing area by %.2f m at %s' % (out, where))
             return True
-        if not entry:
+        # a re-trip right after a recovery resume (field 2026-11-03): no spot strike yet, one
+        # more recovery with twice the margin; counted when that one is back inside
+        since = self._hb_grace_since() if not entry and line is None and mode is not None \
+            else None
+        grace = since is not None
+        self._hb_resumed = None
+        if not entry and not grace:
             self._hb_count += 1
             if pose is not None:
                 self._hb_spots.append((float(pose[0]), float(pose[1])))
@@ -299,6 +306,11 @@ class BoundaryGuardMixin:
             how = 'retrace the driven track'
         if entry:
             how = 'move inward first (no pivot), not counted'
+        margin = max(0.0, float(self.p.boundary_recover_margin_m))
+        if grace:
+            margin *= 2.0
+            how += ' (re-trip %.1f s after a recovery resume: escalated, margin %.2f m, ' \
+                   'no spot strike)' % (since, margin)
         self._log('error', 'BOUNDARY OUT: %s at %s in %s: cancel, zero, blade off, %s '
                            '(%d/%d this mission)'
                   % (what, where, self.phase, how, self._hb_count,
@@ -314,13 +326,16 @@ class BoundaryGuardMixin:
                                 'dock_purpose': self._dock_purpose, 'driven': 0.0,
                                 'last': tuple(pose),
                                 'prog': 0.0, 'prog_best': 0.0, 'prog_t': self._now,
-                                'inside_at': None,
+                                'inside_at': None, 'margin': margin, 'grace': bool(grace),
+                                'step': m.step if m is not None else None,
+                                'nogo_detour': m.nogo_detour if m is not None else None,
                                 'line': line[1].id if line is not None else None},
                          incident=('boundary', ox, oy, 'boundary out: %s in %s'
                                    % (what, self.phase)))
         self._loc = None
         Escape.pause_mission(self, follow)
         if m is not None:
+            m.nogo_detour = None          # its follow was cancelled: rejoined on resume
             m.pivot_done = None           # a cut-short leg-start pivot is pivoted again
         self._go(self.phase, 'boundary: %.2f m outside, stopping' % out)
         return True
@@ -404,10 +419,11 @@ class BoundaryGuardMixin:
         wmax = max(0.0, (v - float(p.hard_boundary_min_inner_mps)) / max(1e-3, half))
         self._fx.append(DriveCmd(s_ * v, max(-wmax, min(wmax, 1.5 * err))))
 
-    def _hb_inside(self, pose):
+    def _hb_inside(self, pose, clear=None):
         """(inside, out) for the running recovery: base_link mode = a fresh ~/outside_m
-        <= 1 mm; body mode = every body point at least hard_boundary_body_clear_m under its
-        limit (out = the worst point's outside distance)."""
+        <= 1 mm; body mode = every body point at least ``clear`` (default
+        hard_boundary_body_clear_m) under its limit (out = the worst point's outside
+        distance)."""
         k = self._hb
         if k.get('line') is not None:
             # boundary line trip: clear of the line by hard_boundary_body_clear_m (a line that
@@ -425,7 +441,9 @@ class BoundaryGuardMixin:
             return False, None
         # out = the worst-corner outside distance (2026-11-02: the trip point's distance was
         # logged instead - rear_left 0.523 while front_left was 0.655 out)
-        return ev['excess'] <= -float(self.p.hard_boundary_body_clear_m), max(ev['outs'].values())
+        if clear is None:
+            clear = float(self.p.hard_boundary_body_clear_m)
+        return ev['excess'] <= -clear, max(ev['outs'].values())
 
     def _hb_back_tick(self, pose):
         """Stock onBoundaryOut: hard_boundary_back_m straight (reverse, or forward for a rear
@@ -500,7 +518,10 @@ class BoundaryGuardMixin:
 
     def _hb_plan_tick(self, pose):
         k, p, mv = self._hb, self.p, self._hb['mv']
-        inside, out = self._hb_inside(pose)
+        # target (field 2026-11-03): boundary_recover_margin_m under the trip limit, not
+        # merely hard_boundary_body_clear_m (the resume re-tripped 5 s later)
+        clear = max(float(p.hard_boundary_body_clear_m), k.get('margin', 0.0))
+        inside, out = self._hb_inside(pose, clear)
         o = mv['from']
         moved = math.hypot(pose[0] - o[0], pose[1] - o[1])     # map / RTK, not wheel odom
         if self._hb_slip_tick(pose, exclude=(mv['name'],)):
@@ -522,14 +543,24 @@ class BoundaryGuardMixin:
         self._fx_now(DriveCmd(0.0, 0.0))   # out before the next (slow) plan_recovery
         if inside:                         # the whole planned move, not just the limit
             k['driven'], k['inside_at'] = moved, 0.0
-            self._log('info', 'boundary: inside after recovery move %d (%s %s, %.2f m)'
-                      % (k['moves'], mv['name'], why, moved))
+            self._log('info', 'boundary: inside after recovery move %d (%s %s, %.2f m; '
+                              '>= %.2f m under the limit)'
+                      % (k['moves'], mv['name'], why, moved, clear))
             self._hb_retraced()
             return
         self._log('info' if why == 'done' else 'warn',
-                  'boundary: recovery move %d (%s) %s after %.2f m: worst corner %.2f m out'
-                  % (k['moves'], mv['name'], why, moved, worst))
+                  'boundary: recovery move %d (%s) %s after %.2f m: worst corner %.2f m out%s'
+                  % (k['moves'], mv['name'], why, moved, worst,
+                     '' if out is None else ', short of the %.2f m margin' % clear))
         if self._hb_plan_start(pose):
+            return
+        if self._hb_inside(pose)[0]:
+            # under the limit but no admissible move (or the cap) for the full margin
+            k['driven'], k['inside_at'] = moved, 0.0
+            self._log('warn', 'boundary: inside after %d recovery moves but short of the '
+                              '%.2f m margin (no admissible move left): resuming'
+                      % (k['moves'], clear))
+            self._hb_retraced()
             return
         self._hb_stop()
         self._hb_needs_help('still %.2f m out (worst corner) after %d recovery moves'
@@ -569,3 +600,209 @@ class BoundaryGuardMixin:
         self._hb_stop()
         self._hb_needs_help(why, pose)
         return True
+
+    # ------------------------------------------------------------------
+    # resume after a recovery (field 2026-11-03 area 5, side slope roll 8-11 deg: the trip
+    # came during an edge-lap detour, so the resume point stayed at the chunk start 2 m
+    # back; the transit pivoted at the recovery spot and re-tripped 5 s later, and the
+    # spot rule stopped the mission)
+    # ------------------------------------------------------------------
+    def _hb_grace_travel(self):
+        r, pose = self._hb_resumed, self.inputs.pose
+        if r is None or pose is None:
+            return
+        r['dist'] += math.hypot(pose[0] - r['last'][0], pose[1] - r['last'][1])
+        r['last'] = (float(pose[0]), float(pose[1]))
+
+    def _hb_grace_since(self):
+        """Seconds since the last recovery resume while its grace window is open
+        (boundary_recover_grace_s and _grace_m of travel; not after an escalated one), else
+        None."""
+        r = self._hb_resumed
+        if r is None or not r['grace_ok']:
+            return None
+        dt = self._now - r['t']
+        if dt > float(self.p.boundary_recover_grace_s) or \
+                r['dist'] > float(self.p.boundary_recover_grace_m):
+            return None
+        return dt
+
+    def _hb_mark_resumed(self, k):
+        pose = self.inputs.pose
+        self._hb_resumed = None if pose is None or k.get('mode') is None else {
+            't': self._now, 'last': (float(pose[0]), float(pose[1])), 'dist': 0.0,
+            'grace_ok': not k.get('grace')}
+
+    def _hb_rejoin_index(self, k, pose):
+        """Local index of the interrupted MOWING leg to rejoin from ``pose`` by driving
+        forward along it (a follow or an edge-lap detour was running): the nearest leg pose
+        around the resume point within transit_gap_m, moved ahead along the leg until it is
+        no longer behind the robot. The leg heading there must be within 60 deg of the
+        robot's yaw (no pivot), or the pivot onto it must pass the footprint check
+        (boundary_recover_margin_m under the limits). None = no rejoin (a transit)."""
+        m, p = self.mission, self.p
+        if k.get('step') not in ('follow', 'nogo_detour') or pose is None or len(pose) < 3 \
+                or m is None or m.sub_i >= len(m.subpaths):
+            return None
+        sp = m.subpaths[m.sub_i]
+        last = self._seg_last()
+        frm = m.start_local
+        d = k.get('nogo_detour')
+        if d is not None:
+            frm = min(frm, int(d['from']))
+        lo, acc = frm, 0.0
+        while lo > 0 and acc < 1.0:
+            acc += geo.dist(sp[lo - 1], sp[lo])
+            lo -= 1
+        j = min(max(geo.nearest_index(sp, pose, lo, 3.0), 0), last)
+        if geo.dist(sp[j], pose) > float(p.transit_gap_m):
+            return None
+        while j < last:
+            h = geo.heading_of(sp, j)
+            if (sp[j][0] - pose[0]) * math.cos(h) + (sp[j][1] - pose[1]) * math.sin(h) >= 0.05:
+                break
+            j += 1
+        if j >= last or geo.dist(sp[j], pose) > float(p.transit_gap_m):
+            return None
+        h = geo.heading_of(sp, j)
+        if abs(geo.wrap_angle(h - float(pose[2]))) <= math.radians(60.0):
+            return j
+        aim = (pose[0] + math.cos(h), pose[1] + math.sin(h))
+        return j if self._hb_pivot_ok(pose, aim, k.get('mode')) else None
+
+    def _hb_rejoin(self, k):
+        """Resume the interrupted leg (preferred: the edge lap it was on) ahead of the robot,
+        offset boundary_recover_margin_m inward over edge_join_m, no leg-start pivot; an
+        interrupted edge-lap detour is re-planned from there. True = resumed."""
+        m, pose = self.mission, self.inputs.pose
+        j = self._hb_rejoin_index(k, pose)
+        if j is None:
+            return False
+        sp = m.subpaths[m.sub_i]
+        m.start_local = m.progress_local = j
+        d = k.get('nogo_detour')
+        if d is not None:
+            m.nogo_detoured.discard((m.area_idx, m.sub_i, d['end']))
+            if self._nogo_edge_detour(j, '%s (re-planned after a boundary recovery)'
+                                      % d['why']):
+                self._log('info', 'boundary: rejoining the edge-lap detour at pose %d' % j)
+                return True
+        margin = max(0.0, float(self.p.boundary_recover_margin_m))
+        sgn = self._hb_inward_side(sp, j, margin)
+        m.join = (m.sub_i, j, sgn, margin) if sgn and margin > 0.0 else None
+        turn = abs(geo.wrap_angle(geo.heading_of(sp, j) - float(pose[2])))
+        if turn <= math.radians(60.0):
+            m.pivot_done = (m.area_idx, m.sub_i, j)    # no pivot at the recovery spot
+        self._log('info', 'boundary: rejoining %s %d at pose %d (%.2f m ahead), %.2f m inward '
+                          'bias, %s'
+                  % ('edge lap' if self._edge_lap(m.sub_i) else 'sub-path', m.sub_i, j,
+                     geo.dist(sp[j], pose), margin if m.join else 0.0,
+                     'no pivot' if m.pivot_done else
+                     'pivot %.0f deg footprint-checked' % math.degrees(turn)))
+        self._dispatch()
+        return True
+
+    def _hb_inward_side(self, sp, j, off):
+        """+1 / -1: the side of leg pose ``j`` (left / right of its heading) that is further
+        from the region edge at ``off``; 0 when neither offset point is inside."""
+        if off <= 0.0:
+            return 0
+        polys = self._region()
+        h = geo.heading_of(sp, j)
+        best = None
+        for sgn in (1, -1):
+            x = sp[j][0] - math.sin(h) * sgn * off
+            y = sp[j][1] + math.cos(h) * sgn * off
+            if bbody.point_outside(x, y, polys) > 0.0:
+                continue
+            e = bbody.nearest_edge_point(x, y, polys)
+            c = e[2] if e is not None else 0.0
+            if best is None or c > best[0]:
+                best = (c, sgn)
+        return best[1] if best else 0
+
+    def _hb_resume_in_start(self, k):
+        """Before a transit from the recovery spot: a planned straight of
+        boundary_recover_resume_in_m (forward or reverse, the one the footprint scoring
+        gains most clearance with), then a footprint check of the pivot toward the transit
+        target (one more straight when it fails). True = the stage was started."""
+        p, pose = self.p, self.inputs.pose
+        if k.get('mode') is None or not self._hb_plan_on() or pose is None or \
+                k.get('resume_in') is not None:
+            return False
+        dist = float(p.boundary_recover_resume_in_m)
+        if dist <= 0.0:
+            return False
+        k['resume_in'] = 0
+        return self._hb_resume_in_next(pose)
+
+    def _hb_resume_in_target(self):
+        m = self.mission
+        if m is None:
+            return None
+        if self._hb['phase'] == 'TRANSIT' and m.transit_target is not None:
+            return m.transit_target
+        if m.sub_i < len(m.subpaths) and m.start_local < len(m.subpaths[m.sub_i]):
+            return m.subpaths[m.sub_i][m.start_local]
+        return None
+
+    def _hb_pivot_ok(self, pose, target, mode):
+        """The footprint of the pivot toward ``target`` stays boundary_recover_margin_m
+        under the ``mode`` trip limits (True also without a target / mode)."""
+        if target is None or mode is None:
+            return True
+        delta = geo.wrap_angle(math.atan2(target[1] - pose[1], target[0] - pose[0]) -
+                               float(pose[2]))
+        if abs(delta) < 0.05:
+            return True
+        w = math.copysign(max(0.25, abs(float(self.p.hard_boundary_pivot_rps))), delta)
+        margin = max(0.0, float(self.p.boundary_recover_margin_m))
+        for q in bbody.simulate(pose, 0.0, w, abs(delta / w), dt=0.2):
+            ev = self._hb_body_eval(q, mode)
+            if ev is not None and ev['excess'] > -margin:
+                return False
+        return True
+
+    def _hb_resume_in_next(self, pose):
+        k, p = self._hb, self.p
+        target = self._hb_resume_in_target()
+        if k['resume_in'] >= 1 and self._hb_pivot_ok(pose, target, k.get('mode')):
+            return False
+        if k['resume_in'] >= 2:
+            self._log('warn', 'boundary: the pivot toward the transit still nears the limit '
+                              'after %d resume straights: transit anyway' % k['resume_in'])
+            return False
+        v = min(abs(float(p.hard_boundary_back_speed_mps)), 0.10)
+        dist = float(p.boundary_recover_resume_in_m)
+        motions = {'forward': (v, 0.0, dist / v), 'reverse': (-v, 0.0, dist / v)}
+        rows = bbody.plan_recovery(pose, self._region(), motions,
+                                   float(p.boundary_recover_max_worsen_m),
+                                   keepouts=self._hb_keepouts(),
+                                   reverse_bias=float(p.boundary_recover_reverse_bias_m),
+                                   signed=True)
+        if not rows:
+            if k['resume_in'] == 0:
+                self._log('info', 'boundary: no resume straight gains clearance: transit')
+            return False
+        name, v, w, dur, end, peak = rows[0]
+        k['resume_in'] += 1
+        k['stage'], k['t'] = 'resume_in', self._now
+        k['mv'] = {'name': name, 'v': v, 'dur': dur, 'from': tuple(pose)}
+        self._go(self.phase, 'boundary: inward straight before the transit')
+        self._log('info', 'boundary: resume straight %d %s %.2f m before the transit (no pivot '
+                          'here; worst point ends %.2f m %s the edge)'
+                  % (k['resume_in'], name, dist, abs(end), 'inside' if end <= 0.0 else 'past'))
+        self._hb_resume_in_tick(pose)
+        return True
+
+    def _hb_resume_in_tick(self, pose):
+        k, p, mv = self._hb, self.p, self._hb['mv']
+        moved = math.hypot(pose[0] - mv['from'][0], pose[1] - mv['from'][1])
+        if moved < float(p.boundary_recover_resume_in_m) and \
+                self._now - k['t'] <= 2.0 * mv['dur'] + 2.0 and self._hb_inside(pose)[0]:
+            self._fx.append(DriveCmd(mv['v'], 0.0))
+            return
+        self._fx_now(DriveCmd(0.0, 0.0))
+        if self._hb_resume_in_next(pose):
+            return
+        self._hb_retraced()

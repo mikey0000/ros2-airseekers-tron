@@ -771,3 +771,162 @@ def test_trip_log_and_recovery_use_the_worst_corner_metric():
     assert 'rear_right' in trip and ('worst corner front_right %.2f m' % worst[1]) in trip
     assert abs(k['out0'] - worst[1]) < 1e-9
     assert abs(h.fsm._hb_inside((2.0, -0.14, math.radians(-8)))[1] - worst[1]) < 1e-9
+
+
+# ------------------------------------------- recovery margin + resume (field 2026-11-03)
+
+def slope_lap_h(detour=False, **params):
+    """Field 2026-11-03 area 5: edge lap inset 0.05 driven west along the y = 0 edge (the
+    edge on the robot's left), side slope roll 9 deg, sliding downhill until rear_left trips
+    (0.35 soft limit). ``detour``: the trip comes during an edge-lap no-go detour."""
+    h = mowing_h([line(4.5, 0.05, 0.5, 0.05, n=41), line(1, 3, 4, 3)],
+                 (4.5, 0.05, math.pi), **params)
+    i = h.fsm.inputs
+    i.tilt_roll_deg, i.tilt_stamp = -9.0, h.t
+    m = h.fsm.mission
+    assert h.name == 'MOWING'
+    if detour:
+        m.step = 'nogo_detour'
+        m.nogo_detour = {'from': 6, 'end': 30, 'why': 'no-go zone / static mark on the edge '
+                                                       'lap ahead'}
+    x, y = 4.5, 0.05
+    while h.fsm._hb is None and x > 1.0:
+        x, y = x - 0.05, y - 0.012
+        i.tilt_stamp = h.t
+        feed(h, (x, y, math.pi))
+        h.tick()
+    assert h.fsm._hb is not None and h.fsm._hb['mode'] == 'soft'
+    assert h.fsm._hb_body_eval(h.fsm.inputs.pose, 'soft')['point'] == 'rear_left'
+    return h
+
+
+def recover(h, max_ticks=400):
+    """Integrate the recovery (and any resume straight) until the guard lets go."""
+    for _ in range(max_ticks):
+        if h.fsm._hb is None:
+            break
+        h.fsm.inputs.tilt_stamp = h.t
+        integrate(h, max_ticks=1)
+    assert h.fsm._hb is None
+
+
+def drive_follow(h, metres):
+    """Drive the pending follow's poses for ``metres``; True = no boundary trip."""
+    for _ in range(60):
+        a = h.fsm._action
+        if h.fsm._hb is not None or h.name == 'STUCK_NEEDS_HELP':
+            return False
+        if a is not None and a.name == f.ACT_FOLLOW:
+            break
+        if a is not None and a.name == f.ACT_SPIN:
+            # the footprint-checked rejoin pivot: turn in 10 steps, no trip on the way
+            x, y, yaw = h.fsm.inputs.pose
+            delta = h.goal(f.ACT_SPIN)['angle']
+            for _k in range(10):
+                yaw += delta / 10.0
+                h.fsm.inputs.tilt_stamp = h.t
+                feed(h, (x, y, yaw))
+                h.tick()
+                if h.fsm._hb is not None:
+                    return False
+            h.finish(f.ACT_SPIN, f.SUCCEEDED)
+        h.tick()
+    assert h.pending_action(f.ACT_FOLLOW)
+    poses = h.goal(f.ACT_FOLLOW)['poses']
+    acc, prev = 0.0, h.fsm.inputs.pose
+    for q in poses[1:]:
+        yaw = math.atan2(q[1] - prev[1], q[0] - prev[0])
+        acc += math.hypot(q[0] - prev[0], q[1] - prev[1])
+        prev = (q[0], q[1], yaw)
+        h.fsm.inputs.tilt_stamp = h.t
+        feed(h, prev)
+        h.tick()
+        if h.fsm._hb is not None or h.name == 'STUCK_NEEDS_HELP':
+            return False
+        if acc >= metres:
+            break
+    return True
+
+
+@pytest.mark.parametrize('detour', [False, True])
+def test_field_slope_rear_left_trip_recovers_with_margin_and_rejoins_the_lap(detour):
+    h = slope_lap_h(detour=detour)
+    m0 = h.mark()
+    recover(h)
+    logs = [e.text for e in h.since(m0, f.Log)]
+    inside = [t for t in logs if 'inside after recovery move' in t]
+    assert inside, logs
+    # the recovery ended >= boundary_recover_margin_m under the limit (pose at the end of
+    # the planned moves = before the rejoin follow started)
+    assert any('>= 0.10 m under the limit' in t for t in inside)
+    assert h.name == 'MOWING' and h.fsm.mission.sub_i == 0, logs
+    assert not any('MOWING -> TRANSIT' in t for t in logs), logs
+    assert any('boundary: rejoining edge lap 0' in t or 'rejoining sub-path 0' in t
+               for t in logs), logs
+    assert drive_follow(h, 1.0)
+    assert h.name == 'MOWING' and h.fsm._hb_count == 1
+
+
+def test_recovery_margin_is_reached_before_the_resume():
+    h = slope_lap_h()
+    for _ in range(400):
+        k = h.fsm._hb
+        if k is None:
+            break
+        if k.get('checked'):
+            ev = h.fsm._hb_body_eval(h.fsm.inputs.pose, 'soft')
+            assert ev['excess'] <= -0.10 + 1e-6
+            break
+        h.fsm.inputs.tilt_stamp = h.t
+        integrate(h, max_ticks=1)
+
+
+def retrip(h, dy=-0.03):
+    """Slide the robot out again from where it is (same heading) until it trips."""
+    x, y, yaw = h.fsm.inputs.pose
+    for _ in range(60):
+        if h.fsm._hb is not None:
+            return True
+        x, y = x + 0.02 * math.cos(yaw), y + dy
+        h.fsm.inputs.tilt_stamp = h.t
+        feed(h, (x, y, yaw))
+        h.tick()
+    return h.fsm._hb is not None
+
+
+def test_retrip_within_the_grace_escalates_instead_of_stuck():
+    h = slope_lap_h()
+    recover(h)
+    assert h.name == 'MOWING'
+    m0 = h.mark()
+    assert retrip(h)
+    assert abs(h.fsm._hb['margin'] - 0.20) < 1e-9 and h.fsm._hb['grace']
+    recover(h)
+    logs = [e.text for e in h.since(m0, f.Log)]
+    assert h.name != 'STUCK_NEEDS_HELP', logs
+    assert any('escalated, margin 0.20 m' in t for t in logs)
+    assert h.fsm._hb_count == 2 and len(h.fsm._hb_spots) == 1   # counted, no spot strike
+
+
+def test_genuine_second_excursion_after_the_grace_still_stops():
+    h = slope_lap_h()
+    recover(h)
+    assert h.name == 'MOWING'
+    h.fsm._now += 10.5                 # past boundary_recover_grace_s
+    h.t = h.fsm._now
+    h.fsm.inputs.tilt_stamp = h.t
+    assert retrip(h)
+    assert not h.fsm._hb['grace']
+    recover(h)
+    assert h.name == 'STUCK_NEEDS_HELP'
+    assert 'boundary' in h.fsm.sub_state
+
+
+def test_signed_plan_ranks_poses_already_inside_by_clearance():
+    polys = [SQ]
+    v = 0.1
+    motions = {'forward': (v, 0.0, 3.0), 'reverse': (-v, 0.0, 3.0)}
+    # facing the y = 0 edge from 0.5 m inside: reversing gains clearance
+    rows = bb.plan_recovery((2.5, 0.9, -math.pi / 2), polys, motions, signed=True)
+    assert rows and rows[0][0] == 'reverse'
+    assert bb.plan_recovery((2.5, 0.9, -math.pi / 2), polys, motions) == []

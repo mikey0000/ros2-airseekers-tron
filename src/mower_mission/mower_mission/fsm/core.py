@@ -143,6 +143,7 @@ class MissionFSM(PreviewMixin,
         self._hb_spots = []                 # [(x, y)] excursion origins of this mission
         self._hb_trail = []                 # [(x, y)] recent driven EKF track, oldest first
         self._hb_jump = None                # (last fresh boundary value, t, jump hold since)
+        self._hb_resumed = None             # last recovery resume: grace window (t, travel)
         self._hb_entry = False              # first boundary reading after START / resume
         self._spin_from = None              # (token, x, y) where the running Spin started
         self._spin_drifts = {}              # coverage leg key -> Spin drifts

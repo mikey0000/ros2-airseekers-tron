@@ -3,8 +3,8 @@
 
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
-from mower_mission.fsm.common import (ABORTED, ACT_SPIN, CancelActions, DriveCmd, ZeroBurst,
-    geo, math)
+from mower_mission.fsm.common import (ABORTED, ACT_SPIN, DOCK_PHASES, CancelActions, DriveCmd,
+    ZeroBurst, geo, math)
 from mower_mission.fsm.escape import Escape
 from mower_mission.fsm.guards.boundary import HB_RETRACE
 
@@ -169,6 +169,9 @@ class SpinDriftGuardMixin:
         if k['stage'] == 'plan':
             self._hb_plan_tick(pose)
             return
+        if k['stage'] == 'resume_in':
+            self._hb_resume_in_tick(pose)
+            return
         if k.get('slip') is None:
             self._hb_slip_reset(pose)
         if self._hb_slip_tick(pose):
@@ -226,31 +229,44 @@ class SpinDriftGuardMixin:
 
     def _hb_retraced(self):
         k = self._hb
+        if not k.get('checked'):
+            k['checked'] = True
+            ox, oy = k['origin']
+            if k.get('grace'):
+                # the escalated re-trip after a resume: counted now, no spot strike
+                self._hb_count += 1
+            n, lim = self._hb_count, int(self.p.hard_boundary_max_aborts)
+            if not k.get('counted', True):
+                n, lim = 0, max(1, lim)
+            spot = 0 if not k.get('counted', True) or k.get('grace') else sum(
+                1 for q in self._hb_spots
+                if math.hypot(q[0] - ox, q[1] - oy) <= float(self.p.hard_boundary_spot_m))
+            slim = int(self.p.hard_boundary_spot_max)
+            if slim > 0 and spot >= slim:
+                self._hb_stop()
+                self._hb_needs_help('left the boundary %d times within %.1f m'
+                                    % (spot, float(self.p.hard_boundary_spot_m)), (ox, oy))
+                return
+            past = k['driven'] - k['inside_at'] if k['inside_at'] is not None else 0.0
+            self._log('info', 'boundary: back inside after reversing %.2f m (%.2f m past the '
+                              're-entry%s, excursion %d/%d)'
+                      % (k['driven'], past,
+                         '' if past >= float(self.p.hard_boundary_retrace_extra_m)
+                         else ', track / max reached', n, lim))
+            if n >= lim:
+                self._hb_stop()
+                self._hb_needs_help('left the boundary %d times in this mission' % n, (ox, oy))
+                return
+            if k['phase'] not in DOCK_PHASES and self._hb_needs_transit(k) and \
+                    self._hb_resume_in_start(k):
+                return                        # inward straight first, then back here
         self._hb_stop()
         self._hb_trail = []
-        ox, oy = k['origin']
-        n, lim = self._hb_count, int(self.p.hard_boundary_max_aborts)
-        if not k.get('counted', True):
-            n, lim = 0, max(1, lim)
-        spot = 0 if not k.get('counted', True) else sum(1 for q in self._hb_spots
-                   if math.hypot(q[0] - ox, q[1] - oy) <= float(self.p.hard_boundary_spot_m))
-        slim = int(self.p.hard_boundary_spot_max)
-        if slim > 0 and spot >= slim:
-            self._hb_needs_help('left the boundary %d times within %.1f m'
-                                % (spot, float(self.p.hard_boundary_spot_m)), (ox, oy))
-            return
-        past = k['driven'] - k['inside_at'] if k['inside_at'] is not None else 0.0
-        self._log('info', 'boundary: back inside after reversing %.2f m (%.2f m past the '
-                          're-entry%s, excursion %d/%d)'
-                  % (k['driven'], past, '' if past >= float(self.p.hard_boundary_retrace_extra_m)
-                     else ', track / max reached', n, lim))
-        if n >= lim:
-            self._hb_needs_help('left the boundary %d times in this mission' % n, (ox, oy))
-            return
         why = 'left the boundary (%s)' % k.get('what', '%.2f m outside' % k['out0'])
         if Escape.resume_dock_or_idle(self, k, 'resuming after the boundary retrace',
                                       'boundary retrace: nothing to resume'):
             return
+        self._hb_mark_resumed(k)
         m = self.mission
         if k['phase'] == 'TRANSIT' and k.get('entry'):
             m.detour = None
@@ -264,9 +280,13 @@ class SpinDriftGuardMixin:
             self._transit_abort(why)
             return
         m.detour = None
+        # the recovery moved the robot along / off the leg (forward for a rear trip): rejoin
+        # it ahead (an edge lap first, its detour re-planned), not a transit back to the
+        # stale resume point (field 2026-11-03: MOWING -> TRANSIT after an edge detour trip)
+        if self._hb_rejoin(k):
+            return
         pose = self.inputs.pose
-        if k['follow'] and pose is not None and \
-                m.sub_i < len(m.subpaths):
+        if k['follow'] and pose is not None and m.sub_i < len(m.subpaths):
             # the recovery moved back along the leg: resume from the robot's projection (a
             # leg-start pivot, not a blade-off transit back to where the trip happened)
             sp = m.subpaths[m.sub_i]
@@ -276,6 +296,20 @@ class SpinDriftGuardMixin:
                 if geo.dist(back[j], pose) <= float(self.p.transit_gap_m):
                     m.start_local = m.progress_local = j
         self._dispatch()
+
+    def _hb_needs_transit(self, k):
+        """The resume after this recovery starts a transit from the recovery spot."""
+        m = self.mission
+        if m is None or m.area_idx is None or not m.subpaths or \
+                m.sub_i >= len(m.subpaths):
+            return False
+        if k['phase'] == 'TRANSIT':
+            return not k.get('entry') and m.detour is None
+        if self._hb_rejoin_index(k, self.inputs.pose) is not None:
+            return False
+        sp = m.subpaths[m.sub_i]
+        return geo.needs_transit(self.inputs.pose, sp[min(m.start_local, len(sp) - 1)],
+                                 self.p.transit_gap_m)
 
     def _hb_needs_help(self, why, pose):
         """Like the stuck guard's give-up (same latched phase, same operator clear); reported

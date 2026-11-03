@@ -1200,6 +1200,19 @@ class Params:
     boundary_recover_pivot_rad: float = 0.35
     boundary_recover_max_moves: int = 4
     boundary_recover_reverse_bias_m: float = 0.02
+    # recovery target + resume (field 2026-11-03 area 5, side slope: the recovery ended just
+    # under the trip limit, the resume transit pivoted on the spot and re-tripped 5 s later ->
+    # "left the boundary 2 times within 1.0 m"). Planned moves go on until the worst corner
+    # is _margin_m under its limit (excess <= -margin). The resume rejoins the interrupted
+    # leg ahead of the robot (an edge-lap detour included) offset _margin_m inward, no
+    # leg-start pivot; when it needs a transit instead, a planned straight of _resume_in_m
+    # (forward or reverse, the planner's scoring) first, and a pivot toward the transit is
+    # footprint-checked before it starts. A trip within _grace_s and _grace_m of travel after
+    # a resume is no spot strike: one more recovery with twice the margin, then counted.
+    boundary_recover_margin_m: float = 0.10
+    boundary_recover_resume_in_m: float = 0.30
+    boundary_recover_grace_s: float = 10.0
+    boundary_recover_grace_m: float = 1.0
     # boundary_recover_slip_check: every recovery motion compares the wheel odometry distance
     # (Inputs.wheel_xy) with the map pose displacement while RTK is fixed; wheel > _ratio x
     # real after >= _min_m of wheel = wheel slip: the motion stops, the next-best planned

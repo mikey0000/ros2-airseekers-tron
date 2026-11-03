@@ -262,7 +262,10 @@ class _LocalRegion:
                     inside = not inside
         return inside, math.sqrt(best)
 
-    def worst(self, pose):
+    def worst(self, pose, signed=False):
+        """(name, m) of the worst body point: its outside distance, or with ``signed`` its
+        signed distance (inside = minus the distance to the nearest region edge, capped at
+        the local radius), so poses that are all inside still rank by their clearance."""
         x, y, yaw = float(pose[0]), float(pose[1]), float(pose[2])
         c, s = math.cos(yaw), math.sin(yaw)
         best = None
@@ -272,7 +275,7 @@ class _LocalRegion:
             for pp in self.polys:
                 inside, d = self._query(px, py, pp)
                 if inside:
-                    o = 0.0
+                    o = -min(d, self.far) if signed else 0.0
                     break
                 o = min(o, d)
             if o > self.far:                 # nothing near: the full scan (exact, rare)
@@ -287,14 +290,17 @@ class _LocalRegion:
 
 
 def plan_recovery(pose, polys, motions, max_worsen=0.05, points=None, keepouts=(),
-                  exclude=(), reverse_bias=0.02, radius=2.0):
+                  exclude=(), reverse_bias=0.02, radius=2.0, signed=False):
     """Score the candidate ``motions`` (name -> (v, w, duration)) by the worst-corner outside
     distance along the simulated footprint. A candidate is admissible when it never exceeds
     the current worst by more than ``max_worsen`` (a pivot: never exceeds it at all) and ends
     lower than it started. Returns a list of (name, v, w, duration, end_m, peak_m), best
     first (lowest end; reverse moves get ``reverse_bias`` of credit: they back off the edge
     rather than driving along it), or [] when nothing admissible is left. Only region /
-    keepout edges within ``radius`` of ``pose`` are scanned (_LocalRegion; same result)."""
+    keepout edges within ``radius`` of ``pose`` are scanned (_LocalRegion; same result).
+    ``signed``: score by the signed worst-point distance (inside = minus its clearance), so
+    a pose already inside still picks the motion that gains the most clearance (the resume
+    straight after a recovery, 2026-11-03)."""
     if not any(len(p) >= 3 for p in polys):
         return []
     pts = points or body_points()
@@ -302,15 +308,15 @@ def plan_recovery(pose, polys, motions, max_worsen=0.05, points=None, keepouts=(
     travel = max([abs(motions[n][0]) * motions[n][2] for n in todo] or [0.0])
     reach = travel + max(math.hypot(bx, by) for bx, by, _k in pts.values())
     region = _LocalRegion(pose, polys, keepouts, pts, reach, radius)
-    cur = region.worst(pose)[1]
+    cur = region.worst(pose, signed)[1]
     if not math.isfinite(cur):
         return []
     rows = []
     for name in todo:
         v, w, dur = motions[name]
-        peak, end = 0.0, cur
+        peak, end = (-math.inf if signed else 0.0), cur
         for q in simulate(pose, v, w, dur):
-            end = region.worst(q)[1]
+            end = region.worst(q, signed)[1]
             peak = max(peak, end)
         cap = cur + 1e-6 if v == 0.0 else cur + max(0.0, max_worsen)
         if peak > cap or end >= cur - 1e-3:
