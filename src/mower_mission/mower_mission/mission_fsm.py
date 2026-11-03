@@ -19,7 +19,7 @@ from mower_mission.fsm.common import (  # noqa: F401
     PREVIEW_PHASES, Params, PublishAreaSettings, PublishPlan, PublishPreviewSummary,
     PublishResumeAvailable, PublishRoute, PublishStatus, PublishTrajectory, REJECTED,
     ROUTE_CORNER_TOL_RAD, ROUTE_ORDERS, RecordIncident, ResetStuckGuard, ResumeCursor,
-    SEGMENT_RING, SEGMENT_SWATH, SRV_ADD_AREA, SRV_CHARGING, SRV_CLEAR_COSTMAPS,
+    SAFETY_GUARDS, SEGMENT_RING, SEGMENT_SWATH, SRV_ADD_AREA, SRV_CHARGING, SRV_CLEAR_COSTMAPS,
     SRV_CLEAR_ESTOP, SRV_CUTTER_HEIGHT, SRV_GET_AREA, SRV_GET_AREA_SETTINGS, SRV_PLAN_ROUTE,
     SRV_PROMOTE_OBSTACLE, SRV_SET_CHANNEL, SRV_SET_PARAMS, STATE_AUTONOMOUS, STATE_CODES,
     STATE_IDLE, STATE_MANUAL_MOWING, STATE_NULL, STATE_RECORDING, STEREO_STALE_SUB,
@@ -28,7 +28,8 @@ from mower_mission.fsm.common import (  # noqa: F401
     BATTERY_TEMP_HIGH, BATTERY_TEMP_LOW, Notice, SRV_POWEROFF, SaveRecordingQuality,
     TIMEOUT, TURN_TYPES, UNAVAILABLE, ZeroBurst, _Pending,
     _STEREO_STALE_RE, _STILL_V, _STILL_W, _along, _seg_dist, absolute_to_local, bbody, bisect,
-    blade_allowed, blocked_text, condition_plan, coverage_route_params, dataclass, field, geo,
+    blade_allowed, blocked_text, condition_plan, coverage_route_params, dataclass,
+    disabled_safety_guards, field, geo,
     json, math, nav2_down_why, parse_stereo_stale, pcond, re, rgeo,
     spin_target_yaw, subpath_offsets,
 )

@@ -1460,6 +1460,17 @@ class Params:
         return p
 
 
+# Safety guards a one-line yaml edit can switch off (review 2026-11-02): the mission node logs
+# a WARN at startup for each one that is false.
+SAFETY_GUARDS = ('hard_boundary', 'stuck_guard', 'tilt_guard', 'loc_hold',
+                 'manual_blade_requires_enable')
+
+
+def disabled_safety_guards(p):
+    """Names in SAFETY_GUARDS that ``p`` (Params) has switched off."""
+    return [n for n in SAFETY_GUARDS if not getattr(p, n)]
+
+
 @dataclass
 class Mission:
     """In-memory state of a running mowing session (rebuilt from the cursor

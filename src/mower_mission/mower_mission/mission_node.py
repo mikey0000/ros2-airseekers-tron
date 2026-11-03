@@ -267,6 +267,8 @@ class MissionNode(Node):
         self.fsm = fsm_mod.MissionFSM(fsm_mod.Params.from_dict(fsm_params), cursor=cursor,
                                       now=self._clk.now(),
                                       alternate_counts=self._load_alternate())
+        for name in fsm_mod.disabled_safety_guards(self.fsm.p):
+            self.get_logger().warn('safety guard DISABLED by config: %s is false' % name)
         self.fsm.clock = self._clk.now   # send-time clock of request deadlines (sim time)
         self.fsm.effect_sink = self._execute   # _fx_now: e.g. a stop ahead of a slow plan
         # Battery settings are applied live (GUI Settings -> Battery pushes them).
