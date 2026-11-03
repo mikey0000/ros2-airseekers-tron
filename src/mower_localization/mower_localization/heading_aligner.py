@@ -79,7 +79,6 @@ import json
 import math
 import struct
 import threading
-import time
 
 import rclpy
 from rclpy.node import Node
@@ -94,6 +93,7 @@ from tf2_msgs.msg import TFMessage
 
 from mower_localization import heading_logic as hl
 from mower_localization.static_tf import StaticRotations
+from mower_common.clock import node_clock
 from mower_common.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
                                          parse_odometry)
 
@@ -151,6 +151,8 @@ class HeadingAligner(Node):
 
     def __init__(self):
         super().__init__('heading_aligner')
+        # node clock: the pump's receipt times are sim time under use_sim_time
+        self._clk_now = node_clock(self).now
         d = self.declare_parameter
         d('imu_topic', '/imu/data')
         d('output_topic', '/imu/data_aligned')
@@ -272,7 +274,7 @@ class HeadingAligner(Node):
             rec = hl.load_record(self._offset_file)
             off = None if rec is None else rec['offset']
             if off is not None:
-                self.est.load_persisted(off, time.monotonic(), record=rec)
+                self.est.load_persisted(off, self._clk_now(), record=rec)
                 self.src.restore(rec['imu_yaw'], rec.get('wit_yaw'))
                 self.get_logger().info('persisted heading offset %.1f deg from %s (low quality '
                                        'until dock/COG)' % (math.degrees(off), self._offset_file))
@@ -364,7 +366,7 @@ class HeadingAligner(Node):
 
     # ------------------------------------------------------------------ IMU (periodic thread)
     def _imu_tick(self):
-        now = time.monotonic()
+        now = self._clk_now()
         if self._low_power and now - self._imu_polled < self._imu_idle_period - 1e-3:
             return
         self._imu_polled = now
@@ -401,7 +403,7 @@ class HeadingAligner(Node):
         self._imu_pub.publish(out)
 
     def _on_stereo(self, data):
-        now = time.monotonic()
+        now = self._clk_now()
         key = bytes(data[12:16])
         if key != self._st_tail_key:
             self._st_tail = hl.imu_tail_offset(data)
@@ -417,7 +419,7 @@ class HeadingAligner(Node):
     def _stereo_tick(self):
         if self._stereo_sub is None:
             return
-        now = time.monotonic()
+        now = self._clk_now()
         if self._low_power and now - self._stereo_polled < self._stereo_idle_period - 1e-3:
             return
         self._stereo_polled = now
@@ -431,13 +433,13 @@ class HeadingAligner(Node):
     # ------------------------------------------------------------------ sampled inputs
     def _on_odom(self, msg):
         tw = msg.twist.twist
-        now = time.monotonic()
+        now = self._clk_now()
         self._odom = (now, tw.linear.x, tw.angular.z)
         p = msg.pose.pose.position
         self.est.on_odom(now, p.x, p.y)       # stationary hold: motion without GNSS
 
     def _update_rest(self):
-        now = time.monotonic()
+        now = self._clk_now()
         od = self._odom
         still = (od is not None and now - od[0] < 0.5 and abs(od[1]) < self._rest_v
                  and abs(od[2]) < self._rest_w)
@@ -461,16 +463,16 @@ class HeadingAligner(Node):
     def _on_cmd(self, data):
         v = _parse_twist(data)
         if v is not None:
-            self.est.on_cmd(time.monotonic(), v[0], v[1])
+            self.est.on_cmd(self._clk_now(), v[0], v[1])
 
     def _on_gps(self, msg):
         p = msg.pose.pose.position
-        res = self.est.on_gps(time.monotonic(), p.x, p.y, msg.pose.covariance[0])
+        res = self.est.on_gps(self._clk_now(), p.x, p.y, msg.pose.covariance[0])
         if res is not None:
             self._report(res)
 
     def _on_gnss(self, msg):
-        now = time.monotonic()
+        now = self._clk_now()
         self.est.on_fix_type(now, int(msg.fix_type), self._rtk_heading(now))
 
     def _rtk_heading(self, now):
@@ -490,10 +492,10 @@ class HeadingAligner(Node):
         return hl.rtk_heading_enu(hd[1], self._baseline_yaw, conv)
 
     def _on_heading(self, msg):
-        self._heading = (time.monotonic(), float(msg.data))
+        self._heading = (self._clk_now(), float(msg.data))
 
     def _on_heading_valid(self, msg):
-        self._heading_valid = (time.monotonic(), bool(msg.data))
+        self._heading_valid = (self._clk_now(), bool(msg.data))
 
     def _on_fix(self, msg):
         if math.isfinite(msg.latitude) and math.isfinite(msg.longitude) and \
@@ -504,7 +506,7 @@ class HeadingAligner(Node):
         docked = bool(msg.is_charging) or bool(msg.is_docking_done)
         if self._use_dock:
             before = self.est.source
-            self.est.on_docked(time.monotonic(), docked)
+            self.est.on_docked(self._clk_now(), docked)
             if self.est.source != before:
                 self.get_logger().info(self.est.last_event)
         else:
@@ -561,7 +563,7 @@ class HeadingAligner(Node):
         self._lookup_stereo_tf()
 
     def _status_tick(self):
-        now = time.monotonic()
+        now = self._clk_now()
         with self._lock:
             self.est.poll_verify(now)       # the continuity-check timeout needs no input
             st = self.est.status(now)

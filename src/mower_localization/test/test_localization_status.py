@@ -271,3 +271,46 @@ class TestSigmaGate:
     def test_status_reports_threshold(self):
         sim = self._fixed_with_cov(0.01)
         assert sim.s.status(sim.t)['sigma_ok_m'] == 0.15
+
+
+class TestNoRtk:
+    def test_dropout_reports_stale_then_lost_while_stopped(self):
+        sim = _Sim()
+        sim.fixed()
+        sim.drive(FIXED, 1.0)
+        assert sim.verdict()[0] == 'ok'
+        sim.hold(None, 3.0)                  # receiver silent, mower stopped
+        assert sim.s.rtk_class(sim.t) == 'stale'
+        st = sim.s.status(sim.t)
+        assert st['rtk'] == 'stale' and st['no_rtk_s'] == pytest.approx(3.0, abs=0.15)
+        assert sim.verdict()[0] == 'ok'      # drift still tiny, not lost yet
+        sim.hold(None, 28.0)
+        state, reason = sim.verdict()
+        assert state == 'lost' and reason.startswith('no RTK for 31 s'), reason
+
+    def test_float_counts_as_rtk(self):
+        sim = _Sim()
+        sim.fixed()
+        sim.hold(FLOAT, 40.0)
+        assert sim.verdict()[0] == 'ok'
+        assert sim.s.status(sim.t)['no_rtk_s'] is None
+
+    def test_single_for_too_long_is_lost(self):
+        sim = _Sim()
+        sim.fixed()
+        sim.hold('um960=connected solution=SINGLE sats=20/30', 31.0)
+        assert sim.verdict()[0] == 'lost'
+
+    def test_fixed_again_recovers(self):
+        sim = _Sim()
+        sim.fixed()
+        sim.hold(None, 40.0)
+        assert sim.verdict()[0] == 'lost'
+        sim.fixed()
+        assert sim.verdict()[0] == 'ok'
+
+    def test_gate_off(self):
+        sim = _Sim(lost_after_s=0.0)
+        sim.fixed()
+        sim.hold(None, 60.0)
+        assert sim.verdict()[0] == 'ok'

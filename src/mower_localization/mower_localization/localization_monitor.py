@@ -25,7 +25,6 @@ Published
 
 import json
 import threading
-import time
 
 import rclpy
 from rclpy.node import Node
@@ -35,6 +34,7 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
 from mower_localization import localization_status_logic as lsl
+from mower_common.clock import node_clock
 from mower_common.sub_pump import PeriodicRunner, SubscriptionPump, parse_odometry
 
 
@@ -42,6 +42,8 @@ class LocalizationMonitor(Node):
 
     def __init__(self):
         super().__init__('localization_monitor')
+        # node clock: the pump's receipt times are sim time under use_sim_time
+        self._clk_now = node_clock(self).now
         d = self.declare_parameter
         d('status_topic', '/localization/status')
         d('fix_status_topic', '/fix_status')
@@ -111,7 +113,7 @@ class LocalizationMonitor(Node):
             self.est.on_heading_status({})
 
     def _tick(self):
-        now = time.monotonic()
+        now = self._clk_now()
         with self._lock:
             self._pump.poll()
             st = self.est.status(now)

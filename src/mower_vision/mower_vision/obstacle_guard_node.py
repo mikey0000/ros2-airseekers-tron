@@ -81,6 +81,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
 
+from mower_common.clock import node_clock
 from mower_common.sub_pump import SubscriptionPump, parse_odometry
 from sensor_msgs.msg import CameraInfo
 from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy,
@@ -539,9 +540,9 @@ class ObstacleGuard(Node):
         size = self._sizes.get(frame_id)
         return with_image_size(self.cfg, *size) if size else self.cfg
 
-    @staticmethod
-    def _now() -> float:
-        return time.monotonic()
+    def _now(self) -> float:
+        # node clock: the pump's receipt times are sim time under use_sim_time
+        return node_clock(self).now()
 
     def _publish_close(self, close: bool):
         self.close_pub.publish(Bool(data=bool(close)))

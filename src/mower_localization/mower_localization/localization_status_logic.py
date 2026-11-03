@@ -9,7 +9,10 @@ one verdict the mission layer acts on:
 ``ok``        estimated position error <= ``drift_budget_m``
 ``degraded``  over budget but <= ``lost_drift_m``: mission holds (blade off, stop) and
               resumes on its own once RTK FIXED is back (the estimate resets)
-``lost``      over ``lost_drift_m``, never had RTK FIXED, or no map-frame pose at all
+``lost``      over ``lost_drift_m``, never had RTK FIXED, no map-frame pose at all, or no
+              RTK (FIXED or FLOAT) for more than ``lost_after_s`` whatever the drift
+              estimate says: the distance model stops growing once the mower stops, so
+              a held mower would otherwise stay ``degraded`` through any outage
 
 Drift model (deliberately explicit, not the EKF covariance): robot_localization's pose
 covariance grows with the hand-set process noise, not with the real dead-reckoning error,
@@ -57,6 +60,7 @@ class StatusParams:
     vio_timeout_s: float = 1.0          # /odometry/vio_gated older -> VIO not active
     max_step_m: float = 1.0             # odom pose step larger than this = jump, not travel
     loc_sigma_ok_m: float = 0.15        # ok also needs ekf_map xy sigma <= this (<= 0 = off)
+    lost_after_s: float = 30.0          # no RTK FIXED/FLOAT this long -> lost (<= 0 = off)
 
 
 class LocalizationStatus:
@@ -66,6 +70,7 @@ class LocalizationStatus:
         self.p = params or StatusParams()
         self.rtk = None              # last rtk_quality class from /fix_status
         self.rtk_t = None
+        self.rtk_good_t = None       # last /fix_status with an RTK class (FIXED or FLOAT)
         self.fixed_since = None      # start of the current FIXED run
         self.last_fixed_t = None     # last time the estimate was reset by a confirmed FIXED
         self.dist_since_fixed = 0.0
@@ -84,6 +89,8 @@ class LocalizationStatus:
         if cls is None:
             return
         self.rtk, self.rtk_t = cls, now
+        if cls in (rq.RTK_FIXED, rq.RTK_FLOAT):
+            self.rtk_good_t = now
         if cls == rq.RTK_FIXED:
             if self.fixed_since is None:
                 self.fixed_since = now
@@ -128,6 +135,12 @@ class LocalizationStatus:
         return (self.rtk_class(now) == rq.RTK_FIXED and self.fixed_since is not None
                 and now - self.fixed_since >= self.p.fixed_confirm_s)
 
+    def no_rtk_s(self, now):
+        """Seconds without a fresh RTK FIXED/FLOAT class, None while one is current."""
+        if self.rtk_class(now) in (rq.RTK_FIXED, rq.RTK_FLOAT) or self.rtk_good_t is None:
+            return None
+        return now - self.rtk_good_t
+
     def vio_active(self, now):
         return self.vio_t is not None and now - self.vio_t <= self.p.vio_timeout_s
 
@@ -149,6 +162,9 @@ class LocalizationStatus:
         rtk = self.rtk_class(now)
         if est is None:
             return STATE_LOST, 'no RTK FIXED since start (rtk %s)' % rtk
+        no_rtk = self.no_rtk_s(now)
+        if no_rtk is not None and p.lost_after_s > 0.0 and no_rtk > p.lost_after_s:
+            return STATE_LOST, 'no RTK for %.0f s (rtk %s, drift %.2f m)' % (no_rtk, rtk, est)
         if est > p.lost_drift_m:
             return STATE_LOST, 'estimated drift %.2f m > %.2f m (rtk %s)' % (
                 est, p.lost_drift_m, rtk)
@@ -179,6 +195,7 @@ class LocalizationStatus:
             'state_age_s': r(now - self.state_since, 1),
             'rtk': self.rtk_class(now),
             'rtk_age_s': r(None if self.rtk_t is None else now - self.rtk_t, 1),
+            'no_rtk_s': r(self.no_rtk_s(now), 1),
             'since_fixed_s': r(None if self.last_fixed_t is None else now - self.last_fixed_t, 1),
             'dist_since_fixed_m': r(self.dist_since_fixed),
             'est_drift_m': r(est, 3),

@@ -35,6 +35,7 @@ from sensor_msgs.msg import Imu, NavSatFix
 from std_msgs.msg import String
 
 from mower_alerts import rules
+from mower_common.clock import node_clock
 from mower_common.sub_pump import PeriodicRunner, SubscriptionPump
 
 TOPIC_DEFAULTS = {
@@ -111,6 +112,8 @@ class AlertNode(Node):
 
     def __init__(self, **kwargs):
         super().__init__('alert_node', **kwargs)
+        # node clock: the pump's receipt times are sim time under use_sim_time
+        self._clk_now = node_clock(self).now
         defaults = rules.Params()
         names = list(defaults.__dataclass_fields__)
         for name in names:
@@ -170,7 +173,7 @@ class AlertNode(Node):
         return cb
 
     def _on_hl(self, msg):
-        self._hl = (msg, time.monotonic())
+        self._hl = (msg, self._clk_now())
 
     def _on_notice(self, msg):
         try:
@@ -245,7 +248,7 @@ class AlertNode(Node):
     # ---- tick ---------------------------------------------------------------
     def _tick(self):
         self._pump.poll()
-        now = time.monotonic()
+        now = self._clk_now()
         with self._lock:
             alerts = self.engine.step(self.inputs(now), now)
             for k in [k for k, n in self._notices.items() if n.oneshot]:
