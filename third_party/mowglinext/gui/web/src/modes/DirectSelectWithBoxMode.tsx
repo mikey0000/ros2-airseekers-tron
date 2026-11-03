@@ -1,5 +1,13 @@
 import MapboxDraw from '@mapbox/mapbox-gl-draw';
 import i18n from 'i18next';
+import {
+  attachVertexMenu,
+  deleteVertexAt,
+  mergeOnDrop,
+  removeDeleteChip,
+  trashAllowed,
+  updateDeleteChip,
+} from './vertexTools';
 const {
   createSupplementaryPoints,
   constrainFeatureMovement,
@@ -168,6 +176,9 @@ DirectSelectWithBoxMode.onSetup = function (opts: any) {
     onSecondPointer: undefined as undefined | ((ev: PointerEvent) => void),
     onMapMove: undefined as undefined | (() => void),
     onDocKeyDown: undefined as undefined | ((ev: KeyboardEvent) => void),
+    deleteChipElement: undefined as undefined | HTMLElement,
+    vertexMenuElement: undefined as undefined | HTMLElement,
+    detachVertexMenu: undefined as undefined | (() => void),
   };
 
   this.setSelectedCoordinates(this.pathsToCoordinates(featureId, state.selectedCoordPaths));
@@ -180,16 +191,28 @@ DirectSelectWithBoxMode.onSetup = function (opts: any) {
 
   // Rotation handle: follow pan/zoom/rotate of the map.
   this.renderRotationHandle(state);
-  state.onMapMove = () => this.updateRotationHandle(state);
+  state.onMapMove = () => {
+    this.updateRotationHandle(state);
+    updateDeleteChip(this, state);
+  };
   this.map.on('move', state.onMapMove);
 
   // Escape: cancel a rotation in progress, otherwise leave the mode (which
   // removes the handle in onStop). mapbox-gl-draw only sees keys while the
   // canvas has focus, so listen on the document, but ignore typing in inputs.
   state.onDocKeyDown = (ev: KeyboardEvent) => {
-    if (ev.key !== 'Escape' || ev.defaultPrevented) return;
+    if (ev.defaultPrevented) return;
     const t = ev.target as HTMLElement | null;
     if (t && t !== document.body && !this.map.getContainer().contains(t)) return;
+    // Delete / Backspace removes the one selected vertex (draw's own keybinding
+    // only fires while the canvas has focus; after it, nothing is selected).
+    if ((ev.key === 'Delete' || ev.key === 'Backspace') && state.selectedCoordPaths.length === 1) {
+      const [r, i] = String(state.selectedCoordPaths[0]).split('.').map(Number);
+      if (deleteVertexAt(this, state, r, i)) ev.preventDefault();
+      updateDeleteChip(this, state);
+      return;
+    }
+    if (ev.key !== 'Escape') return;
     if (state.rotating) {
       this.stopRotation(state, false);
       return;
@@ -197,6 +220,7 @@ DirectSelectWithBoxMode.onSetup = function (opts: any) {
     this.changeMode(Constants.modes.SIMPLE_SELECT, {});
   };
   document.addEventListener('keydown', state.onDocKeyDown);
+  state.detachVertexMenu = attachVertexMenu(this, state);
 
   return state;
 };
@@ -217,6 +241,9 @@ DirectSelectWithBoxMode.onStop = function (state: any) {
     if (state.onDocKeyDown) document.removeEventListener('keydown', state.onDocKeyDown);
     state.onMapMove = undefined;
     state.onDocKeyDown = undefined;
+    state.detachVertexMenu?.();
+    state.detachVertexMenu = undefined;
+    removeDeleteChip(state);
     this.removeRotationHandle(state);
     if (state.boxSelectElement) {
       state.boxSelectElement.remove();
@@ -236,6 +263,7 @@ DirectSelectWithBoxMode.toDisplayFeatures = function (state: any, geojson: any, 
     // Geometry may have changed (vertex drag, delete, move): keep the handle
     // at a fixed screen distance from the shape.
     this.updateRotationHandle(state);
+    updateDeleteChip(this, state);
   } else {
     geojson.properties.active = Constants.activeStates.INACTIVE;
     push(geojson);
@@ -244,6 +272,8 @@ DirectSelectWithBoxMode.toDisplayFeatures = function (state: any, geojson: any, 
 };
 
 DirectSelectWithBoxMode.onTrash = function (state: any) {
+  // Never trash a polygon down below a triangle (it used to delete the whole feature).
+  if (!trashAllowed(state)) return;
   state.selectedCoordPaths
     .sort((a: any, b: any) => b.localeCompare(a, 'en', { numeric: true }))
     .forEach((id: any) => state.feature.removeCoordinate(id));
@@ -342,6 +372,9 @@ DirectSelectWithBoxMode.whileBoxSelect = function (state:any, e: any) {
 };
 
 DirectSelectWithBoxMode.onClick = function (state: any, e: any) {
+  // draw reports a short, quick drag (< 12 px, < 500 ms) as a click: finish it as a drop so a
+  // nudge onto a neighbour still merges.
+  if (state.dragMoving) return this.onMouseUp(state, e);
   if (noTarget(e)) return this.clickNoTarget(state, e);
   if (isActiveFeature(e)) return this.clickActiveFeature(state, e);
   if (isInactiveFeature(e)) return this.clickInactive(state, e);
@@ -356,6 +389,9 @@ DirectSelectWithBoxMode.onClick = function (state: any, e: any) {
 };
 
 DirectSelectWithBoxMode.onTap = function (state: any, e: any) {
+  // draw reports a short, quick drag (< 12 px, < 500 ms) as a click: finish it as a drop so a
+  // nudge onto a neighbour still merges.
+  if (state.dragMoving) return this.onMouseUp(state, e);
   if (noTarget(e)) return this.clickNoTarget(state, e);
   if (isActiveFeature(e)) return this.clickActiveFeature(state, e);
   if (isInactiveFeature(e)) return this.clickInactive(state, e);
@@ -399,9 +435,12 @@ DirectSelectWithBoxMode.onMouseUp = DirectSelectWithBoxMode.onTouchEnd = functio
   }
 
   if (state.dragMoving) {
+    // Dropped onto a ring neighbour: merge (the dragged vertex goes away).
+    mergeOnDrop(this, state);
     this.fireUpdate();
   }
   this.stopDragging(state);
+  updateDeleteChip(this, state);
 };
 
 

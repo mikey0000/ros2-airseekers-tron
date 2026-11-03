@@ -91,6 +91,9 @@ import {ImageryLayers} from "./map/components/ImageryLayers.tsx";
 import {ImageryPanel} from "./map/components/ImageryPanel.tsx";
 import {ImageryAlignMarkers, ImageryAlignPanel} from "./map/components/ImageryAlign.tsx";
 import {useImageryAlign} from "./map/hooks/useImageryAlign.ts";
+import {useVertexTools} from "./map/hooks/useVertexTools.ts";
+import {VertexToolDialog, VertexToolsPanel} from "./map/components/VertexTools.tsx";
+import {countVertices} from "./map/utils/vertexEdit.ts";
 import {imageCornersMap, quadToLngLat, type ImageryOverlay} from "../utils/imagery.ts";
 
 
@@ -1149,6 +1152,28 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             return f instanceof BoundaryLineFeature ? {...curr, [id]: f.withProps(name, widthM, mode)} : curr;
         }, t('mapBoundary.pendingSave'));
     };
+    // Vertex tools: Merge nearby points / Simplify on one polygon or boundary line.
+    const vertexTools = useVertexTools({
+        features,
+        setFeatures,
+        ensureEditing: () => {
+            if (!editMap) {
+                handleEditMap();
+                notification.info({message: t('mapVertex.pendingSave')});
+            }
+        },
+        notification,
+    });
+    const vertexGhost = useMemo<FeatureCollection | null>(() => vertexTools.preview?.ok ? {
+        type: "FeatureCollection",
+        features: [{type: "Feature", id: "vertex-ghost", geometry: vertexTools.preview.geometry, properties: {}}],
+    } : null, [vertexTools.preview]);
+    const openBoundaryVertexTool = (tool: "merge" | "simplify") => {
+        if (!selectedBoundary) return;
+        const id = selectedBoundary.id;
+        setSelectedMapItem(null);
+        vertexTools.open(tool, id);
+    };
     const deleteSelectedBoundary = () => {
         if (!selectedBoundary) return;
         const id = selectedBoundary.id;
@@ -1164,6 +1189,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     }, []);
     const boundaryTool = useBoundaryLineTool({drawRef, mapInstanceRef, onFinish: handleBoundaryFinish});
     const {cancel: boundaryCancel, start: boundaryStart, drawing: boundaryDrawing, setCursor: setBoundaryCursor} = boundaryTool;
+    const vertexPanelFeature = editMap && !pathTool.editing && !boundaryDrawing && selectedFeatureIds.length === 1
+        && features[selectedFeatureIds[0]] instanceof MowingFeatureBase ? features[selectedFeatureIds[0]] : undefined;
     const toggleBoundaryLineTool = useCallback(() => {
         if (boundaryDrawing) {
             boundaryCancel();
@@ -1662,6 +1689,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     mode={selectedBoundary.getMode()}
                     onApply={applySelectedBoundary}
                     onDelete={deleteSelectedBoundary}
+                    vertexCount={countVertices(selectedBoundary.geometry)}
+                    onMergeNearby={() => openBoundaryVertexTool("merge")}
+                    onSimplify={() => openBoundaryVertexTool("simplify")}
                     onClose={closeMapItemSheet}
                 />
             )}
@@ -1983,7 +2013,34 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 paint={{'line-color': LAYER_COLORS.lidarMiss, 'line-width': 3.5}}/>
                         </Source>
                     )}
+                    {/* Merge / Simplify preview: dashed ghost of the result. */}
+                    {vertexGhost && (
+                        <Source type={"geojson"} id={"vertex-ghost"} data={vertexGhost}>
+                            <Layer type={"line"} id={"vertex-ghost-line"}
+                                layout={{'line-join': 'round', 'line-cap': 'round'}}
+                                paint={{'line-color': '#ffd400', 'line-width': 2.5, 'line-dasharray': [2, 1.5]}}/>
+                            <Layer type={"circle"} id={"vertex-ghost-points"}
+                                paint={{'circle-radius': 3.5, 'circle-color': '#ffd400',
+                                    'circle-stroke-color': '#000000', 'circle-stroke-width': 1}}/>
+                        </Source>
+                    )}
                 </Map> : <Spinner/>}
+                {vertexPanelFeature && !vertexTools.tool && (
+                    <VertexToolsPanel
+                        mobile={isMobile}
+                        vertexCount={countVertices(vertexPanelFeature.geometry)}
+                        onMerge={() => vertexTools.open("merge", vertexPanelFeature.id)}
+                        onSimplify={() => vertexTools.open("simplify", vertexPanelFeature.id)}
+                    />
+                )}
+                <VertexToolDialog
+                    tool={vertexTools.tool}
+                    tolerance={vertexTools.tolerance}
+                    preview={vertexTools.preview}
+                    onTolerance={vertexTools.setTolerance}
+                    onApply={vertexTools.apply}
+                    onCancel={vertexTools.close}
+                />
                 {hasDriveCamera && (
                     <DrivingCameraPip
                         manualMode={manualMode}

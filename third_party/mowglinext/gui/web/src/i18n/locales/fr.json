@@ -4943,5 +4943,32 @@
     "deleteConfirmOk": "Supprimer",
     "deleteConfirmCancel": "Annuler",
     "pendingSave": "Modification en attente : enregistrez la carte pour l'appliquer."
+  },
+  "mapVertex": {
+    "panelTitle": "Points",
+    "points_one": "{{count}} point",
+    "points_other": "{{count}} points",
+    "mergeNearby": "Merge nearby points",
+    "simplify": "Simplify",
+    "hint": "Drag a point onto its neighbour to merge. Tap a point for ✕, right-click or long-press for more.",
+    "mergeTitle": "Merge nearby points",
+    "simplifyTitle": "Simplify outline",
+    "mergeHelp": "Neighbouring points closer than this distance are merged into one.",
+    "simplifyHelp": "Removes points that bend the outline by less than the tolerance (Douglas–Peucker). The dashed yellow outline shows the result.",
+    "distance": "Distance",
+    "tolerance": "Tolerance",
+    "change": "{{before}} → {{after}} points",
+    "noChange": "Nothing to change at this distance.",
+    "tooFew": "That would leave too few points (3 for an area, 2 for a line). Use a smaller value.",
+    "selfIntersection": "That would make the outline cross itself. Use a smaller value.",
+    "apply": "Apply",
+    "cancel": "Cancel",
+    "merged_one": "Merged {{count}} point",
+    "merged_other": "Merged {{count}} points",
+    "simplified_one": "Removed {{count}} point",
+    "simplified_other": "Removed {{count}} points",
+    "deletePoint": "Delete point",
+    "insertPoint": "Insert point here",
+    "pendingSave": "Change pending: save the map to apply it."
   }
 }

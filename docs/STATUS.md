@@ -514,6 +514,17 @@ poor `cog` heading and drove its transit 65 deg off.
   If the WIT keeps agreeing with the GPS course and the stereo does not, `imu_source: wit`
   is the fallback.
 
+## Map editor vertex tools (2026-11-03, branch ws/vertex-merge)
+
+Owner request: no way to merge points of a boundary polygon. The editor now merges a point dragged
+onto its neighbour, deletes a point (✕ chip, Delete key, right-click / long-press menu), inserts an
+edge midpoint, and has "Merge nearby points" (0.15 m) and "Simplify" (Douglas–Peucker, 0.05 m) with
+a ghost preview, a minimum-vertex guard and a self-intersection check, also on boundary lines. All
+changes go through the editor history (undo) and reach map_server only on Save; a trash that would
+leave fewer than 3 points is now refused instead of deleting the whole polygon. Vitest covers the
+geometry and the dialog reducer; checked on the sim GUI (real_run5) at 1280x800 and 390x844. Not
+yet used on the mower. See docs/gui.md "Vertex editing".
+
 ## Stale-but-stationary COG heading at START (2026-11-02, branch ws/heading-stale)
 
 Field 2026-11-02 15:19 (d3230fd): area 5 mowed with a good cog heading, STUCK_NEEDS_HELP at
