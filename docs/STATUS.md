@@ -1130,3 +1130,48 @@ default pivot) lets swath turns use the edge-lap band, with a body-outline check
 with auto gives 27 % and regresses d and e, so pivot stays the default. Details and next
 levers (fewer transits on small areas, tangent transit ends):
 docs/analysis/2026-11-03_turns.md.
+
+
+## CPU diet: map_server executor + point test, MPPI batch 600 (2026-11-03, branch ws/cpu-diet, sim gate)
+
+Review 2026-11-02 step 10. The field premise was partly stale: map_server already reads
+`/odometry/filtered_map` through the SubscriptionPump (/tf is sampled, drained only by the two
+rare lookups) and the boundary check is already capped at `boundary_check_rate_hz` 10.
+Measured on the mower (docked, read-only /proc per thread): map_server main (spin) thread
+32 % of a core at 19 wakes/s (~17 ms per wake), pump thread 33 % at 27 wakes/s (odometry);
+gui_bridge 15 % in all, node_host_gui < 3 %, cmd_vel_slew tick thread 2.5 % at 24 Hz
+(~1 ms/tick). So gui_bridge and cmd_vel_slew got no change (nothing hot to cut).
+
+Changes:
+- `areas.point_in_polygon`: scalar even-odd loop instead of 1-element numpy arrays per
+  vertex (same rule; equivalence test against `points_in_polygon` incl. vertices/edges).
+  It is the bulk of the per-odometry boundary check (robot_area_status, outside_distance).
+- map_server publishers' QoS event handlers in `sub_pump.executor_hidden_group()`: every wake
+  of the spin thread walked ~60 publisher event waitables (dev host: 1.23 -> 0.52 ms/wake for
+  28 publishers + 30 services). Loss: this node no longer logs incompatible-QoS subscribers.
+- MPPI `batch_size` 1000/800/800 -> 600/600/600 (time_steps 40 unchanged).
+
+Gate real_run5 `-d -s 2 -x 3`, per-node CPU = `top` 60 s average during MOWING (sim time 3x):
+
+| | base run 1 | base run 2 | after (all three) |
+|---|---|---|---|
+| map_server_node | 34.0 % | 35.8 % | 21.8 % |
+| controller_server | 38.2 % | 44.4 % | 30.8 % |
+| gui_bridge | 46.1 % | 46.8 % | 44.8 % |
+| cmd_vel_slew | 20.5 % | 22.2 % | 21.2 % |
+| coverage_action_server | 55.7 % | 58.4 % | 53.9 % |
+| controller loop Hz median / p10 | 20 / 20 | 20 / 18 | 20 / 20 |
+| "missed desired rate" warnings | 185 | 1318 | 15 |
+| a max outside (m) | 0.135 | 0.114 | 0.074 |
+| e corner max dev (m) | 0.119 | 0.139 | 0.119 |
+| g pivot / moving | 27 % | 26 % | 27 % |
+| h p99 line / arc | 0.103 / 0.067 | 0.087 / 0.066 | 0.091 / 0.062 |
+| i side / nose / sweep | 0.134 / 0.056 / 0.086 | 0.093 / 0.067 / 0.081 | 0.104 / 0.055 / 0.090 |
+| b, c, d, f | pass | pass | pass |
+
+a-i are inside the documented +-0.05 m run-to-run band (the baselines themselves FAIL a/h/i
+on this seed). One after run covers all three changes, so the per-change split is inferred:
+map_server from the two map_server commits, controller_server from the batch size.
+Sim in-container CPU is not the mower's (3x message rates, /clock wakes every node).
+Projected mower saving: map_server ~65 % -> ~40 % of a core, controller_server ~25 % less
+(~7 % of a core): about 0.3 core of 8. To verify on the mower: per-thread `top -H`.

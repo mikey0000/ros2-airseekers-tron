@@ -261,7 +261,7 @@ controller_server:
       motion_model: "DiffDrive"
       time_steps: 40
       model_dt: 0.1
-      batch_size: 1000
+      batch_size: 600
       iteration_count: 1
       vx_std: 0.1
       vy_std: 0.0
@@ -386,7 +386,7 @@ controller_server:
       motion_model: "DiffDrive"
       time_steps: 40
       model_dt: 0.05
-      batch_size: 800
+      batch_size: 600
       iteration_count: 1
       vx_std: 0.1
       vy_std: 0.0
@@ -470,7 +470,7 @@ controller_server:
       motion_model: "DiffDrive"
       time_steps: 40
       model_dt: 0.05
-      batch_size: 800
+      batch_size: 600
       iteration_count: 1
       vx_std: 0.1
       vy_std: 0.0

@@ -159,6 +159,17 @@ class _Entry:
 from mower_common.clock import NodeClock, WALL_CLOCK, node_clock, wait_first_clock  # noqa: E402,F401
 
 
+def executor_hidden_group():
+    """A callback group no rclpy executor waits on, for publishers whose QoS event
+    handlers (the default incompatible-QoS / type warnings) need not wake anything.
+
+    Every publisher adds 2 event-handler waitables to its node; the executor walks all of
+    them in Python on every wake (~0.7 ms per wake for 28 publishers on the dev host, ~5x
+    that on the mower's A55). Trade-off: an incompatible-QoS subscriber to such a
+    publisher is no longer logged by this node (the subscriber side still reports it)."""
+    return _PumpOnlyGroup()
+
+
 class SubscriptionPump:
     """Serve selected subscriptions of ``node`` without the rclpy executor.
 
