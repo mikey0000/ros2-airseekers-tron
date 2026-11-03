@@ -331,3 +331,24 @@ def test_replace_areas_keeps_obstacles_with_source_and_pending(node, msn):
     assert [(o.name, o.source, o.pending) for o in obs] == [
         ('tree', 0, False), ('dig', 2, True), ('', 0, False)]
     assert 'area_0_obstacle_count: 2\n' in msn.core.format_areas_dat(n.store.areas)  # proposal not persisted
+
+
+def test_publisher_event_handlers_stay_out_of_the_executor(msn):
+    """2026-11-03 CPU review: map_server publishers' QoS event waitables are in a group no
+    executor waits on (each wake walked ~60 of them), and publishing still works."""
+    rclpy = pytest.importorskip('rclpy')
+    from rclpy.node import Node
+    from std_msgs.msg import Bool
+    rclpy.init()
+    try:
+        n = msn.MapServerNode.__new__(msn.MapServerNode)
+        Node.__init__(n, 'pub_group_test')
+        pub = n.create_publisher(Bool, '~/x', 1)
+        pub.publish(Bool(data=True))
+        handlers = list(pub.event_handlers)
+        assert handlers
+        assert all(not h.callback_group.can_execute(h) for h in handlers)
+        assert all(not w.callback_group.can_execute(w) for w in n.waitables)
+        Node.destroy_node(n)
+    finally:
+        rclpy.shutdown()
