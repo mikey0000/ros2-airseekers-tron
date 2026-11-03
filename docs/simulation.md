@@ -604,6 +604,22 @@ It then waits up to 120 s wall for a new process (launch respawn) and appends
 kill with its respawn time, the mission state 60 s later, the mission lines around it and
 `recovered` (respawned, MOWING_COMPLETE, no failure end state).
 
+### Fidelity gate runs (2026-11-03, ws/sim-fidelity 8c03f5f, `-d -s 2 -x 3`)
+
+| Run | a max / n | b | c | d | e | h p99 line / arc | i side / nose / sweep; transit | j | Verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| real_run5 (regression) | 0.084 / 0 | 0 | yes | 0/0/0 | 0 of 19 (0.105) | 0.079 / 0.068 | 0.096 / 0.087 / 0.091; 0.364 | n/a | PASS |
+| real_run5_slope | 0.278 / 485 | 0 | yes | 0/0/0 | 4 of 19 (0.723) | 0.355 / 0.686 | 0.415 / 0.432 / 0.436; 0.445 | FAIL (0 STUCK, 485 samples, roll 10.0) | FAIL |
+
+The slope world fails the way the lawn does, but not through the recovery: the downhill creep
+(1 cm/s driving, 4.5 cm/s pivoting) pushes base_link up to 0.28 m out of the west edge in
+MOWING (four episodes, worst at (-5.29, -0.87)) and the corner pivots there deviate 0.42-0.72 m,
+yet no BOUNDARY OUT fires (the body limits, soft side 0.35, are not reached) so the footprint
+recovery and the slip check never run (0 slip windows: forward mowing slips 25 %, under the 3x
+trip). The controller does not take out a steady lateral creep. The `edge_slope_roll_deg` rule
+fires and clears within 2 s on the faded region edge. Tilt bands stay ok (10 deg < 15 deg
+caution). `--rtk-loss` and `--kill` runs: not taken (host power profile went to balanced).
+
 ### What the gate cannot show
 
 Real turf slip beyond the terrain model (wet grass, wheel-in-a-hole stalls), heading
