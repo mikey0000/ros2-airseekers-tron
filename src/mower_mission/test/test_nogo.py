@@ -16,6 +16,7 @@ from mower_mission.fsm.phases import nogo as nogo_phase    # noqa: E402
 from test_mission_fsm import (Harness, follow_current, line, plan, square,  # noqa: E402
                               start_until_planning)
 from test_path_conditioning import ring                    # noqa: E402
+from keep_harness import KeepHarness                       # noqa: E402
 
 Z = nogo.Zone
 
@@ -109,7 +110,7 @@ def _cov_pivot_h(monkeypatch, plans, zs=None, **params):
         calls.append((x, y, yaw, delta))
         return plans.pop(0) if plans else nogo.PivotPlan('clear')
     monkeypatch.setattr(nogo_phase.nogo, 'plan_pivot', fake)
-    h = Harness(**params)
+    h = KeepHarness(**params)      # the steps run with the blade on (blade_keep_on_obstacles)
     h.areas = [square(-8, -4, 12)]
     r = ring()
     start_until_planning(h)
@@ -140,6 +141,7 @@ def test_cov_gate_b_backs_up_then_checks_again_and_pivots(monkeypatch):
     g = h.goal(f.ACT_BACKUP)
     assert a.purpose == 'nogo_step' and g['distance_m'] == 0.3 and g['speed_mps'] >= 0.06
     assert any('(b)' in t for t in logs(h))
+    assert h.blade and any('blade kept on' in t for t in logs(h))   # inside the area
     m = h.mark()
     h.finish(f.ACT_BACKUP)
     h.fsm.inputs.is_cutting = True
@@ -213,7 +215,10 @@ def _corner_route(deg, tgt):
 
 def _route_corner_h(zs):
     from test_mission_fsm import _answer_route, _route_h, _route_resp
-    h = _route_h()
+    # The sweep check runs at a route corner the conditioner pivots at (no fillet fits). The
+    # toy 2 m legs would take the shipped r 0.8 m fillet (0.95 m tangents) round the 100 deg
+    # corner, so a fillet radius whose tangents exceed the legs forces the pivot here.
+    h = _route_h(path_conditioning_route_r_min_m=3.0)
     zones(h, *zs)
     _answer_route(h, resp=_route_resp(_corner_route(100.0, h.fsm.mission.transit_target)))
     h.finish(f.ACT_FOLLOW)                     # at the corner (2, 0), yaw 0

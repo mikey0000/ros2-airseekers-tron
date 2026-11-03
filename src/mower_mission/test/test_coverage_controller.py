@@ -22,10 +22,12 @@ MISSION_YAML = os.path.join(HERE, '..', 'config', 'mission.yaml')
 def _k_turn(h):
     """swath -> reverse leg (poses face against the travel) -> forward leg."""
     start_until_planning(h)
-    fwd = [(0.2, 0.0, 0.0)] + [(1.0 + 0.1 * k, 0.0, 0.0) for k in range(11)]
+    fwd = [(0.2 + 0.1 * k, 0.0, 0.0) for k in range(19)]      # densified, ends (2.0, 0)
     ryaw = math.atan2(-0.35, 0.1)
     rev = [(2.0, 0.0, ryaw), (1.95, 0.175, ryaw), (1.9, 0.35, ryaw)]
-    fwd2 = [(1.9, 0.35, math.pi), (0.0, 0.36, math.pi)]
+    # not parallel to the swath (7.5 deg): path conditioning keeps the reverse leg as planned
+    # (join_turn_chains replaces a parallel swath -> turn -> swath chain by its corners)
+    fwd2 = [(1.9, 0.35, math.pi), (0.0, 0.6, math.pi)]
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([fwd, rev, fwd2]))
     h.fsm.inputs.is_cutting = True
     h.tick()

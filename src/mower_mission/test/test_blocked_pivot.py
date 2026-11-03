@@ -8,7 +8,28 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from mower_mission import mission_fsm as f             # noqa: E402
 from test_mission_fsm import Harness, start_until_planning   # noqa: E402
-from test_path_conditioning import ring, ring_h        # noqa: E402
+from test_mission_fsm import line, plan, square          # noqa: E402
+from test_path_conditioning import ring                # noqa: E402
+from keep_harness import KeepHarness                   # noqa: E402
+
+
+def ring_h(yaw=None, **params):
+    """test_path_conditioning.ring_h on a KeepHarness: the pivot back-up runs with the blade
+    on inside the area (blade_keep_on_obstacles)."""
+    params.setdefault('path_conditioning', True)
+    h = KeepHarness(**params)
+    h.areas = [square(-8, -4, 12)]
+    r = ring()
+    start_until_planning(h)
+    y0 = math.atan2(r[1][1] - r[0][1], r[1][0] - r[0][0])
+    h.fsm.inputs.pose = (r[0][0], r[0][1], y0 if yaw is None else yaw)
+    sp = [(q[0], q[1], math.atan2(r[min(i + 1, len(r) - 1)][1] - q[1],
+                                  r[min(i + 1, len(r) - 1)][0] - q[0]))
+          for i, q in enumerate(r)]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp, line(-4.0, 3.0, -1.0, 3.0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    return h
 
 
 def _blocked(**params):
@@ -153,7 +174,8 @@ def test_refused_pivot_backs_up_then_pivots_once_more_then_skips():
     assert a.purpose == 'pivot_backout'
     g = h.goal(f.ACT_BACKUP)
     assert abs(g['distance_m'] - 0.35) < 1e-6 and g['speed_mps'] >= 0.06
-    assert not h.blade                                  # never reversing with the blade on
+    # owner 2026-10-23 (blade_keep_on_obstacles): inside the area the blade stays on
+    assert h.blade and any('blade kept on (pivot back-up)' in t for t in _logs(h))
     h.finish(f.ACT_BACKUP)
     h.fsm.inputs.is_cutting = True
     for _ in range(40):
@@ -165,6 +187,14 @@ def test_refused_pivot_backs_up_then_pivots_once_more_then_skips():
     h.finish(f.ACT_SPIN, f.ABORTED)
     assert not any(e.name in (f.ACT_SPIN, f.ACT_BACKUP) for e in h.since(mk, f.StartAction))
     assert any('blocked pivot: skip' in t for t in _logs(h, mk)) and m.pivot_skips == 1
+
+
+def test_refused_pivot_back_up_blade_off_revert():
+    # revert path: blade_keep_on_obstacles off -> never reversing with the blade on
+    h = _blocked(pivot_backout_m=0.35, blade_keep_on_obstacles=False)
+    h.finish(f.ACT_SPIN, f.ABORTED)
+    assert h.pending_action(f.ACT_BACKUP).purpose == 'pivot_backout'
+    assert not h.blade
 
 
 def test_stuck_moves_the_resume_cursor_past_the_failing_pivot():

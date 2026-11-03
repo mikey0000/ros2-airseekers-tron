@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mower_mission import geometry as geo   # noqa: E402
 from mower_mission import mission_fsm as f   # noqa: E402
 from test_mission_fsm import Harness, _answer_route, _route_h, _route_resp  # noqa: E402
+from test_mission_legs import _channel_route_h  # noqa: E402
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data',
                     'real_dock_path_routes.json')
@@ -175,8 +176,24 @@ def _corner(h):
     _answer_route(h, resp=_route_resp(a + b + [tuple(tgt)]))
 
 
+def test_corner_leg_and_with_conditioning_the_last_leg_use_the_corner_goal_checker():
+    """Path conditioning: every route leg, the last one too, ends along-path on its end."""
+    h = _channel_route_h(90.0)            # a drawn-path corner: no fillet fits, a pivot
+    _corner(h)
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['goal_checker_id'] == 'coverage_corner_goal_checker'
+    assert g['poses'][-1][:2] == (2.0, 0.0) and g['poses'][-1][2] == 0.0
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.finish(f.ACT_FOLLOW)
+    h.fsm.inputs.pose = (2.0, 0.0, math.pi / 2)
+    h.finish(f.ACT_SPIN)
+    rl = h.fsm._route_legs
+    assert rl['i'] == len(rl['legs']) - 1
+    assert h.goal(f.ACT_FOLLOW)['goal_checker_id'] == 'coverage_corner_goal_checker'
+
+
 def test_corner_leg_uses_the_corner_goal_checker_and_the_last_leg_the_route_one():
-    h = _route_h()
+    h = _route_h(path_conditioning=False)     # revert path: raw route, the transit disc
     _corner(h)
     g = h.goal(f.ACT_FOLLOW)
     assert g['goal_checker_id'] == 'coverage_corner_goal_checker'
@@ -195,7 +212,7 @@ def test_corner_goal_checker_revert_flag():
 
 
 def test_dock_route_corner_leg_uses_the_corner_goal_checker():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     h.fsm.inputs.pose = (0.0, 0.0, 0.0)
     assert h.cmd(f.CMD_HOME)
     a = [(0.1 * i, 0.0, 0.0) for i in range(21)]

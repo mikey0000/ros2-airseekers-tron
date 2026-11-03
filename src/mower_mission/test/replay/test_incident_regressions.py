@@ -43,7 +43,7 @@ def test_c_offgraph_dock_return_joins_the_graph_instead_of_failing():
     fx = rl.load('20261102_offgraph_dock')
     rec = rl.recorded_log(fx, 'is off the route graph')
     assert rec and rl.recorded_log(fx, 'NAV_TO_DOCK_FAILED')       # what the field did
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     area = fx['areas'][0]
     h.fsm._region_areas = {area['index']: rl.area_dict(area)}
     h.fsm.inputs.dock_pose = tuple(fx['dock_pose'])
@@ -217,7 +217,7 @@ def test_e_dog_at_a_transit_route_corner_waits_instead_of_retrying_into_an_abort
     rt = fx['route']
     t_check = rl.recorded_log(fx, 'pre-pivot check, route corner')[0][0]
     t_tr = max(t for t, _ in rl.recorded_log(fx, 'state MOWING -> TRANSIT') if t < t_check)
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     h.areas = [rl.area_dict(area)]
     r = rl.Replay(h, fx)
     r.run_until(t_tr - 0.5)
@@ -249,6 +249,11 @@ def test_e_dog_at_a_transit_route_corner_waits_instead_of_retrying_into_an_abort
         if a is not None and a.name == f.ACT_SPIN:
             h.finish(f.ACT_SPIN)
         elif a is not None and a.name == f.ACT_FOLLOW and a.purpose != 'coverage':
+            if h.fsm._route_legs is not None and h.fsm._route_legs['i'] == 0:
+                # path conditioning keeps the 0.05 m stub as leg 0 (no stub trim): it ends
+                # on the corner, whose pivot is the one under test
+                h.finish(f.ACT_FOLLOW, arrive=False)
+                continue
             break                                          # past the corner, on the leg
         if r.k >= len(r.events):
             break

@@ -2,8 +2,8 @@
 """Terrain-memory hooks of the mission FSM: incidents + slope-aware swath angle."""
 from mower_mission import mission_fsm as f
 
-from test_mission_fsm import (Harness, line, mowing_two_swaths, plan, start_until_planning,
-                              static_abort_and_detour)
+from test_mission_fsm import (Harness, line, mowing_two_swaths, plan, policy,
+                              start_until_planning)
 
 
 def incidents(h, mark=0):
@@ -36,9 +36,16 @@ def test_transit_abort_incident():
 
 def test_detour_incident_once_per_detour():
     h = Harness()
-    sp0, _ = mowing_two_swaths(h)
+    mowing_two_swaths(h)
     m = h.mark()
-    static_abort_and_detour(h, sp0)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)               # a static obstacle aborts the swath
+    policy(h, 'static', 'chair')
+    h.tick()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state
+    h.fsm.inputs.pose = (4.0, 0.1, 0.0)
+    h.finish(f.ACT_NAV)
+    assert h.name == 'MOWING'
     kinds = [i.kind for i in incidents(h, m)]
     assert kinds.count('detour') == 1
     assert 'follow_abort' not in kinds        # a detour is not a traction failure

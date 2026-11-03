@@ -14,7 +14,7 @@ from test_mission_fsm import (Harness, _answer_route, _route_resp, line, plan,  
 # ---- request deadlines from the send-time clock ------------------------------------
 def _late_plan(clock):
     """Plan result fed at event time t, the FSM spends 78 s on it (wall clock ahead)."""
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     h.areas = [square(-1, -1, 12)]
     lag = [0.0]
     if clock:
@@ -35,7 +35,7 @@ def test_late_send_keeps_a_fresh_plan_route_deadline():
     assert s is not None and s.name == f.SRV_PLAN_ROUTE        # not timed out
     assert not [e for e in h.fx if isinstance(e, f.StartAction) and e.name == f.ACT_NAV]
     _answer_route(h)
-    assert h.fsm._action.name == f.ACT_FOLLOW
+    assert h.pending_action(f.ACT_FOLLOW)        # after the pivot onto the route
 
 
 def test_event_clock_deadline_expires_at_once_without_the_clock():
@@ -45,7 +45,7 @@ def test_event_clock_deadline_expires_at_once_without_the_clock():
 
 
 def test_mark_sent_restamps_from_the_actual_send():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     h.areas = [square(-1, -1, 12)]
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
@@ -106,7 +106,7 @@ def test_no_conditioning_job_for_stale_token_failure_or_preview():
     assert h.fsm.plan_conditioning_job(a.token + 1, f.SUCCEEDED, plan(SUBPATHS), h.t) is None
     assert h.fsm.plan_conditioning_job(a.token, f.ABORTED, {}, h.t) is None
     assert h.fsm.plan_conditioning_job(a.token, f.SUCCEEDED, {'success': False}, h.t) is None
-    off = Harness()
+    off = Harness(path_conditioning=False)       # revert path: raw paths, no job
     start_until_planning(off)
     b = off.pending_action(f.ACT_PLAN)
     assert off.fsm.plan_conditioning_job(b.token, f.SUCCEEDED, plan(SUBPATHS), off.t) is None
@@ -115,7 +115,7 @@ def test_no_conditioning_job_for_stale_token_failure_or_preview():
 # ---- far transit goal: re-ask the route, no costmap fallback ----------------------
 def _far_h(**params):
     """Sub-path 0 starts at (30, 5), 30.4 m from the robot at (0, 0)."""
-    h = Harness(route_transits=True, **params)
+    h = Harness(auto_route=False, **params)
     h.areas = [square(-1, -1, 40)]
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(30, 5, 35, 5)]))

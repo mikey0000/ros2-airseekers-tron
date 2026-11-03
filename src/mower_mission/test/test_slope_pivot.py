@@ -8,13 +8,14 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from mower_mission import mission_fsm as f                       # noqa: E402
-from test_mission_fsm import Harness, plan, line, square, start_until_planning  # noqa: E402
+from test_mission_fsm import plan, line, square, start_until_planning  # noqa: E402
 from test_path_conditioning import ring                          # noqa: E402
+from keep_harness import KeepHarness                             # noqa: E402
 
 
 def _h(roll, yaw_off=140.0, **params):
     params.setdefault('path_conditioning', True)
-    h = Harness(**params)
+    h = KeepHarness(**params)       # the upslope drive keeps the blade on inside the area
     h.areas = [square(-8, -4, 12)]
     r = ring()
     start_until_planning(h)

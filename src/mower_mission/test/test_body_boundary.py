@@ -432,14 +432,19 @@ def test_short_stretches_dropped_and_unbypassable_ones_not_re_tried():
     h = mowing_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
                  retry_each_skipped_stretch=False)
     m = h.fsm.mission
+    sp = m.subpaths[0]                                # as conditioned (re-sampled)
+
+    def at(x):
+        return min(range(len(sp)), key=lambda k: abs(sp[k][0] - x))
+    short, near, clear = (at(1.0), at(1.3)), (at(2.5), at(3.0)), (at(3.5), at(4.3))
     m.unbypassable = [(2.0, 2.0)]
-    m.requeue = [(5, 8), (20, 25), (30, 38)]          # 0.3 m; next to (2, 2); 0.8 m clear
+    m.requeue = [short, near, clear]                  # 0.3 m; next to (2, 2); 0.8 m clear
     h.fsm._begin(h.t)
     h.fsm._area_done()
     h._apply(h.fsm._end())
-    assert (0, 5, 8) not in m.blocked and (0, 20, 25) in m.blocked
+    assert (0,) + short not in m.blocked and (0,) + near in m.blocked
     assert abs(m.ignored_short_m - 0.3) < 1e-6        # too short: dropped, not blocked
-    assert m.stretch == (30, 38)                      # the clear one is driven
+    assert m.stretch == clear                         # the clear one is driven
 
 
 def test_replan_keeps_done_subpaths_with_unchanged_geometry():
@@ -448,12 +453,20 @@ def test_replan_keeps_done_subpaths_with_unchanged_geometry():
     from mower_mission import geometry as G
     from mower_mission.resume import AreaCursor, ResumeCursor
     A, B, C = line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3), line(0.5, 4, 4.5, 4)
+    # the cursor holds fingerprints of the plan as driven (path conditioning applied):
+    # take them from a mission that planned [A, B]
+    h0 = Harness()
+    h0.areas = [square(0, 0, 5)]
+    feed(h0, (0.5, 3.0, 0.0))
+    start_until_planning(h0)
+    h0.finish(f.ACT_PLAN, f.SUCCEEDED, plan([A, B]))
+    ab = h0.fsm.mission.subpaths
     cur = ResumeCursor()
-    cur.areas[0] = AreaCursor(22, G.plan_fingerprint([A, B]), -1, {0},
-                              done_fps={G.plan_fingerprint([A])})
+    cur.areas[0] = AreaCursor(sum(len(sp) for sp in ab), G.plan_fingerprint(ab), -1, {0},
+                              done_fps={G.plan_fingerprint([ab[0]])})
     cur.current_command = f.CMD_START                 # an interrupted mow: START resumes
     txt = cur.dumps()
-    assert ResumeCursor.loads(txt).areas[0].done_fps == {G.plan_fingerprint([A])}
+    assert ResumeCursor.loads(txt).areas[0].done_fps == {G.plan_fingerprint([ab[0]])}
     h = Harness(cursor=ResumeCursor.loads(txt), hard_boundary_body=True)
     h.areas = [square(0, 0, 5)]
     feed(h, (0.5, 3.0, 0.0))

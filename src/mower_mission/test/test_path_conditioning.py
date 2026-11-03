@@ -534,18 +534,18 @@ def test_route_stub_is_not_trimmed_under_path_conditioning():
 
 
 def test_route_leg_start_pivots_by_the_conditioner_threshold():
-    h = Harness(path_conditioning=True, route_transits=True)
+    h = Harness(path_conditioning=True, auto_route=False)
     h.fsm.inputs.pose = (0.0, 0.0, math.radians(33))
     h.fsm._route_legs = {'legs': [[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]], 'i': 0}
     assert h.fsm._route_corner_turn('route') is True
-    h2 = Harness(path_conditioning=False, route_transits=True)
+    h2 = Harness(path_conditioning=False, auto_route=False)
     h2.fsm.inputs.pose = (0.0, 0.0, math.radians(33))
     h2.fsm._route_legs = {'legs': [[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]], 'i': 0}
     assert h2.fsm._route_corner_turn('route') is False
 
 
 def test_transit_ending_beside_the_start_drives_onto_it_first():
-    h = Harness(path_conditioning=True, route_transits=True)
+    h = Harness(path_conditioning=True, auto_route=False)
     h.areas = [square(-1, -1, 12)]
     start_until_planning(h)
     h.fsm.inputs.pose = (0.0, 0.0, 0.0)
@@ -575,7 +575,7 @@ def test_transit_ending_beside_the_start_drives_onto_it_first():
 
 
 def test_transit_ending_on_the_start_mows_at_once():
-    h = Harness(path_conditioning=True, route_transits=True)
+    h = Harness(path_conditioning=True, auto_route=False)
     h.areas = [square(-1, -1, 12)]
     start_until_planning(h)
     h.fsm.inputs.pose = (0.0, 0.0, 0.0)
@@ -1114,7 +1114,7 @@ def test_split_hops_backstop_splits_densified_forward_subpaths_only():
 
 
 def _tangent_harness(enabled=True):
-    h = Harness(path_conditioning=True, route_transits=True)
+    h = Harness(path_conditioning=True, auto_route=False)
     h.areas = [square(-1, -1, 12)]
     start_until_planning(h)
     h.fsm.inputs.pose = (0.0, 0.0, 0.0)

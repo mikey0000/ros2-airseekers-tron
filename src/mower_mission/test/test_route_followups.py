@@ -23,7 +23,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mower_mission import geometry as geo   # noqa: E402
 from mower_mission import mission_fsm as f   # noqa: E402
-from test_mission_fsm import Harness, _answer_route, _route_h, _route_resp  # noqa: E402
+from test_mission_fsm import (Harness, _answer_route, _route_h, _route_resp, line,  # noqa: E402
+                              plan, square, start_until_planning)
+from test_mission_legs import _channel_route_h  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TH = 1.38                                   # mission.yaml route_corner_turn_rad
@@ -93,7 +95,9 @@ def test_incident_plan_has_the_hook_and_the_old_split_made_the_stub_a_leg():
 
 def test_incident_plan_first_leg_starts_at_the_corner_with_no_hook():
     route, pose, _ = incident()
-    h = _route_h()
+    # revert path: stub trimming is the raw-route rule (path_conditioning keeps the stub as a
+    # leg ending on its pivot marker, design 3.3: test_conditioned_routes_have_no_hook)
+    h = _route_h(path_conditioning=False)
     m = h.mark()
     answer(h, pose, route)
     assert any('stub before the corner at (0.00, -0.38)' in t for t in logs(h, m))
@@ -113,7 +117,9 @@ def test_incident_plan_first_leg_starts_at_the_corner_with_no_hook():
 def test_incident_plan_after_the_pivot_overshoot_still_no_hook():
     """Replanned from where the robot stood after the field pivot (0.14, -0.42, -178 deg)."""
     route, _, pose = incident()
-    h = _route_h()
+    # revert path: stub trimming is the raw-route rule (path_conditioning keeps the stub as a
+    # leg ending on its pivot marker, design 3.3: test_conditioned_routes_have_no_hook)
+    h = _route_h(path_conditioning=False)
     answer(h, pose, route)
     spin, g = first_motion(h)
     leg = g['poses']
@@ -128,7 +134,9 @@ def test_real_route_from_dock_keeps_its_legs_and_has_no_start_hook():
     """The sim route from the approach pose: its first corner is 0.4 m on, not a stub."""
     route, _ = real_routes()
     pose = (route[0][0], route[0][1], math.radians(-146.4))
-    h = _route_h()
+    # revert path: stub trimming is the raw-route rule (path_conditioning keeps the stub as a
+    # leg ending on its pivot marker, design 3.3: test_conditioned_routes_have_no_hook)
+    h = _route_h(path_conditioning=False)
     answer(h, pose, route)
     legs = h.fsm._route_legs['legs']
     assert len(legs) == 3
@@ -159,6 +167,35 @@ def test_real_route_from_dock_with_the_robot_off_the_start_joins_ahead():
     assert abs(geo.wrap_angle(leg[0][2] - hd)) < 0.02
 
 
+def _wide_route_h(**params):
+    """_route_h in a 25 m square around the dock: the real routes lie inside the region path
+    conditioning works against (the toy 12 m square would cut them off)."""
+    h = Harness(auto_route=False, **params)
+    h.areas = [square(-10, -10, 25)]
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
+    assert h.name == 'TRANSIT'
+    return h
+
+
+def test_conditioned_routes_have_no_hook():
+    """Shipped (path_conditioning): no stub trim, but every corner sharp enough to hook is a
+    pivot marker between two legs, so no leg begins with a >= 79 deg turn within 0.3 m (the
+    incident plan, the real dock-path routes and every run 4 /plan)."""
+    inc, pose, _ = incident()
+    cases = [(inc, pose)]
+    for r in real_routes():
+        cases.append((r, (r[0][0], r[0][1], r[0][2])))
+    cases += [(_with_yaw(pl['poses']), tuple(pl['pose'])) for pl in run4()['plans']]
+    for k, (route, pose) in enumerate(cases):
+        h = _wide_route_h()
+        m = h.mark()
+        answer(h, pose, route)
+        assert any('route: conditioned' in t for t in logs(h, m)), k
+        for i, lg in enumerate(h.fsm._route_legs['legs']):
+            assert sharp_turn_within(lg) == [], (k, i)
+
+
 def test_real_route_to_dock_end_corner_is_not_a_stub():
     """RETURNING_HOME: the 90 deg corner 0.38 m before the approach pose stays a split."""
     _, route = real_routes()
@@ -173,7 +210,9 @@ def test_end_stub_is_trimmed_and_still_arrives():
     b = [(5.0, 0.1 * i, math.pi / 2) for i in range(1, 3)]
     out = geo.trim_route_stubs(a + b, TH, 0.3, tol_rad=f.ROUTE_CORNER_TOL_RAD)
     assert out == a
-    h = _route_h()
+    # revert path: stub trimming is the raw-route rule (path_conditioning keeps the stub as a
+    # leg ending on its pivot marker, design 3.3: test_conditioned_routes_have_no_hook)
+    h = _route_h(path_conditioning=False)
     answer(h, (0.0, 0.0, 0.0), a + b)
     assert len(h.fsm._route_legs['legs']) == 1
 
@@ -286,7 +325,7 @@ def _corner_route():
 
 
 def test_corner_leg_abort_next_to_its_corner_counts_as_reached():
-    h = _route_h()
+    h = _channel_route_h(90.0, end=None)     # a drawn-path corner: no fillet fits, a pivot
     answer(h, (0.0, 0.0, 0.0), _corner_route())
     m = h.mark()
     a = h.pending_action(f.ACT_FOLLOW)
@@ -300,7 +339,7 @@ def test_corner_leg_abort_next_to_its_corner_counts_as_reached():
 def test_corner_leg_abort_far_from_the_corner_or_reverted_is_a_route_abort():
     for params, pose in (({}, (1.0, 0.05, 0.0)), ({'route_leg_end_accept_m': 0.0},
                                                   (1.85, 0.05, 0.3))):
-        h = _route_h(**params)
+        h = _channel_route_h(90.0, end=None, **params)
         answer(h, (0.0, 0.0, 0.0), _corner_route())
         m = h.mark()
         a = h.pending_action(f.ACT_FOLLOW)
@@ -311,7 +350,7 @@ def test_corner_leg_abort_far_from_the_corner_or_reverted_is_a_route_abort():
 
 
 def test_dock_route_leg_is_watched_too():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     h.fsm.inputs.pose = (0.0, 0.0, 0.0)
     assert h.cmd(f.CMD_HOME)
     _answer_route(h, resp=_route_resp([(0.1 * i, 0.0, 0.0) for i in range(41)]))
@@ -334,7 +373,9 @@ def test_run4_plans_first_legs_have_no_hook_and_corner_legs_end_on_corners():
     """Every real /plan of the run, from the robot pose it was planned at: no leg begins with
     a >= 79 deg turn within 0.3 m, and every leg but the last ends on a split corner."""
     for k, pl in enumerate(run4()['plans']):
-        h = _route_h()
+        # revert path: stub trimming is the raw-route rule (path_conditioning keeps the stub as a
+        # leg ending on its pivot marker, design 3.3: test_conditioned_routes_have_no_hook)
+        h = _route_h(path_conditioning=False)
         answer(h, tuple(pl['pose']), _with_yaw(pl['poses']))
         legs = h.fsm._route_legs['legs']
         for i, lg in enumerate(legs):
@@ -350,7 +391,9 @@ def test_run4_retry_plan_start_stub_is_trimmed():
     """plans[0] (the retry after STUCK1) starts with a 0.06 m stub then a 90 deg turn onto
     the dock path: the route starts on the dock path."""
     pl = run4()['plans'][0]
-    h = _route_h()
+    # revert path: stub trimming is the raw-route rule (path_conditioning keeps the stub as a
+    # leg ending on its pivot marker, design 3.3: test_conditioned_routes_have_no_hook)
+    h = _route_h(path_conditioning=False)
     answer(h, tuple(pl['pose']), _with_yaw(pl['poses']))
     leg = h.fsm._route_legs['legs'][0]
     assert geo.dist(leg[0], (-2.61, 0.58)) < 0.03
@@ -372,13 +415,14 @@ def test_run4_stuck2_dock_route_corner_leg_stalled_short_of_the_corner_ends_and_
     d = run4()
     pl = d['plans'][6]
     route = _with_yaw(pl['poses'])
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     h.fsm.inputs.pose = tuple(pl['pose'])
     assert h.cmd(f.CMD_HOME)
     _answer_route(h, resp=_route_resp(route))
     assert h.pending_action(f.ACT_FOLLOW).purpose == 'dock_route'
     legs = h.fsm._route_legs['legs']
-    assert len(legs) == 2 and geo.dist(legs[0][-1], (-3.248, 1.119)) < 0.01
+    # path conditioning pivots on the dock-path corner too (+106 deg) and near the dock end
+    assert len(legs) >= 2 and geo.dist(legs[0][-1], (-3.248, 1.119)) < 0.01
     stuck = tuple(d['stuck2_dither_pose'])
     assert 0.08 < geo.dist(stuck, legs[0][-1]) <= 0.15
     m = h.mark()
@@ -412,7 +456,7 @@ def test_run4_stuck1_connector_leg_reached_off_yaw_ends_and_pivots():
     conn = [(start[0] + (join[0] - start[0]) * k / n, start[1] + (join[1] - start[1]) * k / n)
             for k in range(n + 1)]
     route = _with_yaw(conn + [p[:2] for p in path])
-    h = _route_h()
+    h = _wide_route_h()
     answer(h, start, route)
     legs = h.fsm._route_legs['legs']
     assert len(legs) >= 2 and geo.dist(legs[0][-1], join) < 1e-6
@@ -428,7 +472,7 @@ def test_no_mission_corner_rule_and_pivot_revert_flag():
     checker does); route_leg_pivot_min_rad 0: no pivot under 79 deg at a corner."""
     d = run4()
     pl = d['plans'][6]
-    h = Harness(route_transits=True, route_progress_window_s=0.0)
+    h = Harness(auto_route=False, route_progress_window_s=0.0)
     h.fsm.inputs.pose = tuple(pl['pose'])
     assert h.cmd(f.CMD_HOME)
     _answer_route(h, resp=_route_resp(_with_yaw(pl['poses'])))
@@ -437,7 +481,8 @@ def test_no_mission_corner_rule_and_pivot_revert_flag():
     assert h.pending_action(f.ACT_FOLLOW).token == tok
     for k in ('route_corner_xy_m', 'route_corner_reach_m', 'route_corner_stall_s'):
         assert k not in f.Params.__dataclass_fields__
-    h2 = _route_h(route_leg_pivot_min_rad=0.0)
+    # a drawn-path corner (no fillet fits): the conditioner splits there
+    h2 = _channel_route_h(math.degrees(1.5), end=None, route_leg_pivot_min_rad=0.0)
     a = [(0.1 * i, 0.0, 0.0) for i in range(21)]
     b = [(2.0 + 0.1 * i * math.cos(1.5), 0.1 * i * math.sin(1.5), 1.5) for i in range(1, 20)]
     answer(h2, (0.0, 0.0, 0.0), a + b)

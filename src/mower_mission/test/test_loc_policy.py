@@ -67,7 +67,8 @@ def test_degraded_caps_speed_and_finishes_the_swath_then_holds():
     at(h, 4.0)                          # swath end
     run(h, 'degraded', 0.5, est=0.5)
     assert held(h) and not h.blade
-    assert h.fsm.mission.start_local == 10
+    mi = h.fsm.mission                  # held at the swath end (x 4.0 of the conditioned leg)
+    assert abs(mi.subpaths[mi.sub_i][mi.start_local][0] - 4.0) < 1e-6
 
 
 def test_degraded_drift_over_edge_clearance_holds_at_once():
@@ -168,7 +169,8 @@ def test_lost_retraces_toward_the_last_fix_then_waits_and_resumes():
     assert h.fsm._loc is None and h.fsm.mission is not None
     # 2 m back from the held progress: transit to it, then the follow resumes there
     assert h.name == 'TRANSIT' and h.pending_action(f.ACT_NAV)
-    assert h.fsm.mission.start_local == 5
+    mi = h.fsm.mission
+    assert abs(mi.subpaths[mi.sub_i][mi.start_local][0] - 2.0) < 1e-6
 
 
 def test_retrace_is_capped_at_loc_lost_retrace_max_m():

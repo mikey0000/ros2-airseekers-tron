@@ -27,6 +27,12 @@ def feed(h, pose, out=None):
 
 def transit_h(**params):
     """TRANSIT (Nav2 goal running) with the robot at (1.0, 0) facing east."""
+    # revert path: the base_link check on a synthetic ~/outside_m in TRANSIT, retracing the
+    # driven track (shipped: the body check against the area snapshot, which only falls back
+    # to base_link + ~/outside_m off the mowing areas / in dock phases); the body / snapshot
+    # sources have their own tests in test_body_boundary.py
+    params.setdefault('hard_boundary_snapshot', False)
+    params.setdefault('hard_boundary_body', False)
     h = Harness(**params)
     h.areas = [square(-1, -1, 12)]
     start_until_planning(h)
@@ -130,8 +136,10 @@ def test_outside_by_0_09_does_nothing():
 
 def test_inside_a_path_corridor_does_nothing():
     """Off the mowing area square, on a drawn path: map_server's ~/outside_m is 0 there
-    (paths and the dock corridor count as inside; mower_map test_areas covers that)."""
-    h = transit_h()
+    (paths and the dock corridor count as inside; mower_map test_areas covers that).
+    The toy map has no route graph, so the transit is a costmap-planner fallback: its
+    corridor bound (no drawn path here) is off for this test."""
+    h = transit_h(transit_fallback_max_offpath_m=0.0)
     tok = h.pending_action(f.ACT_NAV).token
     m = h.mark()
     for k in range(30):
@@ -161,7 +169,8 @@ def test_hard_boundary_off_is_the_revert_flag():
 
 
 def test_mowing_excursion_retraces_then_resumes_the_sub_path():
-    h = Harness()
+    # revert path: base_link check on the synthetic ~/outside_m (see transit_h)
+    h = Harness(hard_boundary_snapshot=False, hard_boundary_body=False)
     h.areas = [square(-1, -1, 12)]
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0), line(0, 2, 4, 2)]))
@@ -183,7 +192,7 @@ def test_mowing_excursion_retraces_then_resumes_the_sub_path():
 
 
 def test_returning_home_excursion_retraces_then_reruns_the_dock():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     feed(h, (1.0, 0.0, 0.0))
     assert h.cmd(f.CMD_HOME)
     assert h.name == 'RETURNING_HOME'
