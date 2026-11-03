@@ -121,7 +121,7 @@ class MissionFSM(PreviewMixin,
         self._loc_swath = None              # degraded: finishing this swath {'sub', 'end'}
         self._loc_capped = False            # degraded speed cap sent to the controllers
         self._loc_lost_since = None         # start of the current 'lost' run
-        self._loc_trail = []                # [(x, y)] driven track since the last RTK-fixed pose
+        self._loc_trail = []                # [(x, y)] ring: last loc_trail_len_m of driven track
         self._blk = None                    # path-blocked wait context (see _blocked)
         self.obstacle_decision = {'kind': 'none'}   # /mission/obstacle_decision (GUI)
         self._dyn_ignore = None             # post-timeout ignore window (see _dyn_ignored)

@@ -1419,6 +1419,7 @@ class Params:
     loc_lost_dock_s: float = 600.0
     loc_hold_dock_exempt_max_s: float = 60.0
     loc_trail_step_m: float = 0.1
+    loc_trail_len_m: float = 10.0   # driven-track ring kept for the retrace
     # ---- 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py) ----
     nogo_enabled: bool = True
     nogo_zones_max_age_s: float = 10.0       # /obstacle_tracker/nogo_zones receipt age

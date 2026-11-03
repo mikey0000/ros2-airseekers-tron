@@ -291,3 +291,33 @@ def test_camera_and_loc_caps_lift_independently():
     m = h.mark()
     run(h, 'ok', 0.5)                   # loc lifts, camera cap stays
     assert all(v == 0.2 for v in speed_calls(h, m)[-1].values())
+
+
+def test_trail_is_continuous_so_a_late_loss_still_retraces():
+    """RTK-fixed all the way (the trail used to restart on every fixed tick), the mower
+    stops, then the status drops to lost: the ring still holds the driven track."""
+    h = big_mow()
+    h.fsm.mission.subpaths[0] = [(0.4 * k, 0.0, 0.0) for k in range(21)]   # 8 m swath
+    x = 0.0
+    while x < 6.0 - 1e-9:
+        x += 0.1
+        at(h, x)
+        run(h, 'ok', 0.1, dt=0.1)
+    run(h, 'lost', 0.5, est=0.3)
+    assert held(h)
+    run(h, 'lost', 125.0, dt=5.0)
+    assert h.fsm._loc['rt'] is not None
+    follow_retrace(h)
+    assert 2.8 <= 6.0 - h.fsm.inputs.pose[0] <= 3.2, h.fsm.inputs.pose
+
+
+def test_trail_ring_is_capped_at_loc_trail_len_m():
+    h = big_mow(loc_trail_len_m=5.0)
+    x = 0.0
+    while x < 12.0 - 1e-9:
+        x += 0.1
+        at(h, x)
+        run(h, 'ok', 0.1, dt=0.1)
+    tr = h.fsm._loc_trail
+    length = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(tr, tr[1:]))
+    assert 5.0 <= length <= 5.3, length
