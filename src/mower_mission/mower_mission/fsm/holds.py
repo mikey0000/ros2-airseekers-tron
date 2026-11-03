@@ -813,10 +813,10 @@ class HoldsMixin:
                               'area: no detour' % (m.area_idx, m.sub_i, idx, sp[idx][0],
                                                    sp[idx][1]))
             return False
-        # Blade always OFF on a detour (review 2026-10-09): with detour_unclassified_after 0 the
-        # first "collision ahead" goes straight here, and the obstacle may be a child, pet or
-        # hose that YOLO did not classify; the Nav2 path (not the straight segment
-        # _transit_blade checks) passes within 0.25-0.6 m of it.
+        # force_off: a detour never keeps the blade on by the continuous-area straight-segment
+        # rule (review 2026-10-09: the Nav2 detour path, not that segment, passes 0.25-0.6 m
+        # from an obstacle YOLO may not have classified). Since 2026-10-23 the owner rule in
+        # _keep_blade_inside still keeps it on while the body stays inside the area.
         self._transit_blade(sp[idx], 'detour', force_off=True)
         if not m.detour:
             self._incident('detour', why)

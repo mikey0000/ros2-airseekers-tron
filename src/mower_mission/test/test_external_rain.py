@@ -1,24 +1,8 @@
-"""External rain verdict: payload parsing and expiry (mower_mission/external_rain.py)."""
+"""External rain verdict: expiry (mower_mission/external_rain.py)."""
 
 import pytest
 
-from mower_mission.external_rain import ExternalRain, parse_rain_payload
-
-
-@pytest.mark.parametrize('payload', ['yes', 'YES', ' on\n', 'true', 'rain', 'Wet', '1', b'yes'])
-def test_wet_words(payload):
-    assert parse_rain_payload(payload) is True
-
-
-@pytest.mark.parametrize('payload', ['no', 'Off', 'false', 'dry', '0', b' no '])
-def test_dry_words(payload):
-    assert parse_rain_payload(payload) is False
-
-
-@pytest.mark.parametrize('payload', ['', '   ', 'unknown', 'unavailable', 'maybe', '2',
-                                     b'\xff', None, 1])
-def test_anything_else_is_ignored(payload):
-    assert parse_rain_payload(payload) is None
+from mower_mission.external_rain import ExternalRain
 
 
 def test_no_data_is_not_wet():

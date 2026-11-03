@@ -36,11 +36,6 @@ class ParityGuardsMixin:
                                message or incident))
 
     # ---- camera blocked ---------------------------------------------------
-    def _speed_cap_params(self, cap):
-        params = dict(self.coverage_speed_params(cap))
-        params[self.p.tilt_transit_speed_param] = cap
-        return params
-
     def _camera_blocked_tick(self):
         p = self.p
         want = (bool(self.inputs.camera_blocked) and float(p.camera_blocked_speed_mps) > 0.0

@@ -27,10 +27,6 @@ Zone = nz.Zone
 ZoneSet = nz.ZoneSet
 
 
-def wrap(a: float) -> float:
-    return math.atan2(math.sin(a), math.cos(a))
-
-
 # ---------------------------------------------------------------------------
 # zones as coverage holes
 # ---------------------------------------------------------------------------
