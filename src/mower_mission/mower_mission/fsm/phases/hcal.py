@@ -250,7 +250,7 @@ class HeadingCalMixin:
                 self._hcal_fail('stopped: %s %s in the way' % (
                     kind, i.obstacle_class or 'obstacle'))
             return
-        if self._now - h['done_at'] > float(self.p.heading_calibration_status_wait_s):
+        if self._now - h['done_at'] > float(self.p.heading_status_timeout_s):
             out = h['outcome']
             why = 'no COG alignment after the drive' if out == SUCCEEDED else \
                 'drive %s%s' % (out, ' (obstacle / costmap)' if out == ABORTED else '')

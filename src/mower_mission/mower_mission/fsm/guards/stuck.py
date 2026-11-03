@@ -21,7 +21,7 @@ class StuckGuardMixin:
     # stuck guard (mower_control slip_detector /stuck -> escape / STUCK_NEEDS_HELP)
     # ==================================================================
     def _stuck_steps(self):
-        v = abs(float(self.p.stuck_step_speed))
+        v = abs(float(self.p.slow_maneuver_mps))
         w = v * math.radians(float(self.p.stuck_arc_deg)) / max(0.05, float(self.p.stuck_step_m))
         return [(-v, 0.0, 'reverse'), (v, w, 'forward arc'), (-v, -w, 'reverse opposite arc')]
 
@@ -170,10 +170,10 @@ class StuckGuardMixin:
         self._dispatch()
 
     def _skip_failing_piece(self):
-        """resume_skip_failing: before a STUCK interrupt while mowing, record the failing piece
+        """Before a STUCK interrupt while mowing, record the failing piece
         as skipped and move the cursor past it (START never re-runs the same pivot first)."""
         m = self.mission
-        if not self.p.resume_skip_failing or self.phase != 'MOWING' or m.stretch is not None \
+        if self.phase != 'MOWING' or m.stretch is not None \
                 or m.area_idx is None or not m.subpaths or m.sub_i >= len(m.subpaths) or \
                 m.step not in ('corner_pivot', 'pivot_backout', 'follow'):
             return

@@ -13,28 +13,6 @@ reason to stop, never hide rain the mower feels. A wet verdict expires after
 mower in RAIN_WAITING forever.
 """
 
-WET_WORDS = frozenset(('yes', 'on', 'true', 'rain', 'wet', '1'))
-DRY_WORDS = frozenset(('no', 'off', 'false', 'dry', '0'))
-
-
-def parse_rain_payload(payload):
-    """'yes'/'no' (and on/off, true/false, wet/dry, rain, 1/0; any case, surrounding
-    whitespace ignored) -> True / False. Anything else -> None (ignore it)."""
-    if isinstance(payload, (bytes, bytearray)):
-        try:
-            payload = payload.decode('utf-8')
-        except UnicodeDecodeError:
-            return None
-    if not isinstance(payload, str):
-        return None
-    word = payload.strip().lower()
-    if word in WET_WORDS:
-        return True
-    if word in DRY_WORDS:
-        return False
-    return None
-
-
 class ExternalRain:
     """Last external verdict with its arrival time (monotonic seconds)."""
 

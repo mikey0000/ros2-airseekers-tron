@@ -18,6 +18,12 @@ def logs(h, mark=0):
     return [e.text for e in h.since(mark, f.Log)]
 
 
+def _ends(poses):
+    """xy of a path's first and last pose: path conditioning resamples a forward sub-path
+    at 0.05 m, so a conditioned leg is compared by where it starts and ends."""
+    return tuple((round(p[0], 6), round(p[1], 6)) for p in (poses[0], poses[-1]))
+
+
 def starts(h, mark, name):
     return [e for e in h.since(mark, f.StartAction) if e.name == name]
 
@@ -32,9 +38,11 @@ def _k_turn_on_rev(h, fwd2=None):
     """swath ending at a cusp -> reverse leg -> forward leg (+ a last swath). Returns with
     the reverse leg's follow_path running and the robot at its start."""
     start_until_planning(h)
-    fwd = [(0.2, 0.0, 0.0)] + [(1.0 + 0.1 * k, 0.0, 0.0) for k in range(11)]   # ends (2.0, 0)
+    fwd = [(0.2 + 0.1 * k, 0.0, 0.0) for k in range(19)]   # ends (2.0, 0), densified
     rev = [(2.0, 0.0, RYAW), (1.95, 0.175, RYAW), (1.9, 0.35, RYAW)]
-    fwd2 = fwd2 or [(1.9, 0.35, math.pi), (0.0, 0.36, math.pi)]
+    # fwd2 is not parallel to the swath (7.5 deg): path conditioning cannot replace the turn
+    # chain by a connector (join_turn_chains) and keeps the reverse leg as planned
+    fwd2 = fwd2 or [(1.9, 0.35, math.pi), (0.0, 0.6, math.pi)]
     last = [(0.0, 1.0, 0.0), (4.0, 1.0, 0.0)]
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([fwd, rev, fwd2, last]))
     h.fsm.inputs.is_cutting = True
@@ -57,34 +65,11 @@ def test_turn_leg_end_reached_with_yaw_off_completes_after_the_time_cap():
     assert not h.since(m, f.CancelActions)
     h.tick(dt=0.1, n=2)
     g = h.goal(f.ACT_FOLLOW)
-    assert g['poses'] == fwd2 and h.name == 'MOWING'
+    assert _ends(g['poses']) == _ends(fwd2) and h.name == 'MOWING'
     assert 1 in h.fsm.cursor.areas[0].completed
     done = [t for t in logs(h, m) if 'leg done' in t]
     assert len(done) == 1 and 'time cap' in done[0] and 'sub-path 1' in done[0]
     assert h.since(m, f.CancelActions)
-
-
-def test_turn_leg_end_reached_completes_after_one_full_rotation():
-    """The run 2 loop: pose index at the leg's last pose, the robot looping 0.4 m away
-    (outside turn_leg_skip_m, so the yaw-pass skip can never fire) and turning. That
-    progress_local rule is the fix 10 one, kept behind turn_leg_end_by_distance: false
-    (task 0.4 f; see test_turn_leg_end_by_distance_rotation_cap for the default)."""
-    h = Harness(turn_leg_end_by_distance=False)
-    _fwd, rev, fwd2 = _k_turn_on_rev(h)
-    h.fsm.inputs.pose = (1.9, 0.35, RYAW + 1.0)
-    h.tick()                                     # end reached (pose index at the last pose)
-    m = h.mark()
-    yaw = RYAW + 1.0
-    for k in range(70):                          # 0.1 rad per 0.1 s tick, 0.4 m off the end
-        yaw += 0.1
-        h.fsm.inputs.pose = (1.9, 0.75, yaw)
-        h.tick()
-        if h.since(m, f.CancelActions):
-            break
-    assert 60 <= k < 66                          # ~6.28 rad, after ~6.3 s (< the 20 s cap)
-    assert h.goal(f.ACT_FOLLOW)['poses'] == fwd2
-    done = [t for t in logs(h, m) if 'leg done' in t]
-    assert len(done) == 1 and 'rotation cap' in done[0]
 
 
 def test_turn_leg_end_with_yaw_met_is_unchanged():
@@ -97,7 +82,7 @@ def test_turn_leg_end_with_yaw_met_is_unchanged():
     h.tick(dt=0.1, n=2)                          # 0.2 s at the end
     assert h.goal(f.ACT_FOLLOW)['poses'] == rev and not h.since(m, f.CancelActions)
     h.finish(f.ACT_FOLLOW, arrive=False)
-    assert h.goal(f.ACT_FOLLOW)['poses'] == fwd2
+    assert _ends(h.goal(f.ACT_FOLLOW)['poses']) == _ends(fwd2)
     assert not [t for t in logs(h, m) if 'leg done' in t]
 
     h2 = Harness(transit_retry_delay_s=0.1)
@@ -107,7 +92,7 @@ def test_turn_leg_end_with_yaw_met_is_unchanged():
     m = h2.mark()
     h2.finish(f.ACT_FOLLOW, f.ABORTED)
     h2.tick(dt=0.1, n=2)                         # retry after 0.1 s: turn_leg_skip, next leg
-    assert h2.goal(f.ACT_FOLLOW)['poses'][0] == (1.9, 0.35, math.pi)
+    assert h2.goal(f.ACT_FOLLOW)['poses'][0][:2] == (1.9, 0.35)
     done = [t for t in logs(h2, m) if 'leg done' in t]
     assert len(done) == 1 and 'no re-send' in done[0] and 'cap' not in done[0]
 
@@ -130,7 +115,7 @@ def test_turn_leg_cap_resets_per_leg():
     _k_turn_on_rev(h, fwd2=fwd2)
     h.fsm.inputs.pose = (1.9, 0.35, RYAW + 1.0)
     h.tick(dt=0.1, n=201)
-    assert h.goal(f.ACT_FOLLOW)['poses'] == fwd2
+    assert _ends(h.goal(f.ACT_FOLLOW)['poses']) == _ends(fwd2)
     tok = h.pending_action(f.ACT_FOLLOW).token
     h.fsm.inputs.pose = (1.0, 0.36, math.pi + 1.0)
     m = h.mark()
@@ -148,12 +133,13 @@ def test_turn_leg_cap_resets_per_leg():
 # =====================================================================
 def test_follow_without_pose_index_progress_is_aborted_and_retried():
     h = Harness(transit_retry_delay_s=3.0)
-    mowing(h)                                    # line (0, 0) -> (4, 0), 0.4 m poses
+    mowing(h)                                    # line (0, 0) -> (4, 0), resampled
     for k in range(1, 4):                        # drives 1.2 m, then loops in place
         h.fsm.inputs.pose = (0.4 * k, 0.0, 0.0)
         h.tick(dt=1.0)
     tok = h.pending_action(f.ACT_FOLLOW).token
-    assert h.fsm.mission.progress_local == 3
+    poses = h.goal(f.ACT_FOLLOW)['poses']
+    assert abs(poses[h.fsm.mission.progress_local][0] - 1.2) < 1e-6
     m = h.mark()
     h.tick(dt=1.0, n=89)
     assert h.pending_action(f.ACT_FOLLOW).token == tok and not h.since(m, f.CancelActions)
@@ -370,8 +356,11 @@ def test_off_route_graph_start_falls_back_to_the_costmap_planner():
 # ---- the corridor bound of the costmap fallback ----------------------
 def _outside_route_h(**params):
     """Robot at (0, 0) outside the only mowing area (4..10, 4..10); sub-path from (5, 5)."""
-    h = Harness(route_transits=True, **params)
-    h.areas = [square(4, 4, 6)]
+    h = Harness(auto_route=False, **params)
+    # the transit runs over a navigation area (-1..6): the hard boundary's area snapshot
+    # allows it, the corridor bound (mowing areas + the replaced route) is what is tested
+    nav = dict(square(-1, -1, 7), name='nav', is_navigation_area=True)
+    h.areas = [square(4, 4, 6), nav]
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([[(5.0 + 0.5 * k, 5.0, 0.0) for k in range(9)]]))
     assert h.name == 'TRANSIT'
@@ -446,8 +435,8 @@ def test_off_graph_fallback_moving_away_is_cancelled():
 # =====================================================================
 # task 0.4 (f), run 3: "end reached" by distance only, capped by own length only
 # =====================================================================
-def test_turn_leg_end_by_distance_rotation_cap():
-    """Default rule: the rotation cap still fires once the robot is within turn_leg_skip_m
+def test_turn_leg_end_reached_by_distance_rotation_cap():
+    """The rotation cap still fires once the robot is within turn_leg_skip_m
     of the end (yaw off, so the yaw-pass skip does not end it)."""
     h = Harness()
     _fwd, rev, fwd2 = _k_turn_on_rev(h)
@@ -462,7 +451,7 @@ def test_turn_leg_end_by_distance_rotation_cap():
         if h.since(m, f.CancelActions):
             break
     assert 60 <= k < 66
-    assert h.goal(f.ACT_FOLLOW)['poses'] == fwd2
+    assert _ends(h.goal(f.ACT_FOLLOW)['poses']) == _ends(fwd2)
 
 
 def test_progress_index_at_the_last_pose_far_from_the_end_does_not_end_the_leg():
@@ -478,12 +467,14 @@ def test_progress_index_at_the_last_pose_far_from_the_end_does_not_end_the_leg()
 
 
 def _ring_then_cusp(h):
-    """A 49 m outer ring that ends at the cusp of a short reverse leg (run 3)."""
+    """A 60 m outer ring that ends at the cusp of a short reverse leg (run 3). It starts 4 m
+    from its end: a ring closing on its own start is chunked there (loop guard), and this
+    test is about the one leg ending at the cusp."""
     h.areas = [square(-2, -2, 20)]
     start_until_planning(h)
     ring = []
-    for (x0, y0), (x1, y1) in zip([(0, 0), (12, 0), (12, 12), (0, 12)],
-                                  [(12, 0), (12, 12), (0, 12), (0, 0.25)]):
+    for (x0, y0), (x1, y1) in zip([(4, 0), (16, 0), (16, 16), (0, 16)],
+                                  [(16, 0), (16, 16), (0, 16), (0, 0.25)]):
         n = 40
         for k in range(n):
             ring.append((x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n, 0.0))
@@ -506,23 +497,12 @@ def test_long_ring_ending_at_a_cusp_is_not_a_turn_leg_and_not_capped():
     # 4.6 m before the end, on the last side; the nearest-index search matched the ring's
     # own end (its start/end are 0.25 m apart): progress_local at the last pose
     h.fsm.inputs.pose = (0.0, 4.6, -math.pi / 2)
-    h.fsm.mission.progress_local = len(ring) - 1
+    h.fsm.mission.progress_local = len(h.goal(f.ACT_FOLLOW)['poses']) - 1   # conditioned ring
     h.tick(dt=0.1, n=300)                                # 30 s > the 20 s cap
     assert h.pending_action(f.ACT_FOLLOW).token == tok
     assert not h.fsm.mission.leg_watch['capped']
     assert 0 not in h.fsm.cursor.areas[0].completed
     assert not [t for t in logs(h) if 'leg done' in t]
-
-
-def test_long_ring_old_rule_capped_it_revert_flag():
-    h = Harness(follow_chunk_m=0.0, turn_leg_end_by_distance=False)
-    ring = _ring_then_cusp(h)
-    h.fsm.inputs.pose = (0.0, 4.6, -math.pi / 2)
-    h.fsm.mission.progress_local = len(ring) - 1
-    m = h.mark()
-    h.tick(dt=0.1, n=210)
-    done = [t for t in logs(h, m) if 'leg done' in t]
-    assert len(done) == 1 and 'time cap' in done[0]
 
 
 # =====================================================================
@@ -536,8 +516,42 @@ def _corner_route(deg, tgt):
     return a + b + [tuple(tgt)]
 
 
+def _strip(a, b, hw, ext):
+    """Rectangle around segment a -> b: half width ``hw``, ``ext`` past both ends."""
+    d = math.hypot(b[0] - a[0], b[1] - a[1])
+    ux, uy = (b[0] - a[0]) / d, (b[1] - a[1]) / d
+    nx, ny = -uy * hw, ux * hw
+    p0, p1 = (a[0] - ux * ext, a[1] - uy * ext), (b[0] + ux * ext, b[1] + uy * ext)
+    return [(p0[0] - nx, p0[1] - ny), (p1[0] - nx, p1[1] - ny), (p1[0] + nx, p1[1] + ny),
+            (p0[0] + nx, p0[1] + ny)]
+
+
+def _channel(deg, end):
+    """Navigation-area strips 0.7 m wide along _corner_route(deg, end) (drawn paths)."""
+    hd = math.radians(deg)
+    b_end = (2.0 + 1.9 * math.cos(hd), 1.9 * math.sin(hd))
+    nav = [_strip((0.0, 0.0), (2.0, 0.0), 0.35, 0.6), _strip((2.0, 0.0), b_end, 0.35, 0.6)]
+    if end is not None:                  # on to the route's last pose
+        nav.append(_strip(b_end, tuple(end[:2]), 0.6, 0.6))
+    return [{'name': 'path %d' % k, 'outer': o, 'obstacles': [], 'is_navigation_area': True}
+            for k, o in enumerate(nav)]
+
+
+def _channel_route_h(deg, end=(5.0, 5.0), **params):
+    """_route_h with the transit on drawn paths: navigation-area strips 0.7 m wide along
+    _corner_route(deg) (the mowing area is 4..10). Path conditioning fits no r >= 0.8 fillet
+    inside the narrow corner, so the corner stays a pivot vertex (a wide-open corner is
+    filleted and never stops: tests/test_path_conditioning.py)."""
+    h = Harness(auto_route=False, **params)
+    h.areas = [square(4, 4, 6)] + _channel(deg, end)
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([[(5.0 + 0.5 * k, 5.0, 0.0) for k in range(9)]]))
+    assert h.name == 'TRANSIT'
+    return h
+
+
 def test_route_corner_100_deg_gets_an_about_turn_before_the_next_leg():
-    h = _route_h()
+    h = _channel_route_h(100.0)
     assert h.fsm.p.route_cusp_radius_m == 1.0           # 0.5 -> 1.0 (run 3)
     route = _corner_route(100.0, h.fsm.mission.transit_target)
     _answer_route(h, resp=_route_resp(route))
@@ -559,7 +573,7 @@ def test_route_corner_100_deg_gets_an_about_turn_before_the_next_leg():
 
 def test_route_corner_80_deg_is_split_at_the_default_threshold():
     """2026-10-15: route_corner_turn_rad 1.38 (79 deg): an 80 deg corner stops and pivots."""
-    h = _route_h()
+    h = _channel_route_h(80.0)
     assert abs(h.fsm.p.route_corner_turn_rad - 1.38) < 1e-9
     _answer_route(h, resp=_route_resp(_corner_route(80.0, h.fsm.mission.transit_target)))
     assert len(h.fsm._route_legs['legs']) == 2
@@ -647,7 +661,8 @@ def test_failed_corner_pivot_revert_follows_the_leg_anyway():
 
 
 def test_failed_dock_route_corner_pivot_is_retried_too():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
+    h.fsm._region_areas = dict(enumerate(_channel(110.0, (0.5, 2.0))))   # narrow corner: pivot
     h.fsm.inputs.pose = (0.0, 0.0, 0.0)
     assert h.cmd(f.CMD_HOME)
     _answer_route(h, resp=_route_resp(_corner_route(110.0, (0.5, 2.0, 0.0))))
@@ -673,7 +688,8 @@ def test_route_corner_turn_off_restores_the_controller_turn():
 
 
 def test_dock_route_corner_gets_the_about_turn_too():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
+    h.fsm._region_areas = dict(enumerate(_channel(110.0, (0.5, 2.0))))   # narrow corner: pivot
     h.fsm.inputs.pose = (0.0, 0.0, 0.0)
     assert h.cmd(f.CMD_HOME)
     _answer_route(h, resp=_route_resp(_corner_route(110.0, (0.5, 2.0, 0.0))))
@@ -702,7 +718,7 @@ def _dock_route():
 
 
 def test_dock_route_abort_far_from_the_approach_pose_never_starts_the_docking_server():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     _home_far(h)
     m = h.mark()
     for k in range(3):                                  # the route + 2 re-sends
@@ -717,7 +733,7 @@ def test_dock_route_abort_far_from_the_approach_pose_never_starts_the_docking_se
 
 
 def test_dock_route_resend_reaches_the_approach_then_docking_server():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     _home_far(h)
     _answer_route(h, resp=_route_resp(_dock_route()))
     h.fsm.inputs.pose = (1.3, -3.5, 1.6)
@@ -730,7 +746,7 @@ def test_dock_route_resend_reaches_the_approach_then_docking_server():
 
 
 def test_no_dock_route_far_away_fails_instead_of_navigating():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     _home_far(h)
     m = h.mark()
     for k in range(3):
@@ -740,7 +756,7 @@ def test_no_dock_route_far_away_fails_instead_of_navigating():
 
 
 def test_near_the_approach_pose_the_docking_server_takes_over():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     _home_far(h)
     _answer_route(h, resp=_route_resp(_dock_route()))
     h.fsm.inputs.pose = (0.9, -0.3, 1.6)                # 0.32 m from (0.8, 0)
@@ -749,7 +765,7 @@ def test_near_the_approach_pose_the_docking_server_takes_over():
 
 
 def test_dock_server_nav_max_zero_restores_the_old_hand_over():
-    h = Harness(route_transits=True, dock_server_nav_max_m=0.0)
+    h = Harness(auto_route=False, dock_server_nav_max_m=0.0)
     _home_far(h)
     _answer_route(h, resp=_route_resp(_dock_route()))
     h.fsm.inputs.pose = (1.3, -3.5, 1.6)
@@ -770,7 +786,7 @@ def _offgraph(start=EDGE_START):
 
 
 def _home_offgraph(**params):
-    h = Harness(route_transits=True, **params)
+    h = Harness(auto_route=False, **params)
     h.fsm._region_areas = {5: {'outer': SQUARE, 'name': 'Clothesline'}}
     h.fsm.inputs.dock_pose = DOCK
     h.fsm.inputs.pose = EDGE_START
@@ -868,7 +884,7 @@ def test_offgraph_join_off_restores_the_old_handover():
 
 def test_offgraph_join_from_just_outside_the_outline_moves_inward():
     # 2026-11-02 03:47 incident: the pose was 0.013 m outside the area outline
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     h.fsm._region_areas = {5: {'outer': SQUARE, 'name': 'Clothesline'},
                            6: {'outer': [(-30.0, -10.0), (-10.5, -10.0), (-10.5, 10.0),
                                          (-30.0, 10.0)], 'name': 'Far'}}
@@ -884,7 +900,7 @@ def test_offgraph_join_from_just_outside_the_outline_moves_inward():
 
 
 def test_offgraph_join_far_outside_every_area_keeps_the_old_handover():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     h.fsm._region_areas = {5: {'outer': SQUARE, 'name': 'Clothesline'}}
     h.fsm.inputs.dock_pose = DOCK
     h.fsm.inputs.pose = (-10.5, 1.95, 0.0)        # 0.5 m outside: beyond the 0.30 m band
@@ -896,7 +912,7 @@ def test_offgraph_join_far_outside_every_area_keeps_the_old_handover():
 
 
 def test_low_battery_return_also_joins():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     h.fsm._region_areas = {5: {'outer': SQUARE, 'name': 'Clothesline'}}
     h.fsm.inputs.dock_pose = DOCK
     h.fsm.inputs.pose = EDGE_START

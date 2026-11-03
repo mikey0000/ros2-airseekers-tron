@@ -492,8 +492,8 @@ r = 1.0 fillet; its drawn 90 deg corner by the dock pivots.
 
 | | Change | Params (default) | Revert |
 |---|---|---|---|
-| n | Path conditioner on coverage sub-paths (not turn legs) and transit / dock routes; pivots as leg end + Spin; `~/mow_plan` types, `~/conditioned_route` | `path_conditioning` true, `path_conditioning_r_min_m` 0.5, `_r_max_m` 1.0, `_margin_m` 0.05, `_half_width_m` 0.24, `_slack_m` 0.05, `_pivot_min_rad` 0.35, `_edge_pivot_rad` 1.38, `_edge_clearance_m` 0.20 | `path_conditioning: false` |
-| o | Coverage leg join pivot (> this off the robot's yaw, not on turn legs / swath-end turns) | `path_conditioning_start_pivot_rad` 0.6 | `0.0` |
+| n | Path conditioner on coverage sub-paths (not turn legs) and transit / dock routes; pivots as leg end + Spin; `~/mow_plan` types, `~/conditioned_route` | `path_conditioning` true, `path_conditioning_r_min_m` 0.5, `_r_max_m` 1.0, `_margin_m` 0.05, `_half_width_m` 0.235 (0.24 at this trial), `_slack_m` 0.05, `_pivot_min_rad` 0.35, `_edge_pivot_rad` 0.0 (1.38 at this trial; 0 = no edge policy), `_edge_clearance_m` 0.20 | `path_conditioning: false` |
+| o | Coverage leg join pivot (> this off the robot's yaw, not on turn legs / swath-end turns) | `path_conditioning_start_pivot_rad` 0.6 (removed 2026-10-16, see mission.yaml) | `0.0` |
 
 **Sim gate results** (full table in `simulation.md`): with conditioning, ideal and disturbed,
 0 samples outside, 0 hard-boundary trips, every sharp corner <= 0.114 m (V corner 0.038 m),

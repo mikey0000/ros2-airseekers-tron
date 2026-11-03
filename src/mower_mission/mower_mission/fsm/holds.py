@@ -39,7 +39,7 @@ class HoldsMixin:
             return 'none'
         self._zone_ignore_logged = False
         self._path_eval = None
-        if kind != 'none' and self.p.obstacle_path_filter:
+        if kind != 'none':
             on = self._obstacle_on_path()
             self._decide(kind, on)
             if on is False:
@@ -497,7 +497,7 @@ class HoldsMixin:
             self._loc_capped = want
             if want:
                 self._log('warn', 'localization %s: controller speed capped at %.2f m/s'
-                          % (state, float(self.p.loc_degraded_speed_mps)))
+                          % (state, float(self.p.caution_speed_mps)))
             else:
                 self._log('info', 'localization speed cap lifted')
             self._push_speed_caps()
@@ -573,7 +573,7 @@ class HoldsMixin:
             self._loc_swath = {'sub': m.sub_i, 'area': m.area_idx, 'end': r[0], 'clear': r[1]}
             self._log('warn', 'localization degraded (drift %.2f m): finishing the current '
                       'swath at %.2f m/s (edge clearance %.2f m >= drift + %.2f m)'
-                      % (est, float(self.p.loc_degraded_speed_mps), r[1], margin))
+                      % (est, float(self.p.caution_speed_mps), r[1], margin))
             return True
         if est is None or est + margin > sw['clear']:
             self._log('warn', 'localization degraded: drift %s + %.2f m > edge clearance '
@@ -735,7 +735,7 @@ class HoldsMixin:
         self._log('warn', 'localization not ok for %.0f s: retracing %.2f m of the driven track '
                   'toward the last RTK-fixed pose at %.2f m/s'
                   % (self._now - d['since'], d['rt']['len'],
-                     float(self.p.loc_lost_retrace_speed_mps)))
+                     float(self.p.slow_maneuver_mps)))
         self._go(self.phase, 'localization lost: retracing toward the last fix')
 
     def _loc_retrace_stop(self, why):
@@ -774,7 +774,7 @@ class HoldsMixin:
         dx, dy = tx - pose[0], ty - pose[1]
         c, s = math.cos(pose[2]), math.sin(pose[2])
         xr, yr = c * dx + s * dy, -s * dx + c * dy
-        v0 = abs(float(self.p.loc_lost_retrace_speed_mps))
+        v0 = abs(float(self.p.slow_maneuver_mps))
         v = v0 if xr > 0 else -v0
         w = max(-0.3, min(0.3, v * 2.0 * yr / max(1e-6, xr * xr + yr * yr)))
         self._fx.append(DriveCmd(v, w))
@@ -813,10 +813,10 @@ class HoldsMixin:
                               'area: no detour' % (m.area_idx, m.sub_i, idx, sp[idx][0],
                                                    sp[idx][1]))
             return False
-        # Blade always OFF on a detour (review 2026-10-09): with detour_unclassified_after 0 the
-        # first "collision ahead" goes straight here, and the obstacle may be a child, pet or
-        # hose that YOLO did not classify; the Nav2 path (not the straight segment
-        # _transit_blade checks) passes within 0.25-0.6 m of it.
+        # force_off: a detour never keeps the blade on by the continuous-area straight-segment
+        # rule (review 2026-10-09: the Nav2 detour path, not that segment, passes 0.25-0.6 m
+        # from an obstacle YOLO may not have classified). Since 2026-10-23 the owner rule in
+        # _keep_blade_inside still keeps it on while the body stays inside the area.
         self._transit_blade(sp[idx], 'detour', force_off=True)
         if not m.detour:
             self._incident('detour', why)
@@ -876,9 +876,8 @@ class HoldsMixin:
     def _next_stretch(self):
         m = self.mission
         ac = self.cursor.area(m.area_idx)
-        each = bool(self.p.retry_each_skipped_stretch)
         pose = self.inputs.pose
-        if each and pose is not None and len(m.requeue) > 1:
+        if pose is not None and len(m.requeue) > 1:
             m.requeue.sort(key=lambda s: self._stretch_dist(s, pose))     # nearest first
         fr, to = m.requeue.pop(0)
         a = absolute_to_local(m.subpaths, fr)
@@ -889,15 +888,12 @@ class HoldsMixin:
                 self._persist()
             self._area_done()
             return
-        # field 2026-10-23 afternoon (32 stretch retries, 18 still blocked): a stretch near a
-        # stretch that could not be bypassed in this mission is reported blocked without
-        # driving to it again. Field 2026-11-03: one shorter than stretch_min_retry_m is
+        # Field 2026-11-03: a stretch shorter than stretch_min_retry_m is
         # dropped as too short to matter (ignored_short_m), never counted blocked / NOT
         # mowed, so a 99.8 % mow still completes.
         sp = m.subpaths[a[0]]
         cum = geo.cumulative_lengths(sp)
         length = cum[b[1]] - cum[a[1]]
-        p0, p1 = sp[a[1]], sp[b[1]]
         if length < float(self.p.stretch_min_retry_m):
             if (fr, to) in ac.skipped:
                 ac.skipped.remove((fr, to))
@@ -907,16 +903,6 @@ class HoldsMixin:
                       'short to matter (%.2f m < %.2f m)'
                       % (m.area_idx, a[0], a[1], b[1], length,
                          float(self.p.stretch_min_retry_m)))
-            self._area_done()
-            return
-        near = [] if each else [
-            q for q in m.unbypassable
-            if min(geo.dist(q, p0), geo.dist(q, p1)) <= float(self.p.stretch_block_radius_m)]
-        if near:
-            m.blocked.append((m.area_idx, fr, to))
-            self._log('info', 'area %d: stretch sub-path %d poses %d -> %d not re-tried (next '
-                      'to an obstacle that could not be bypassed)'
-                      % (m.area_idx, a[0], a[1], b[1]))
             self._area_done()
             return
         m.stretch, m.stretch_end = (fr, to), b[1]
@@ -1029,7 +1015,7 @@ class HoldsMixin:
             self._blade_off('end-of-area retry failed')
             self._area_done()
             return
-        if self.p.retry_each_skipped_stretch and self._static_block():
+        if self._static_block():
             ac = self.cursor.area(m.area_idx)
             st = tuple(m.stretch)
             if st in ac.skipped:
@@ -1045,9 +1031,6 @@ class HoldsMixin:
             self._area_done()
             return
         m.blocked.append((m.area_idx,) + tuple(m.stretch))
-        pose = self.inputs.pose
-        if pose is not None:
-            m.unbypassable.append((float(pose[0]), float(pose[1])))
         self._log('warn', 'area %d: stretch %s still blocked (%s): obstacle cannot be bypassed'
                   % (m.area_idx, m.stretch, why))
         m.stretch, m.stretch_end, m.step = None, None, None

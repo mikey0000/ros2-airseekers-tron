@@ -316,8 +316,7 @@ class MissionFSM(PreviewMixin,
         """May a running blade stay on in the current mission step (continuous policy,
         inside the area)?  Used by the _go safety net and blade_allowed()."""
         m = self.mission
-        keep_obs = bool(self.p.blade_keep_on_obstacles) and self._hb is None and \
-            self._body_inside(self.inputs.pose)
+        keep_obs = self._hb is None and self._body_inside(self.inputs.pose)
         if not (self._continuous() or keep_obs) or self.inputs.boundary_violation or \
                 self.phase not in ('MOWING', 'TRANSIT') or m.recovering:
             return False
@@ -329,7 +328,7 @@ class MissionFSM(PreviewMixin,
 
     def _soft_blade_off(self, reason):
         """Blade off unless the continuous policy keeps it running here, or (owner 2026-10-23,
-        blade_keep_on_obstacles) the robot is inside the area by the body rules."""
+        blade continuous) the robot is inside the area by the body rules."""
         if self.blade_on and self._continuous() and not self.inputs.boundary_violation \
                 and self.mission is not None and not self.mission.recovering \
                 and self.phase in ('MOWING', 'TRANSIT'):
@@ -356,14 +355,14 @@ class MissionFSM(PreviewMixin,
         while the robot stays inside the area by our body rules (and, for a move to
         ``target``, the straight path there does too). True = kept on (logged)."""
         m = self.mission
-        if not self.p.blade_keep_on_obstacles or not self.blade_on or m is None or \
+        if not self.blade_on or m is None or \
                 self.phase not in ('MOWING', 'TRANSIT') or self.inputs.boundary_violation or \
                 m.recovering or self._hb is not None or not self._body_inside(self.inputs.pose):
             return False
         if target is not None and not self._segment_in_area(self.inputs.pose, target,
                                                             body=True):
             return False
-        self._log('info', 'blade kept on (%s): inside the area (blade_keep_on_obstacles)'
+        self._log('info', 'blade kept on (%s): inside the area (owner rule)'
                   % reason)
         return True
 

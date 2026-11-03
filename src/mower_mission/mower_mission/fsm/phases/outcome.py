@@ -147,7 +147,7 @@ class OutcomeMixin:
     def _area_done(self):
         m = self.mission
         ac = self.cursor.area(m.area_idx)
-        if m.requeue is None and ac.skipped and self.p.requeue_skipped:
+        if m.requeue is None and ac.skipped:
             m.requeue = sorted(ac.skipped)
             self._log('info', 'area %d: re-trying %d stretch(es) skipped by obstacle detours'
                       % (m.area_idx, len(m.requeue)))
@@ -156,8 +156,7 @@ class OutcomeMixin:
             return
         if m.requeue_subs is None:
             m.requeue_subs = [x for x in m.failed if x[0] == m.area_idx and x[1] is not None
-                              and (x[0], x[1]) in m.transit_failed] \
-                if self.p.requeue_failed_transits else []
+                              and (x[0], x[1]) in m.transit_failed]
             if m.requeue_subs:
                 self._log('info', 'area %d: re-trying %d sub-path(s) whose transit failed'
                           % (m.area_idx, len(m.requeue_subs)))

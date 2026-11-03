@@ -33,24 +33,18 @@ def line(x0, y0, x1, y1, n=11):
 
 class Harness:
     def __init__(self, cursor=None, **params):
-        # The pre-obstacle-avoidance tests exercise plain follow retries: an unclassified
-        # abort never detours unless a test asks for it.
-        params.setdefault('detour_unclassified_after', -1)
-        # ... and a fixed transit_retry_delay_s (the 3/10/30 s back-off has its own tests)
+        # Defaults are the shipped yaml (Params defaults, parity-tested) except two timing
+        # conveniences: a fixed transit_retry_delay_s (the 3/10/30 s back-off has its own
+        # tests) and an immediate pivot re-send. Tests that cover a revert path set that flag
+        # explicitly and say "revert path".
         params.setdefault('transit_retry_backoff_s', [])
-        # ... and the detour geometry the detour tests were written for (1.0 / 3.0 m skips;
-        # the shipped 2.0 / 3.5 m defaults have their own test).
-        params.setdefault('detour_skip_m', 1.0)
-        params.setdefault('detour_max_skip_m', 3.0)
-        # ... and Nav2-only transits (route-graph transits, 2026-10-09, have their own tests)
-        params.setdefault('route_transits', False)
-        # ... and raw paths (path conditioning, 2026-10-15, has its own tests:
-        # test_path_conditioning.py)
-        params.setdefault('path_conditioning', False)
-        # ... and the base_link-only boundary check (the body-aware check, step 3 round 2,
-        # has its own tests in test_body_boundary.py; the toy squares put lap ends on the line)
-        params.setdefault('hard_boundary_body', False)
-        params.setdefault('hard_boundary_snapshot', False)    # synthetic ~/outside_m
+        # The toy squares have no route graph: plan_route is answered "no route graph" (the
+        # shipped costmap-planner fallback and docking-server handover) unless a route test
+        # answers it itself (auto_route=False).
+        self.auto_route = params.pop('auto_route', True)
+        # ... and a pivot onto a leg completes when a test asks for the next action
+        # (auto_spin=False: the pivot tests drive it themselves)
+        self.auto_spin = params.pop('auto_spin', True)
         params.setdefault('pivot_retry_pause_s', 0.0)   # immediate re-send (own test)
         self.t = 0.0
         self.fsm = f.MissionFSM(f.Params.from_dict(params), cursor=cursor, now=0.0)
@@ -88,9 +82,13 @@ class Harness:
             elif isinstance(e, f.BladeOff):
                 self.blade = False
             elif isinstance(e, f.StartAction) and e.name in MOVING_ACTIONS:
-                # continuous blade policy: an in-area mission transit / detour may keep it on
+                # continuous blade policy: an in-area mission transit / detour may keep it on;
+                # owner rule 2026-10-23: so may a mission back-up with the body inside
                 assert not self.blade or (e.name == f.ACT_NAV and self.fsm.mission is not None
-                                          and self.fsm.mission.blade_transit), \
+                                          and self.fsm.mission.blade_transit) or (
+                    e.name == f.ACT_BACKUP and self.fsm.mission is not None
+                    and self.fsm.phase in ('MOWING', 'TRANSIT')
+                    and self.fsm._body_inside(self.fsm.inputs.pose)), \
                     'blade on while starting %s' % e.name
             elif isinstance(e, f.PublishStatus) and self.blade:
                 assert e.status['state_name'] in ('MOWING', 'MANUAL_MOWING') or (
@@ -119,10 +117,15 @@ class Harness:
         """Answer a pending get_area_settings / coverage set_parameters call."""
         for _ in range(10):
             s = self.fsm._service
-            if s is None or s.name not in (f.SRV_GET_AREA_SETTINGS, f.SRV_SET_PARAMS):
+            if s is None or s.name not in (f.SRV_GET_AREA_SETTINGS, f.SRV_SET_PARAMS,
+                                           f.SRV_PLAN_ROUTE):
                 return
             req = self._request_of(s.token)
-            if req.name == f.SRV_GET_AREA_SETTINGS:
+            if req.name == f.SRV_PLAN_ROUTE:
+                if not self.auto_route:
+                    return
+                resp = (True, {'success': False, 'message': 'no route graph', 'poses': []})
+            elif req.name == f.SRV_GET_AREA_SETTINGS:
                 st = self.area_settings.get(req.request['index'], {})
                 if st is not None:
                     # pre-2026-10-07 tests assume the blade-off-on-every-stop behaviour
@@ -165,9 +168,22 @@ class Harness:
     def pending_action(self, name=None):
         a = self.fsm._action
         assert a is not None, 'no pending action'
+        if name is not None and name != f.ACT_SPIN and a.name == f.ACT_SPIN and self.auto_spin:
+            # path conditioning pivots onto a leg first: complete the in-place turn
+            ang = self._goal_of(a)['angle']
+            x, y, yaw = self.fsm.inputs.pose
+            self.fsm.inputs.pose = (x, y, yaw + ang)
+            self._apply(self.fsm.on_action_result(a.token, f.SUCCEEDED, {}, self.t))
+            return self.pending_action(name)
         if name is not None:
             assert a.name == name, a.name
         return a
+
+    def _goal_of(self, a):
+        for e in reversed(self.fx):
+            if isinstance(e, f.StartAction) and e.token == a.token:
+                return e.goal
+        raise AssertionError('goal not found')
 
     def goal(self, name):
         a = self.pending_action(name)
@@ -218,6 +234,12 @@ class Harness:
 
     def statuses(self, mark=0):
         return [e.status['state_name'] for e in self.since(mark, f.PublishStatus)]
+
+
+def near_index(poses, x, y):
+    """Index of the pose nearest (x, y): conditioned sub-paths are resampled, so tests
+    locate a planned point by position instead of by its raw index."""
+    return min(range(len(poses)), key=lambda k: math.hypot(poses[k][0] - x, poses[k][1] - y))
 
 
 def plan(subpaths):
@@ -696,13 +718,13 @@ def test_full_mow_happy_path_with_transit():
     h.tick()
     g = h.goal(f.ACT_FOLLOW)
     assert g['controller_id'] == 'FollowCoveragePathMPPI'
-    assert g['goal_checker_id'] == 'coverage_goal_checker'
-    assert g['poses'] == sp0
+    assert g['goal_checker_id'] == 'coverage_corner_goal_checker'   # conditioned leg
+    assert g['poses'][0][:2] == sp0[0][:2] and g['poses'][-1][:2] == sp0[-1][:2]
     h.fsm.inputs.pose = (4, 0, 0)
     m = h.mark()
     h.finish(f.ACT_FOLLOW)
-    assert h.name == 'TRANSIT' and not h.blade
-    assert isinstance(h.since(m, (f.BladeOff, f.StartAction))[0], f.BladeOff)
+    # the in-area transit keeps the blade on (owner rule 2026-10-23: body inside the area)
+    assert h.name == 'TRANSIT' and h.blade and h.fsm.mission.blade_transit
     st = h.fsm.status()
     assert st['completed_swaths'] == 1 and st['total_swaths'] == 2
     assert 40 < st['coverage_percent'] < 60
@@ -713,13 +735,13 @@ def test_full_mow_happy_path_with_transit():
     follow_current(h)
     # second area
     assert h.name == 'PLANNING' and h.fsm.mission.area_idx == 1
-    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(4, 2.3, 10, 2.3)]))
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(10.5, 2.3, 14, 2.3)]))
     assert h.name == 'TRANSIT' and not h.blade    # robot ended area 0 at (0, 2)
     h.finish(f.ACT_NAV)
     follow_current(h)
     m = h.mark()
     assert h.name == 'RETURNING_HOME'
-    assert 'MOWING_COMPLETE' in h.statuses(m - 10)
+    assert 'MOWING_COMPLETE' in h.statuses()
     assert not h.blade and not h.fsm.cursor.available
     h.fsm.inputs.docked = True
     h.fsm.inputs.is_charging = True
@@ -786,12 +808,13 @@ def test_follow_abort_retries_from_nearest_then_fails_subpath():
     h.tick()
     h.fsm.inputs.pose = (2.1, 0.1, 0.0)
     h.finish(f.ACT_FOLLOW, f.ABORTED)
-    assert h.name == 'MOWING' and not h.blade and h.fsm._action is None
+    # the blade stays on while the body is inside the area (owner rule 2026-10-23)
+    assert h.name == 'MOWING' and h.blade and h.fsm._action is None
     assert 'retry 1/1' in h.fsm.sub_state and 'follow_path aborted' in h.fsm.sub_state
     h.tick(dt=1.0, n=3)
-    h.tick()                                 # blade spin-up confirmed -> follow
+    h.tick()
     g = h.goal(f.ACT_FOLLOW)                 # within 0.6 m: no transit
-    assert g['poses'][0] == sp0[4]
+    assert abs(g['poses'][0][0] - 2.1) < 0.1 and abs(g['poses'][0][1]) < 1e-6
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     assert h.fsm.mission.skipped == 1 and h.fsm.mission.sub_i == 1
     assert h.fsm.status()['skipped_swaths'] == 1
@@ -810,11 +833,12 @@ def test_progress_tracking_never_jumps_to_adjacent_lap():
     for x in (0.5, 1.0, 1.5):                 # robot drives lap 1 slightly towards lap 2
         h.fsm.inputs.pose = (x, 0.1, 0.0)
         h.tick()
-    assert h.fsm.mission.progress_local == 15
+    k = near_index(h.fsm.mission.subpaths[0], 1.5, 0.0)   # on lap 1, not lap 2
+    assert h.fsm.mission.progress_local == k
     st = h.fsm.status()
-    assert st['current_path_index'] == 15 and 10 < st['coverage_percent'] < 20
+    assert st['current_path_index'] == k and 10 < st['coverage_percent'] < 20
     h.cmd(f.CMD_STOP)
-    assert ResumeCursor.loads(h.saved).areas[0].resume_index == 15
+    assert ResumeCursor.loads(h.saved).areas[0].resume_index == k
 
 
 def test_mowing_complete_reports_final_counts():
@@ -831,20 +855,22 @@ def test_mowing_complete_reports_final_counts():
 def test_premature_follow_success_continues_from_progress():
     h = Harness()
     start_until_planning(h)
-    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 5, 0, n=11)]))
+    h.fsm.inputs.pose = (0.0, 1.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 1, 4.3, 1, n=11)]))   # body inside
     h.fsm.inputs.is_cutting = True
     h.tick()
-    h.fsm.inputs.pose = (1.5, 0.0, 0.0)
+    h.fsm.inputs.pose = (1.5, 1.0, 0.0)
     h.tick()
-    h.finish(f.ACT_FOLLOW, arrive=False)      # goal checker fired at 1.5 m of 5 m
+    h.finish(f.ACT_FOLLOW, arrive=False)      # goal checker fired at 1.5 m of 4.3 m
     assert h.name == 'MOWING' and h.fsm.cursor.areas[0].completed == set()
-    assert h.goal(f.ACT_FOLLOW)['poses'][0][0] == 1.5
+    assert h.goal(f.ACT_FOLLOW)['poses'][0][0] == pytest.approx(1.5)
     h.finish(f.ACT_FOLLOW)                    # now really at the end
     assert h.name == 'RETURNING_HOME'
 
 
 def test_long_subpath_is_followed_in_chunks():
     h = Harness(follow_chunk_m=10.0)
+    h.areas = [square(-1, -1, 32)]           # the 30 m sub-path inside the area
     start_until_planning(h)
     sp = line(0, 0, 30, 0, n=301)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp]))
@@ -932,6 +958,7 @@ def mow_first_subpath_then_stop(h):
     h.finish(f.ACT_NAV)
     h.tick()                                 # following sub-path 1
     h.fsm.inputs.pose = (2.05, 1.0, 0.0)
+    h.cond_sps = list(h.fsm.mission.subpaths)   # conditioned (resampled) sub-paths
     m = h.mark()
     assert h.cmd(f.CMD_STOP)
     return sps, m
@@ -946,7 +973,8 @@ def test_stop_keeps_resume_cursor():
     cur = ResumeCursor.loads(h.saved)
     assert cur.current_command == 1 and cur.current_area == 0
     assert cur.areas[0].completed == {0}
-    assert cur.areas[0].resume_index == 11 + 5     # sub-path 1, nearest pose 5
+    sp = h.cond_sps
+    assert cur.areas[0].resume_index == len(sp[0]) + near_index(sp[1], 2.05, 1.0)
 
 
 def test_start_after_stop_resumes_from_cursor():
@@ -1250,7 +1278,7 @@ def test_boundary_violation_pauses_and_resumes():
 def test_boundary_violation_recovery_transits_then_latch():
     h = Harness(boundary_recover_after_s=3.0, boundary_max_recoveries=2)
     mowing(h)                                # sub-path 0: (0,0) -> (4,0)
-    h.fsm.inputs.pose = (1.0, -0.2, 0.0)
+    h.fsm.inputs.pose = (1.0, 0.1, 0.0)     # costmap flag only (body inside)
     h.fsm.inputs.boundary_violation = True
     h.tick()
     assert h.name == 'BOUNDARY_PAUSED'
@@ -1272,7 +1300,7 @@ def test_boundary_violation_recovery_transits_then_latch():
 def test_boundary_recovery_transit_success_resumes_mowing():
     h = Harness()
     mowing(h)
-    h.fsm.inputs.pose = (1.0, -0.2, 0.0)
+    h.fsm.inputs.pose = (1.0, 0.1, 0.0)     # costmap flag only (body inside)
     h.fsm.inputs.boundary_violation = True
     h.tick()
     h.tick(dt=1.0, n=3)
@@ -1417,36 +1445,46 @@ def test_bad_route_settings_fall_back():
     assert cov['min_turn_radius_m'] == 0.0 and cov['route_spiral_size'] == 2
 
 
+def _shift(poses, dx=1.5, dy=1.5):
+    """Toy turn geometry moved inside the 5 m square with body margin (hard_boundary_body)."""
+    return [(x + dx, y + dy, yaw) for x, y, yaw in poses]
+
+
 def test_reverse_subpath_uses_the_reversing_controller():
     h = Harness()
-    start_until_planning(h)
-    fwd = [(0.2, 0.0, 0.0), (2.0, 0.0, 0.0), (2.3, -0.15, 0.0)]
+    # the forward leg before the reverse one is <= join_turn_chains' leg_max_m: the planned
+    # reverse leg is kept (a longer swath would be joined to the next one by a connector)
+    fwd = _shift([(1.2, 0.0, 0.0), (2.0, 0.0, 0.0), (2.3, -0.15, 0.0)])
     # reverse leg: travels -x/+y, poses face against the travel
-    rev = [(2.3, -0.15, math.atan2(-0.35, 0.1)), (2.2, 0.2, math.atan2(-0.35, 0.1))]
-    fwd2 = [(2.2, 0.2, math.pi), (0.0, 0.36, math.pi)]
+    rev = _shift([(2.3, -0.15, math.atan2(-0.35, 0.1)), (2.2, 0.2, math.atan2(-0.35, 0.1))])
+    fwd2 = _shift([(2.2, 0.2, math.pi), (0.0, 0.36, math.pi)])
+    h.fsm.inputs.pose = fwd[0]
+    start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([fwd, rev, fwd2]))
     h.fsm.inputs.is_cutting = True
     h.tick()
     assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePathMPPI'
-    h.fsm.inputs.pose = (2.3, -0.15, 0.0)
-    h.finish(f.ACT_FOLLOW)
+    h.fsm.inputs.pose = rev[0][:2] + (0.0,)
+    h.finish(f.ACT_FOLLOW, arrive=False)
     h.tick()
     g = h.goal(f.ACT_FOLLOW)
     assert g['controller_id'] == 'FollowCoveragePathReverseMPPI' and g['poses'] == rev
     assert h.name == 'MOWING' and h.blade      # no transit, blade stays on
-    h.fsm.inputs.pose = (2.2, 0.2, -1.3)
-    h.finish(f.ACT_FOLLOW)
+    h.fsm.inputs.pose = rev[-1][:2] + (-1.3,)
+    h.finish(f.ACT_FOLLOW, arrive=False)
     h.tick()
     assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePathMPPI'
 
 
 def _k_turn(h):
     """swath (+ forward turn arc) -> reverse leg -> forward leg + next swath (2026-10-13)."""
-    start_until_planning(h)
-    fwd = [(0.2, 0.0, 0.0)] + [(1.0 + 0.1 * k, 0.0, 0.0) for k in range(11)]   # ends (2.0, 0)
+    # 1.0 m forward leg (<= leg_max_m: the planned turn legs are kept, not joined)
+    fwd = _shift([(1.0 + 0.1 * k, 0.0, 0.0) for k in range(11)])   # ends (3.5, 1.5)
     ryaw = math.atan2(-0.35, 0.1)
-    rev = [(2.0, 0.0, ryaw), (1.95, 0.175, ryaw), (1.9, 0.35, ryaw)]
-    fwd2 = [(1.9, 0.35, math.pi), (0.0, 0.36, math.pi)]
+    rev = _shift([(2.0, 0.0, ryaw), (1.95, 0.175, ryaw), (1.9, 0.35, ryaw)])
+    fwd2 = _shift([(1.9, 0.35, math.pi), (0.0, 0.36, math.pi)])
+    h.fsm.inputs.pose = fwd[0]
+    start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([fwd, rev, fwd2]))
     h.fsm.inputs.is_cutting = True
     h.tick()
@@ -1459,7 +1497,7 @@ def test_retry_of_an_all_but_driven_turn_leg_sends_the_next_leg():
     the reverse leg is sent instead."""
     h = Harness(transit_retry_delay_s=1.0)
     fwd, rev, _ = _k_turn(h)
-    h.fsm.inputs.pose = (1.9, 0.02, 0.2)
+    h.fsm.inputs.pose = (3.4, 1.52, 0.2)
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     assert 'retry 1/' in h.fsm.sub_state
     h.tick(dt=0.5, n=3)
@@ -1473,12 +1511,13 @@ def test_retry_of_a_turn_leg_facing_away_is_resent():
     """Same spot but 1 rad off the end yaw: the leg is not done, it is re-sent."""
     h = Harness(transit_retry_delay_s=1.0)
     fwd, rev, _ = _k_turn(h)
-    h.fsm.inputs.pose = (1.9, 0.02, 1.0)
+    h.fsm.inputs.pose = (3.4, 1.52, 1.0)
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     h.tick(dt=0.5, n=3)
     h.tick()
     g = h.goal(f.ACT_FOLLOW)
-    assert g['controller_id'] == 'FollowCoveragePathMPPI' and g['poses'][-1] == fwd[-1]
+    assert g['controller_id'] == 'FollowCoveragePathMPPI'
+    assert g['poses'][-1][:2] == pytest.approx(fwd[-1][:2])
 
 
 def test_stuck_resume_of_a_driven_reverse_leg_goes_on_to_the_next_leg():
@@ -1486,20 +1525,21 @@ def test_stuck_resume_of_a_driven_reverse_leg_goes_on_to_the_next_leg():
     i.e. further along this leg) leaves the robot 0.17 m short of its end, facing the leg:
     the forward leg is sent next, not a re-send of the reverse leg's last poses."""
     h = Harness()
-    start_until_planning(h)
-    fwd = [(0.2, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    fwd = _shift([(1.0, 0.0, 0.0), (2.0, 0.0, 0.0)])   # <= leg_max_m: turn legs kept
     ryaw = math.atan2(-0.45, 0.13)
-    n = 10                                   # 0.052 m steps, (2.0, 0) -> (1.87, 0.45)
-    rev = [(2.0 - 0.13 * k / (n - 1), 0.45 * k / (n - 1), ryaw) for k in range(n)]
-    fwd2 = [(1.87, 0.45, math.pi), (0.0, 0.45, math.pi)]
+    n = 10                                   # 0.052 m steps, (3.5, 1.5) -> (3.37, 1.95)
+    rev = _shift([(2.0 - 0.13 * k / (n - 1), 0.45 * k / (n - 1), ryaw) for k in range(n)])
+    fwd2 = _shift([(1.87, 0.45, math.pi), (0.0, 0.45, math.pi)])
+    h.fsm.inputs.pose = fwd[0]
+    start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([fwd, rev, fwd2]))
     h.fsm.inputs.is_cutting = True
     h.tick()
-    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
-    h.finish(f.ACT_FOLLOW)
+    h.fsm.inputs.pose = (3.5, 1.5, 0.0)
+    h.finish(f.ACT_FOLLOW, arrive=False)
     h.tick()
     assert h.goal(f.ACT_FOLLOW)['poses'] == rev
-    h.fsm.inputs.pose = (2.0, 0.0, ryaw)
+    h.fsm.inputs.pose = (3.5, 1.5, ryaw)
     h.fsm.inputs.stuck = True
     h.tick()
     h.fsm.inputs.stuck = False
@@ -1507,21 +1547,23 @@ def test_stuck_resume_of_a_driven_reverse_leg_goes_on_to_the_next_leg():
     ln = math.hypot(0.13, 0.45)
     ux, uy = -0.13 / ln, 0.45 / ln
     for k in range(1, 60):
-        h.fsm.inputs.pose = (2.0 + ux * 0.01 * k, uy * 0.01 * k, ryaw)
+        h.fsm.inputs.pose = (3.5 + ux * 0.01 * k, 1.5 + uy * 0.01 * k, ryaw)
         h.tick()
         if h.fsm._stk is None:
             break
     assert h.fsm._stk is None
-    assert 0.12 < math.hypot(h.fsm.inputs.pose[0] - 1.87, h.fsm.inputs.pose[1] - 0.45) < 0.2
+    assert 0.12 < math.hypot(h.fsm.inputs.pose[0] - 3.37, h.fsm.inputs.pose[1] - 1.95) < 0.2
     h.tick()
     g = h.goal(f.ACT_FOLLOW)
-    assert g['controller_id'] == 'FollowCoveragePathMPPI' and g['poses'] == fwd2
+    assert g['controller_id'] == 'FollowCoveragePathMPPI'
+    assert g['poses'][0][:2] == pytest.approx(fwd2[0][:2])
+    assert g['poses'][-1][:2] == pytest.approx(fwd2[-1][:2])
 
 
 def test_turn_leg_skip_off_resends():
     h = Harness(transit_retry_delay_s=1.0, turn_leg_skip_m=0.0)
     fwd, rev, _ = _k_turn(h)
-    h.fsm.inputs.pose = (1.9, 0.02, 0.2)
+    h.fsm.inputs.pose = (3.4, 1.52, 0.2)
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     h.tick(dt=0.5, n=3)
     h.tick()
@@ -1681,7 +1723,7 @@ def test_alternate_rotates_each_run_and_across_sessions():
     mow_area_once(h)
     assert (a1, a2) == (10.0, 55.0)
     saved = h.since(0, f.SaveAlternateCounts)
-    assert saved and saved[-1].counts == {'a': 2}
+    assert saved and saved[-1].counts['a'] == 2      # (+ the route variation run counter)
     # next session continues the rotation
     h2 = Harness()
     h2.fsm.alternate_counts = dict(saved[-1].counts)
@@ -2114,7 +2156,7 @@ def test_hcal_no_prior_no_cog_after_the_blind_drive_goes_idle():
     h = hcal_harness(prior='yaw_failed')
     start_hcal(h)
     h.finish(f.ACT_DRIVE)
-    h.tick(dt=1.0, n=4)
+    h.tick(dt=1.0, n=6)                  # heading_status_timeout_s 5 s after the drive
     assert h.name == 'IDLE' and 'no COG alignment after the drive' in h.fsm.sub_state
     assert not h.fsm.motion_enabled()
 
@@ -2229,7 +2271,7 @@ def test_hcal_no_cog_after_the_drive_goes_idle():
     h.tick(dt=1.0, n=2)
     assert h.name == 'WAITING_FOR_RTK'
     m = h.mark()
-    h.tick(dt=1.0, n=2)
+    h.tick(dt=1.0, n=4)
     assert h.name == 'IDLE' and 'no COG alignment after the drive' in h.fsm.sub_state
     assert not h.since(m, f.StartAction)       # never docks / navigates on a wrong heading
 
@@ -2238,11 +2280,11 @@ def test_hcal_drive_aborted_or_timed_out_goes_idle():
     h = hcal_harness()
     start_hcal(h)
     h.finish(f.ACT_DRIVE, f.ABORTED)
-    h.tick(dt=1.0, n=4)
+    h.tick(dt=1.0, n=6)
     assert h.name == 'IDLE' and 'drive aborted (obstacle / costmap)' in h.fsm.sub_state
     h = hcal_harness()
     start_hcal(h)
-    h.tick(dt=1.0, n=50)                 # heading_calibration_timeout_s watchdog
+    h.tick(dt=1.0, n=55)                 # heading_calibration_timeout_s watchdog
     assert h.name == 'IDLE' and 'drive timeout' in h.fsm.sub_state
     assert h.since(0, f.CancelActions)
 
@@ -2352,7 +2394,7 @@ def test_stale_cog_no_fresh_fix_after_the_drive_goes_idle():
     h.fsm.inputs.pose = (1.0, 0.0, 0.0)
     h.finish(f.ACT_DRIVE)
     m = h.mark()
-    h.tick(dt=1.0, n=4)
+    h.tick(dt=1.0, n=6)                  # heading_status_timeout_s 5 s after the drive
     assert h.name == 'IDLE' and 'no COG alignment after the drive' in h.fsm.sub_state
     assert not h.since(m, f.StartAction)
 
@@ -2602,7 +2644,7 @@ def _two_subpaths_first_needs_transit(h):
     assert h.name == 'TRANSIT'
 
 
-def test_retry_clears_local_costmap_only_by_default():
+def test_retry_clears_local_costmap_only():
     """review 2026-10-09: the global costmap keeps the obstacle marks on a retry."""
     h = Harness()
     _two_subpaths_first_needs_transit(h)
@@ -2610,11 +2652,6 @@ def test_retry_clears_local_costmap_only_by_default():
     h.finish(f.ACT_NAV, f.ABORTED)
     c = _clears(h, m)
     assert c and all(e.request == {'global': False, 'selective': True} for e in c)
-    h2 = Harness(clear_global_costmap_on_retry=True)
-    _two_subpaths_first_needs_transit(h2)
-    m = len(h2.fx)
-    h2.finish(f.ACT_NAV, f.ABORTED)
-    assert _clears(h2, m)[0].request == {'global': True, 'selective': True}
 
 
 def test_transit_abort_waits_clears_costmaps_and_resends():
@@ -2697,10 +2734,11 @@ def test_transit_retries_exhausted_ends_mowing_incomplete_in_place():
 
 
 def test_mowing_incomplete_commands():
-    h = Harness(transit_retries=0, requeue_failed_transits=False, return_home_on_incomplete=False)
+    h = Harness(transit_retries=0, return_home_on_incomplete=False)
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3)]))
     h.finish(f.ACT_NAV, f.ABORTED)
+    h.finish(f.ACT_NAV, f.ABORTED)               # the end-of-area re-try fails too
     assert h.name == 'MOWING_INCOMPLETE'
     assert h.fsm.sub_state.startswith('1 of 1 sub-paths not mowed: transit aborted')
     assert h.cmd(f.CMD_HOME) and h.name == 'RETURNING_HOME'
@@ -2709,12 +2747,12 @@ def test_mowing_incomplete_commands():
 
 
 def test_return_home_on_incomplete_docks_and_keeps_reason():
-    h = Harness(transit_retries=0, return_home_on_incomplete=True,
-                requeue_failed_transits=False)
+    h = Harness(transit_retries=0, return_home_on_incomplete=True)
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3)]))
     m = h.mark()
     h.finish(f.ACT_NAV, f.ABORTED)
+    h.finish(f.ACT_NAV, f.ABORTED)               # the end-of-area re-try fails too
     assert 'MOWING_INCOMPLETE' in h.statuses(m)
     assert h.name == 'RETURNING_HOME' and 'not mowed' in h.fsm.sub_state
     h.fsm.inputs.docked = True
@@ -2725,21 +2763,23 @@ def test_return_home_on_incomplete_docks_and_keeps_reason():
 
 def test_return_home_on_incomplete_is_the_shipped_default():
     assert f.Params().return_home_on_incomplete is True
-    h = Harness(transit_retries=0, return_home_on_incomplete=f.Params().return_home_on_incomplete,
-                requeue_failed_transits=False)
+    h = Harness(transit_retries=0, return_home_on_incomplete=f.Params().return_home_on_incomplete)
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3)]))
     m = h.mark()
     h.finish(f.ACT_NAV, f.ABORTED)
+    h.finish(f.ACT_NAV, f.ABORTED)               # the end-of-area re-try fails too
     assert 'MOWING_INCOMPLETE' in h.statuses(m)
     assert h.name == 'RETURNING_HOME'
 
 
 def test_follow_abort_resumes_from_last_pose_up_to_follow_retries():
     h = Harness(follow_retries=3, transit_retry_delay_s=3.0, return_home_on_incomplete=False)
+    h.areas = [square(-1, -1, 12)]
     start_until_planning(h)
     sp = line(0, 0, 10, 0, n=21)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp]))
+    csp = h.fsm.mission.subpaths[0]                 # conditioned (resampled)
     h.fsm.inputs.is_cutting = True
     h.tick()
     starts = []
@@ -2748,14 +2788,15 @@ def test_follow_abort_resumes_from_last_pose_up_to_follow_retries():
         h.tick()
         h.finish(f.ACT_FOLLOW, f.ABORTED)
         if k < 3:
-            assert 'retry %d/3' % (k + 1) in h.fsm.sub_state and not h.blade
+            # owner rule 2026-10-23: kept on with the body inside the area
+            assert 'retry %d/3' % (k + 1) in h.fsm.sub_state and h.blade
             h.tick(dt=1.0, n=4)
             starts.append(h.goal(f.ACT_FOLLOW)['poses'][0][0])
-    assert starts == [2.0, 3.0, 4.0]
+    assert starts == pytest.approx([2.0, 3.0, 4.0])
     assert h.name == 'MOWING_INCOMPLETE'
     assert 'follow_path aborted 4 times' in h.fsm.sub_state
     cur = ResumeCursor.loads(h.saved)
-    assert cur.areas[0].resume_index == 10         # resume at the last reached pose (5 m)
+    assert cur.areas[0].resume_index == near_index(csp, 5.0, 0.0)   # last reached pose
 
 
 def test_planning_failure_with_nothing_driven_is_a_mission_failure():
@@ -2785,7 +2826,7 @@ def test_planning_failure_after_a_mowed_area_ends_incomplete():
 
 def _boundary_paused(h):
     mowing(h)                                    # sub-path 0: (0,0) -> (4,0)
-    h.fsm.inputs.pose = (1.0, -0.2, 0.0)
+    h.fsm.inputs.pose = (1.0, 0.1, 0.0)          # costmap flag only (body inside)
     h.fsm.inputs.boundary_violation = True
     m = h.mark()
     h.tick()
@@ -2931,50 +2972,58 @@ def mowing_two_swaths(h):
     h.fsm.inputs.is_cutting = True
     h.tick()
     assert h.goal(f.ACT_FOLLOW)['poses'][0] == sp0[0]
-    return sp0, sp1
+    # the conditioned sub-paths (resampled): indices below refer to these
+    return tuple(h.fsm.mission.subpaths)
 
 
 def static_abort_and_detour(h, sp0):
+    """Chair at 3 m: detour_skip_m (2 m) past the abort pose. Returns the skipped
+    stretch's (abort, rejoin) indices."""
     h.fsm.inputs.pose = (3.0, 0.0, 0.0)
     policy(h, 'static', 'chair')
     h.tick()
     m = h.mark()
     h.finish(f.ACT_FOLLOW, f.ABORTED)
-    assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state and not h.blade
-    assert h.goal(f.ACT_NAV)['pose'][:2] == sp0[8][:2]             # 1 m past pose 6
+    # owner rule 2026-10-23: the in-area detour keeps the blade on
+    assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state and h.blade
+    a = near_index(sp0, 3.0, 0.0)
+    target = h.goal(f.ACT_NAV)['pose']
+    b = near_index(sp0, target[0], target[1])
+    assert target[:2] == sp0[b][:2] and 2.0 - 1e-6 <= sp0[b][0] - 3.0 < 2.2
     assert not [e for e in h.since(m, f.CallService) if e.name == f.SRV_CLEAR_COSTMAPS]
-    h.fsm.inputs.pose = (4.0, 0.1, 0.0)
+    h.fsm.inputs.pose = (sp0[b][0], 0.1, 0.0)
     h.finish(f.ACT_NAV)
     assert h.name == 'MOWING'
     h.tick()
-    assert h.goal(f.ACT_FOLLOW)['poses'][0] == sp0[8]
-    assert h.fsm.cursor.areas[0].skipped == [(6, 8)]
-    assert 'area_skip 0 6 8' in h.saved
+    assert h.goal(f.ACT_FOLLOW)['poses'][0] == sp0[b]
+    assert h.fsm.cursor.areas[0].skipped == [(a, b)]
+    assert 'area_skip 0 %d %d' % (a, b) in h.saved
+    return a, b
 
 
 def test_static_obstacle_detours_and_resumes_beyond_then_requeues_stretch():
     h = Harness()
     sp0, sp1 = mowing_two_swaths(h)
-    static_abort_and_detour(h, sp0)
+    a, b = static_abort_and_detour(h, sp0)
     h.finish(f.ACT_FOLLOW)                        # rest of sub-path 0
     h.finish(f.ACT_NAV)                           # transit to sub-path 1
     h.tick()
     h.finish(f.ACT_FOLLOW)                        # sub-path 1 -> end-of-area pass
-    assert h.name == 'TRANSIT'                    # blade-off transit to the stretch start
-    assert h.goal(f.ACT_NAV)['pose'][:2] == sp0[6][:2]
+    assert h.name == 'TRANSIT'                    # transit to the stretch start
+    assert h.goal(f.ACT_NAV)['pose'][:2] == sp0[a][:2]
     h.fsm.inputs.pose = (3.0, 0.0, 0.0)
     h.finish(f.ACT_NAV)
     h.tick()
-    assert h.goal(f.ACT_FOLLOW)['poses'] == sp0[6:9]
+    assert h.goal(f.ACT_FOLLOW)['poses'] == sp0[a:b + 1]
     h.finish(f.ACT_FOLLOW)
     assert h.name == 'RETURNING_HOME'             # area complete, all mowed
     assert not h.fsm.cursor.available
 
 
 def test_skipped_stretch_still_blocked_ends_incomplete():
-    h = Harness(retry_each_skipped_stretch=False, return_home_on_incomplete=False)
+    h = Harness(return_home_on_incomplete=False)
     sp0, sp1 = mowing_two_swaths(h)
-    static_abort_and_detour(h, sp0)
+    a, b = static_abort_and_detour(h, sp0)
     h.finish(f.ACT_FOLLOW)
     h.finish(f.ACT_NAV)
     h.tick()
@@ -2987,7 +3036,7 @@ def test_skipped_stretch_still_blocked_ends_incomplete():
     assert h.fsm.sub_state.startswith('1 stretch blocked by obstacles (')
     assert '% mowed)' in h.fsm.sub_state, h.fsm.sub_state
     cur = ResumeCursor.loads(h.saved)
-    assert cur.areas[0].skipped == [(6, 8)] and 0 not in cur.completed_areas
+    assert cur.areas[0].skipped == [(a, b)] and 0 not in cur.completed_areas
     assert cur.available and not h.blade
 
 
@@ -3000,7 +3049,8 @@ def test_dynamic_obstacle_stops_waits_and_resumes_from_last_pose():
     policy(h, 'dynamic', 'dog')
     h.tick()
     assert h.since(m, f.ZeroBurst) and h.since(m, f.CancelActions)
-    assert h.name == 'MOWING' and not h.blade and h.fsm._action is None
+    # owner rule 2026-10-23: the blade stays on through the wait (body inside)
+    assert h.name == 'MOWING' and h.blade and h.fsm._action is None
     assert h.fsm.sub_state == 'waiting for dog to move (0 s)'
     tick_seen(h, 'dynamic', 'dog', 5.0)
     assert h.fsm.sub_state == 'waiting for dog to move (5 s)'
@@ -3009,7 +3059,7 @@ def test_dynamic_obstacle_stops_waits_and_resumes_from_last_pose():
     h.tick(dt=0.5, n=4)
     assert h.fsm.mission.step in ('spinup', 'follow')
     h.tick()
-    assert h.goal(f.ACT_FOLLOW)['poses'][0] == sp0[4] and h.blade
+    assert h.goal(f.ACT_FOLLOW)['poses'][0] == sp0[near_index(sp0, 2.0, 0.0)] and h.blade
 
 
 def test_dynamic_abort_waits_instead_of_counting_a_retry():
@@ -3028,8 +3078,9 @@ def test_dynamic_timeout_is_treated_as_static_detour():
     h.fsm.inputs.pose = (3.0, 0.0, 0.0)
     h.tick()
     tick_seen(h, 'dynamic', 'cat', 30.5)
-    assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state and not h.blade
-    assert h.goal(f.ACT_NAV)['pose'][:2] == sp0[8][:2]
+    assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state
+    target = h.goal(f.ACT_NAV)['pose']
+    assert target[:2] in [p[:2] for p in sp0] and target[0] >= 3.0 + 2.0 - 1e-6
 
 
 def test_dynamic_obstacle_during_transit_waits_then_resends_goal():
@@ -3048,7 +3099,9 @@ def test_dynamic_obstacle_during_transit_waits_then_resends_goal():
 
 
 def test_detour_pose_outside_area_falls_back_to_plain_retry():
-    h = Harness()
+    # a sub-path running out of the area is only driven raw: path conditioning fails it
+    # (not driven), so this guard is reachable with conditioning off (revert path)
+    h = Harness(path_conditioning=False, hard_boundary_body=False)   # revert path
     h.areas = [square(-1, -1, 5)]                 # area ends at x = 4
     start_until_planning(h)
     sp0 = line(0, 0, 10, 0, n=21)
@@ -3064,17 +3117,22 @@ def test_detour_pose_outside_area_falls_back_to_plain_retry():
 
 
 def test_failed_detour_extends_the_skip_then_retries():
-    h = Harness(detour_max_skip_m=1.5)
+    h = Harness()
     sp0, _ = mowing_two_swaths(h)
     h.fsm.inputs.pose = (3.0, 0.0, 0.0)
     policy(h, 'static', 'chair')
     h.tick()
     h.finish(f.ACT_FOLLOW, f.ABORTED)
-    h.finish(f.ACT_NAV, f.ABORTED)
-    assert h.goal(f.ACT_NAV)['pose'][:2] == sp0[9][:2]             # 1.5 m
-    h.finish(f.ACT_NAV, f.ABORTED)
+    xs = []
+    while h.name == 'TRANSIT':                    # each failed detour extends the skip
+        g = h.goal(f.ACT_NAV)['pose']
+        assert g[:2] in [p[:2] for p in sp0]
+        xs.append(g[0])
+        h.finish(f.ACT_NAV, f.ABORTED)
+    # detour_skip_m 2 m first, extended up to detour_max_skip_m 3.5 m
+    assert len(xs) >= 2 and xs == sorted(xs) and xs[0] >= 5.0 - 1e-6 and xs[-1] <= 6.6
     assert h.name == 'MOWING' and 'detour failed' in h.fsm.sub_state
-    assert h.fsm.mission.start_local == 6
+    assert h.fsm.mission.start_local == near_index(sp0, 3.0, 0.0)
 
 
 def test_unclassified_abort_detours_after_one_plain_retry():
@@ -3100,20 +3158,8 @@ def test_unclassified_collision_abort_detours_at_once_with_zero():
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state
     assert 'path blocked' not in h.fsm.sub_state
-    # review 2026-10-09: an unclassified obstacle may be a child / pet: blade off for the detour
-    assert not h.blade and not h.fsm.blade_on
-
-
-def test_detour_forces_blade_off_even_in_continuous_area():
-    h = Harness(detour_unclassified_after=0)
-    sp0, _ = mowing_two_swaths(h)
-    assert h.blade
-    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
-    policy(h, 'static', 'chair')
-    h.tick()
-    h.finish(f.ACT_FOLLOW, f.ABORTED)
-    assert h.fsm.mission.detour is not None
-    assert not h.blade and not h.fsm.mission.blade_transit
+    # owner 2026-10-23: kept on with the body inside the area
+    assert h.blade and h.fsm.blade_on
 
 
 def test_shipped_defaults_detour_two_metres_ahead():
@@ -3212,7 +3258,7 @@ def test_obstacle_near_subpath_end_skips_the_rest():
         h.tick()
     policy(h, 'static', 'trunk')
     h.finish(f.ACT_FOLLOW, f.ABORTED)
-    assert h.fsm.cursor.areas[0].skipped == [(19, 20)]
+    assert h.fsm.cursor.areas[0].skipped == [(near_index(sp0, 9.5, 0.0), len(sp0) - 1)]
     assert 0 in h.fsm.cursor.areas[0].completed and h.fsm.mission.sub_i == 1
 
 
@@ -3819,7 +3865,7 @@ def test_marker_in_view_does_not_apply_outside_dock_phases():
 def test_dock_zone_ignores_person_while_docking():
     h = Harness()
     h.fsm.inputs.dock_pose = (0.39, -1.29, 1.93)
-    h.fsm.inputs.pose = (0.6, -0.3, 0.0)                 # ~1.0 m from the dock
+    h.fsm.inputs.pose = (0.2, -0.5, 0.0)     # at the approach pose, ~0.8 m from the dock
     assert h.cmd(f.CMD_HOME)
     tok = h.pending_action(f.ACT_DOCK).token
     m = h.mark()
@@ -3837,7 +3883,7 @@ def test_dock_zone_ignores_person_while_docking():
 
 
 def test_dock_zone_outside_radius_or_unknown_waits_as_before():
-    h = Harness()
+    h = Harness(dock_server_nav_max_m=0.0)   # docking server navigates the 60 m itself
     h.fsm.inputs.dock_pose = (40.0, 40.0, 0.0)
     _home_with_person(h)
     h = Harness()
@@ -3961,14 +4007,6 @@ def test_genuine_abort_after_blocked_episode_uses_retry_policy():
     assert 'retry 1/3' in h.fsm.sub_state and h.fsm._blk is None
 
 
-def test_failed_transit_requeue_disabled_ends_incomplete_immediately():
-    h = Harness(transit_retries=0, requeue_failed_transits=False, return_home_on_incomplete=False)
-    _two_subpaths_first_needs_transit(h)
-    h.finish(f.ACT_NAV, f.ABORTED)
-    follow_current(h)
-    assert h.name == 'MOWING_INCOMPLETE'
-
-
 def test_follow_abort_with_collision_waits_then_detours_on_second():
     h = Harness(detour_unclassified_after=1)
     sp0, _ = mowing_two_swaths(h)
@@ -3976,7 +4014,7 @@ def test_follow_abort_with_collision_waits_then_detours_on_second():
     h.fsm.inputs.collision_stamp = h.t
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     assert h.name == 'MOWING' and h.fsm.sub_state.startswith('path blocked')
-    assert h.fsm.mission.follow_fails == 0 and not h.blade
+    assert h.fsm.mission.follow_fails == 0 and h.blade   # kept on: body inside
     h.tick(dt=1.0, n=6)
     assert h.pending_action(f.ACT_FOLLOW) or h.fsm.mission.step == 'spinup'
     h.fsm.inputs.is_cutting = True
@@ -4144,16 +4182,6 @@ def test_continuous_blade_off_on_boundary_violation_and_stop():
     assert h2.cmd(f.CMD_STOP) and not h2.blade
 
 
-def test_conservative_policy_keeps_old_blade_off_on_dynamic_wait():
-    h = Harness()
-    mowing_two_swaths(h)                          # harness default: conservative
-    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
-    h.tick()
-    _seen_at(h, 'dynamic', 'dog', 1.0, 0.0)
-    h.tick()
-    assert h.fsm._dyn is not None and not h.blade
-
-
 def test_turn_legs_use_the_leg_goal_checker():
     """A 0.3 m leg starts inside coverage_goal_checker's 0.25 m xy tolerance and
     was finished at once (2026-10-07): reverse legs and short chunks get the leg checker."""
@@ -4291,8 +4319,8 @@ def test_resume_cursor_live_height_round_trip():
 # =====================================================================
 def _route_h(**params):
     """Route transits on; sub-path 0 starts at (5, 5), 7 m from the robot at (0, 0)."""
-    h = Harness(route_transits=True, **params)
-    h.areas = [square(-1, -1, 12)]
+    h = Harness(auto_route=False, **params)
+    h.areas = [square(-3, -3, 14)]            # the hairpin routes' body stays inside
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
     assert h.name == 'TRANSIT'
@@ -4326,7 +4354,7 @@ def _pending_route_request(h):
 
 
 def test_route_transit_asks_plan_route_then_follows_the_route():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     h.areas = [square(-1, -1, 12)]
     start_until_planning(h)
     m = h.mark()
@@ -4341,17 +4369,19 @@ def test_route_transit_asks_plan_route_then_follows_the_route():
     m = h.mark()
     _answer_route(h, resp=_route_resp(route))
     assert not [e for e in h.since(m, f.StartAction) if e.name == f.ACT_NAV]
-    assert h.fsm._action.purpose == 'route' and h.name == 'TRANSIT'
+    assert h.pending_action(f.ACT_FOLLOW).purpose == 'route' and h.name == 'TRANSIT'
     g = h.goal(f.ACT_FOLLOW)
     assert g['controller_id'] == 'FollowPath'
-    assert g['goal_checker_id'] == 'general_goal_checker'
-    assert g['poses'] == route
+    # the conditioned route (resampled, pivot after the corner checker)
+    assert g['goal_checker_id'] == h.fsm.p.route_corner_goal_checker_id
+    assert g['poses'][0][:2] == route[0][:2] and g['poses'][-1][:2] == route[-1][:2]
     h.finish(f.ACT_FOLLOW)                           # arrives at the sub-path start
     assert h.name == 'MOWING' and h.blade
     h.fsm.inputs.is_cutting = True
     h.tick()
     g = h.goal(f.ACT_FOLLOW)
-    assert g['controller_id'] == 'FollowCoveragePathMPPI' and g['poses'] == sp
+    assert g['controller_id'] == 'FollowCoveragePathMPPI'
+    assert g['poses'][0][:2] == sp[0][:2] and g['poses'][-1][:2] == sp[-1][:2]
 
 
 def test_no_route_falls_back_to_navigate_to_pose():
@@ -4405,6 +4435,7 @@ def test_route_abort_with_collision_ahead_waits_then_resends_route_then_nav():
     _answer_route(h)
     target = h.fsm.mission.transit_target
     for k in range(2):
+        h.pending_action(f.ACT_FOLLOW)                # (the leg-start pivot done)
         h.fsm.inputs.collision_stamp = h.t
         m = h.mark()
         h.finish(f.ACT_FOLLOW, f.ABORTED)
@@ -4419,7 +4450,7 @@ def test_route_abort_with_collision_ahead_waits_then_resends_route_then_nav():
         if k == 0:
             assert len(routes) == 1                   # route again after the first wait
             _answer_route(h)
-            assert h.fsm._action.purpose == 'route'
+            assert h.pending_action(f.ACT_FOLLOW).purpose == 'route'
         else:
             assert not routes
             assert h.pending_action(f.ACT_NAV) and h.goal(f.ACT_NAV)['pose'] == target
@@ -4440,6 +4471,17 @@ def test_route_success_within_end_tolerance_counts_as_arrived():
     _answer_route(h)
     h.fsm.inputs.pose = (5.0, 4.6, 0.0)               # 0.4 m <= route_end_tolerance_m
     h.finish(f.ACT_FOLLOW, arrive=False)
+    _final_approach_then_mowing(h)
+
+
+def _final_approach_then_mowing(h):
+    """Arrived (no Nav2 fallback, no retry counted); farther than route_final_approach_m
+    from the sub-path start, so path conditioning drives the last bit onto it first."""
+    assert h.name == 'TRANSIT' and h.fsm.mission.transit_fails == 0
+    assert not h.fsm.mission.route_fallback
+    h.pending_action(f.ACT_DRIVE)                     # (after the pivot to face it)
+    h.fsm.inputs.pose = (5.0, 5.0, 0.0)
+    h.finish(f.ACT_DRIVE)
     assert h.name == 'MOWING'
 
 
@@ -4448,7 +4490,7 @@ def test_route_abort_near_the_target_counts_as_arrived():
     _answer_route(h)
     h.fsm.inputs.pose = (5.0, 4.9, 0.0)               # within transit_arrived_radius_m
     h.finish(f.ACT_FOLLOW, f.ABORTED, arrive=False)
-    assert h.name == 'MOWING' and h.fsm.mission.transit_fails == 0
+    _final_approach_then_mowing(h)
 
 
 def test_dynamic_obstacle_during_route_follow_waits_then_asks_plan_route_again():
@@ -4466,7 +4508,7 @@ def test_dynamic_obstacle_during_route_follow_waits_then_asks_plan_route_again()
     assert [e for e in h.since(m, f.CallService) if e.name == f.SRV_PLAN_ROUTE]
     assert not [e for e in h.since(m, f.StartAction) if e.name == f.ACT_NAV]
     _answer_route(h)
-    assert h.fsm._action.purpose == 'route'
+    assert h.pending_action(f.ACT_FOLLOW).purpose == 'route'
 
 
 def _route_continuous_in_area(h):
@@ -4484,19 +4526,19 @@ def _route_continuous_in_area(h):
 
 
 def test_continuous_blade_stays_on_when_the_route_stays_in_the_area():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     _route_continuous_in_area(h)
     h.fsm.inputs.pose = (4.0, 0.0, math.pi / 2)        # facing the route (no corner pivot)
     m = h.mark()
     _answer_route(h, resp=_route_resp([(4.0, 0.0, 0.0), (4.0, 2.5, 0.0), (4.0, 5.0, 0.0)],
                                       single_area=h.fsm.mission.area_idx))
-    assert h.fsm._action.purpose == 'route' and h.blade
+    assert h.pending_action(f.ACT_FOLLOW).purpose == 'route' and h.blade
     assert not h.since(m, f.BladeOff)
     assert isinstance(h.since(m, (f.BladeOff, f.StartAction))[0], f.StartAction)
 
 
 def test_continuous_blade_turns_off_before_a_route_that_leaves_the_area():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     _route_continuous_in_area(h)
     h.fsm.inputs.pose = (4.0, 0.0, math.pi / 2)        # facing the route (no corner pivot)
     m = h.mark()
@@ -4506,11 +4548,11 @@ def test_continuous_blade_turns_off_before_a_route_that_leaves_the_area():
     first = h.since(m, (f.BladeOff, f.StartAction))
     assert isinstance(first[0], f.BladeOff)
     assert isinstance(first[1], f.StartAction) and first[1].name == f.ACT_FOLLOW
-    assert h.fsm._action.purpose == 'route'
+    assert h.pending_action(f.ACT_FOLLOW).purpose == 'route'
 
 
 def test_route_transits_disabled_goes_straight_to_navigate_to_pose():
-    h = Harness()
+    h = Harness(route_transits=False)   # revert path
     h.areas = [square(-1, -1, 12)]
     start_until_planning(h)
     m = h.mark()
@@ -4520,7 +4562,7 @@ def test_route_transits_disabled_goes_straight_to_navigate_to_pose():
 
 
 def test_detour_transit_never_asks_plan_route():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     sp0, _ = mowing_two_swaths(h)
     h.fsm.inputs.pose = (3.0, 0.0, 0.0)
     policy(h, 'static', 'chair')
@@ -4529,14 +4571,15 @@ def test_detour_transit_never_asks_plan_route():
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state
     assert h.fsm.mission.detour is not None
-    assert h.goal(f.ACT_NAV)['pose'][:2] == sp0[8][:2]
+    target = h.goal(f.ACT_NAV)['pose']            # detour_skip_m past the abort pose
+    assert target[:2] in [p[:2] for p in sp0] and target[0] >= 3.0 + 2.0 - 1e-6
     assert not [e for e in h.since(m, f.CallService) if e.name == f.SRV_PLAN_ROUTE]
 
 
 def test_boundary_recovery_transit_never_asks_plan_route():
-    h = Harness(route_transits=True, boundary_recover_after_s=3.0)
+    h = Harness(auto_route=False, boundary_recover_after_s=3.0)
     mowing(h)                                # sub-path 0: (0,0) -> (4,0)
-    h.fsm.inputs.pose = (1.0, -0.2, 0.0)
+    h.fsm.inputs.pose = (1.0, 0.1, 0.0)     # costmap flag only (body inside)
     h.fsm.inputs.boundary_violation = True
     h.tick()
     assert h.name == 'BOUNDARY_PAUSED'
@@ -4553,7 +4596,7 @@ def _home(h):
 
 
 def test_dock_route_then_docking_server():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     m = h.mark()
     _home(h)
     assert h.name == 'RETURNING_HOME'
@@ -4565,13 +4608,16 @@ def test_dock_route_then_docking_server():
     _answer_route(h, resp=_route_resp(route))
     assert h.fsm._action.name == f.ACT_FOLLOW and h.fsm._action.purpose == 'dock_route'
     g = h.goal(f.ACT_FOLLOW)
-    assert g['poses'] == route and g['controller_id'] == 'FollowPath'
-    h.finish(f.ACT_FOLLOW)
+    assert g['controller_id'] == 'FollowPath'
+    assert g['poses'][0][:2] == route[0][:2]      # the conditioned (resampled) route
+    while h.fsm._action.name != f.ACT_DOCK:       # its legs (pivots at its corners)
+        h.finish(f.ACT_FOLLOW)
+    assert h.fsm.inputs.pose[:2] == pytest.approx(route[-1][:2])
     assert h.pending_action(f.ACT_DOCK) and h.name == 'RETURNING_HOME'
 
 
 def test_dock_route_unavailable_goes_straight_to_the_docking_server():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     _home(h)
     _answer_route(h, ok=False)
     assert h.pending_action(f.ACT_DOCK)
@@ -4580,7 +4626,7 @@ def test_dock_route_unavailable_goes_straight_to_the_docking_server():
 
 def test_dock_route_abort_hands_over_to_the_docking_server():
     # task 0.4 (e): an abort is handed over only near the approach pose (the route's end)
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     _home(h)
     _answer_route(h)                                 # ends at (5, 5)
     h.fsm.inputs.pose = (4.8, 4.9, 0.8)              # 0.22 m short of it
@@ -4589,7 +4635,7 @@ def test_dock_route_abort_hands_over_to_the_docking_server():
 
 
 def test_route_dock_disabled_goes_straight_to_the_docking_server():
-    h = Harness(route_transits=True, route_dock=False)
+    h = Harness(auto_route=False, route_dock=False)
     m = h.mark()
     _home(h)
     assert h.pending_action(f.ACT_DOCK)
@@ -4643,13 +4689,14 @@ def test_route_hairpin_sent_as_two_legs_then_mows():
     route[-1] = (tgt[0], tgt[1], tgt[2])                  # last pose = the sub-path start
     _answer_route(h, resp=_route_resp(route))
     g1 = h.goal(f.ACT_FOLLOW)
-    assert h.fsm._action.purpose == 'route' and len(g1['poses']) < len(route)
+    assert h.pending_action(f.ACT_FOLLOW).purpose == 'route'
+    assert math.hypot(g1['poses'][-1][0] - 2.0, g1['poses'][-1][1]) < 0.15   # ends at the hairpin
     h.finish(f.ACT_FOLLOW)                                # drives leg 1 to its end
     # task 0.4 (d): the 135 deg corner is pivoted on the spot before leg 2
     assert h.name == 'TRANSIT' and h.fsm._action.purpose == 'route_corner'
     h.fsm.inputs.pose = h.fsm.inputs.pose[:2] + (-2.36,)
     h.finish(f.ACT_SPIN)
-    assert h.name == 'TRANSIT' and h.fsm._action.purpose == 'route'
+    assert h.name == 'TRANSIT' and h.pending_action(f.ACT_FOLLOW).purpose == 'route'
     g2 = h.goal(f.ACT_FOLLOW)
     assert g2['poses'][0] == g1['poses'][-1]
     sent = 2
@@ -4671,7 +4718,9 @@ def test_route_leg_success_short_of_its_end_falls_back():
 
 
 def test_dock_route_legs_then_docking_server():
-    h = Harness(route_transits=True)
+    # raw route split at the hairpin (conditioning fillets it: one leg, as
+    # test_dock_route_then_docking_server)
+    h = Harness(auto_route=False, path_conditioning=False)   # revert path
     _home(h)
     h.fsm.inputs.pose = (0.0, 0.0, 0.0)                   # at the route start
     _answer_route(h, resp=_route_resp(_hairpin()))
@@ -4687,7 +4736,7 @@ def test_dock_route_legs_then_docking_server():
 def test_transit_variation_run_counter_persisted_and_sent():
     """Each mission start bumps alternate_counts['__transit_run__'] (persisted) and the
     transits ask plan_route with that run index (per-area transit_variation)."""
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     h.fsm.alternate_counts[f.MissionFSM.TRANSIT_RUN_KEY] = 4
     m = h.mark()
     h.areas = [square(-1, -1, 12)]
@@ -4698,16 +4747,6 @@ def test_transit_variation_run_counter_persisted_and_sent():
     assert _pending_route_request(h)['variation'] == 5
 
 
-def test_transit_variation_off_sends_run_zero():
-    h = Harness(route_transits=True, route_variation=False)
-    h.areas = [square(-1, -1, 12)]
-    m = h.mark()
-    start_until_planning(h)
-    assert not [e for e in h.since(m) if isinstance(e, f.SaveAlternateCounts)]
-    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
-    assert _pending_route_request(h)['variation'] == 0
-
-
 # =====================================================================
 # Nav2 stack not active (2026-10-13: a hung nav2 lifecycle manager showed as a
 # generic "Docking failed (NAV_TO_DOCK_FAILED)")
@@ -4716,7 +4755,7 @@ NAV2_TAG = {f.NAV2_INACTIVE_KEY: 'Nav2 stack not active after 20s'}
 
 
 def test_nav2_down_dock_route_hands_over_then_dock_failure_names_nav2():
-    h = Harness(route_transits=True)
+    h = Harness(auto_route=False)
     _home(h)
     _answer_route(h)
     h.finish(f.ACT_FOLLOW, f.REJECTED, dict(NAV2_TAG, message='goal rejected'))
@@ -4733,7 +4772,7 @@ def test_nav2_down_dock_route_hands_over_then_dock_failure_names_nav2():
 
 
 def test_nav2_down_dock_other_failure_keeps_the_docking_detail():
-    h = Harness(route_transits=True, route_dock=False)
+    h = Harness(auto_route=False, route_dock=False)
     _home(h)
     h.finish(f.ACT_DOCK, f.ABORTED, dict(NAV2_TAG, success=False,
                                          message='DOCK_NOT_FOUND: dock not found: x'))
@@ -4742,7 +4781,7 @@ def test_nav2_down_dock_other_failure_keeps_the_docking_detail():
 
 
 def test_dock_failure_without_nav2_tag_is_unchanged():
-    h = Harness(route_transits=True, route_dock=False)
+    h = Harness(auto_route=False, route_dock=False)
     _home(h)
     h.finish(f.ACT_DOCK, f.ABORTED, {'success': False, 'message': 'NAV_TO_DOCK_FAILED'})
     assert h.name == 'NAV_TO_DOCK_FAILED' and h.fsm.sub_state == 'NAV_TO_DOCK_FAILED'
@@ -5071,6 +5110,11 @@ def _skips_h(subpaths, pose, zs=None, **params):
     return h
 
 
+def _ix(h, x, y=2.0, sub=0):
+    """Index on conditioned sub-path ``sub`` (resampled to 0.05 m) of the pose at (x, y)."""
+    return near_index(h.fsm.mission.subpaths[sub], x, y)
+
+
 def _exhaust_transit(h):
     for _ in range(h.fsm.p.transit_retries + 1):
         h.fsm._begin(h.t)
@@ -5085,8 +5129,9 @@ def test_sweep_blocked_transit_skips_a_bounded_stretch_and_rejoins():
     assert h.name == 'TRANSIT' and m.sub_i == 0 and m.step == 'transit'
     _exhaust_transit(h)
     assert not m.failed and m.sub_i == 0
-    assert h.fsm.cursor.areas[0].skipped == [(0, 20)]     # 2.0 m, not the whole sub-path
-    assert m.start_local == 20 and m.step == 'transit' and h.name == 'TRANSIT'
+    k = _ix(h, 2.5)
+    assert h.fsm.cursor.areas[0].skipped == [(0, k)]      # 2.0 m, not the whole sub-path
+    assert m.start_local == k and m.step == 'transit' and h.name == 'TRANSIT'
     assert any('sweep blocked: skip 2.0 m' in e.text for e in h.since(0, f.Log))
 
 
@@ -5102,21 +5147,14 @@ def test_sweep_blocked_repeated_skips_fall_back_to_subpath_failed():
     assert len(h.fsm.cursor.areas[0].skipped) == h.fsm.p.sweep_blocked_max_skips
 
 
-def test_sweep_blocked_skip_off_keeps_the_old_drop():
-    h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (4.5, 4.5, 0.0),
-                 sweep_blocked_skip=False)
-    _exhaust_transit(h)
-    m = h.fsm.mission
-    assert m.failed and m.sub_i == 1 and not h.fsm.cursor.areas[0].skipped
-
-
 def _pass_h(**params):
     h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
                  **params)
     m = h.fsm.mission
-    m.unbypassable = [(2.0, 2.0)]
-    h.fsm.cursor.areas[0].skipped = [(30, 38), (20, 25)]
-    m.requeue = [(30, 38), (20, 25)]
+    # stretches x 2.5 -> 3.0 (st0) and 3.5 -> 4.3 (st1) of sub-path 0 (y = 2)
+    h.st0, h.st1 = (_ix(h, 2.5), _ix(h, 3.0)), (_ix(h, 3.5), _ix(h, 4.3))
+    h.fsm.cursor.areas[0].skipped = [h.st1, h.st0]
+    m.requeue = [h.st1, h.st0]
     h.fsm._begin(h.t)
     h.fsm._area_done()
     h._apply(h.fsm._end())
@@ -5125,32 +5163,23 @@ def _pass_h(**params):
 
 def test_retry_pass_tries_every_stretch_nearest_first_before_incomplete():
     h, m = _pass_h()
-    assert m.stretch == (20, 25)          # nearest first, despite the unbypassable spot
+    assert m.stretch == h.st0          # nearest first
     h.fsm._begin(h.t)
-    h.fsm._stretch_blocked('follow_path aborted at pose 21')   # no obstacle evidence
+    h.fsm._stretch_blocked('follow_path aborted at pose %d' % (h.st0[0] + 1))   # no evidence
     h._apply(h.fsm._end())
-    assert m.stretch == (30, 38)          # still attempted
-    assert (0, 20, 25) in m.blocked and h.name != 'MOWING_INCOMPLETE'
+    assert m.stretch == h.st1          # still attempted
+    assert (0,) + h.st0 in m.blocked and h.name != 'MOWING_INCOMPLETE'
     h.fsm._begin(h.t)
-    h.fsm._stretch_blocked('follow_path aborted at pose 31')
+    h.fsm._stretch_blocked('follow_path aborted at pose %d' % (h.st1[0] + 1))
     h._apply(h.fsm._end())
     assert len(m.blocked) == 2
     h.tick()
     assert h.name in ('MOWING_INCOMPLETE', 'RETURNING_HOME') and h.fsm.cursor.available
 
 
-def test_retry_pass_off_keeps_the_unbypassable_shortcut():
-    h, m = _pass_h(retry_each_skipped_stretch=False)
-    assert m.stretch == (30, 38)          # list order, not nearest first
-    h.fsm._begin(h.t)
-    h.fsm._stretch_blocked('follow_path aborted at pose 31')
-    h._apply(h.fsm._end())
-    assert (0, 20, 25) in m.blocked       # next to the unbypassable spot: not driven
-
-
 def test_static_blocked_stretches_finish_complete_with_exclusions():
     h, m = _pass_h()
-    for st in ((20, 25), (30, 38)):
+    for st in (h.st0, h.st1):
         assert m.stretch == st
         h.fsm.obstacle_decision = {'kind': 'static', 'on_path': True, 'action': 'act'}
         h.fsm._begin(h.t)
@@ -5163,9 +5192,9 @@ def test_static_blocked_stretches_finish_complete_with_exclusions():
 
 
 def _first_stretch_blocked(h, m):
-    assert m.stretch == (20, 25)                    # sub-path 0 poses 20 -> 25 (y = 2)
+    assert m.stretch == h.st0                    # sub-path 0 x 2.5 -> 3.0 (y = 2)
     h.fsm._begin(h.t)
-    h.fsm._stretch_blocked('follow_path aborted at pose 21')
+    h.fsm._stretch_blocked('follow_path aborted at pose %d' % (h.st0[0] + 1))
     h._apply(h.fsm._end())
     return h.fsm.cursor.areas[0]
 
@@ -5178,8 +5207,8 @@ def test_collision_off_the_stretch_keeps_it_skipped_not_blocked_static(pose):
     h.fsm.inputs.pose = pose                       # robot off the stretch / nose off it
     h.fsm.inputs.collision_stamp = h.t
     ac = _first_stretch_blocked(h, m)
-    assert (20, 25) not in ac.blocked_static and (20, 25) in ac.skipped
-    assert (0, 20, 25) in m.blocked
+    assert h.st0 not in ac.blocked_static and h.st0 in ac.skipped
+    assert (0,) + h.st0 in m.blocked
 
 
 def test_collision_on_the_stretch_still_blocks_it_static():
@@ -5187,19 +5216,19 @@ def test_collision_on_the_stretch_still_blocks_it_static():
     h.fsm.inputs.pose = (2.0, 2.0, 0.0)            # nose at (2.6, 2) on the stretch
     h.fsm.inputs.collision_stamp = h.t
     ac = _first_stretch_blocked(h, m)
-    assert ac.blocked_static == [(20, 25)] and (20, 25) not in ac.skipped
+    assert ac.blocked_static == [h.st0] and h.st0 not in ac.skipped
 
 
 @pytest.mark.parametrize('dist, bearing, static', [(1.0, 90.0, False), (2.2, 0.0, True)])
 def test_remembered_static_counts_only_near_the_stretch(dist, bearing, static):
-    h, m = _pass_h(obstacle_path_filter=False)
+    h, m = _pass_h()
     i = h.fsm.inputs
     i.pose = (0.5, 2.0, 0.0)
     i.obstacle_distance, i.obstacle_bearing = dist, bearing
     h.fsm._last_static_t = h.t                     # a static seen within the memory
     ac = _first_stretch_blocked(h, m)
-    assert ((20, 25) in ac.blocked_static) is static
-    assert ((20, 25) in ac.skipped) is not static
+    assert (h.st0 in ac.blocked_static) is static
+    assert (h.st0 in ac.skipped) is not static
 
 
 def test_sweep_skip_count_restarts_with_each_new_plan():
@@ -5227,26 +5256,22 @@ def test_blocked_static_round_trips_in_the_resume_file():
 def test_plan_time_exclusion_around_an_obstacle_mark():
     sp0 = line(0.5, 2, 4.5, 2, n=41)
     h = _skips_h([sp0, line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0), zs=[(2.0, 2.0, 0.1)])
-    assert h.fsm.cursor.areas[0].blocked_static == [(11, 19)]
+    a, b = _ix(h, 1.6), _ix(h, 2.4)               # 0.4 m either side of the mark
+    assert h.fsm.cursor.areas[0].blocked_static == [(a, b)]
     assert any('1 stretches / 0.8 m excluded by obstacle marks' in e.text
                for e in h.since(0, f.Log))
+    csp0 = h.fsm.mission.subpaths[0]
     h.tick()
-    assert h.goal(f.ACT_FOLLOW)['poses'][-1][:2] == sp0[11][:2]   # stops before the mark
+    assert h.goal(f.ACT_FOLLOW)['poses'][-1][:2] == csp0[a][:2]   # stops before the mark
     h.fsm.inputs.pose = (1.6, 2.0, 0.0)
     h.finish(f.ACT_FOLLOW)
-    assert h.name == 'TRANSIT' and h.fsm.mission.start_local == 19
+    assert h.name == 'TRANSIT' and h.fsm.mission.start_local == b
 
 
 def test_plan_time_exclusion_merges_short_gaps():
     h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
                  zs=[(2.0, 2.0, 0.1), (2.9, 2.0, 0.1)])
-    assert h.fsm.cursor.areas[0].blocked_static == [(11, 28)]
-
-
-def test_plan_time_exclusion_off():
-    h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
-                 zs=[(2.0, 2.0, 0.1)], exclude_marked_obstacles=False)
-    assert h.fsm.cursor.areas[0].blocked_static == []
+    assert h.fsm.cursor.areas[0].blocked_static == [(_ix(h, 1.6), _ix(h, 3.3))]
 
 
 def _out_and_back():
@@ -5274,7 +5299,10 @@ def test_clear_end_before_moves_an_end_that_passes_near_the_chunk_start():
 def test_chunk_ending_on_a_pivot_vertex_beside_its_start_is_cut_short():
     # the corner goal checker matched the vertex at the chunk start and follow_path
     # "succeeded" 3/3 times with 14 m left -> sub-path NOT mowed (trunk gate 2026-11-01)
-    h = Harness(follow_chunk_m=25.0)
+    # raw path: the toy lap's vertices / stubbed pivot index are the chunk-end rule's input
+    # (path conditioning would fillet them); the rule itself is plain geometry
+    h = Harness(follow_chunk_m=25.0, path_conditioning=False)
+    h.areas = [square(-5, -5, 15)]               # the toy lap's body inside the area
     start_until_planning(h)
     sp, c = _out_and_back()
     h.fsm._cov_pivots = lambda k=None: [c]
@@ -5333,7 +5361,10 @@ def test_short_tail_after_a_bend_moves_the_chunk_end_onto_straight_path():
 
 
 def test_chunk_end_cut_short_beside_the_start_leaves_a_min_tail():
-    h = Harness(follow_chunk_m=25.0)
+    # raw path: the toy lap's vertices / stubbed pivot index are the chunk-end rule's input
+    # (path conditioning would fillet them); the rule itself is plain geometry
+    h = Harness(follow_chunk_m=25.0, path_conditioning=False)
+    h.areas = [square(-5, -5, 15)]               # the toy lap's body inside the area
     start_until_planning(h)
     sp, bend = _lap_past_its_start()
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp]))
@@ -5352,7 +5383,10 @@ def test_chunk_end_cut_short_beside_the_start_leaves_a_min_tail():
 
 
 def test_short_tail_to_a_pivot_vertex_keeps_the_vertex_as_the_next_end():
-    h = Harness(follow_chunk_m=25.0)
+    # raw path: the toy lap's vertices / stubbed pivot index are the chunk-end rule's input
+    # (path conditioning would fillet them); the rule itself is plain geometry
+    h = Harness(follow_chunk_m=25.0, path_conditioning=False)
+    h.areas = [square(-5, -5, 15)]               # the toy lap's body inside the area
     start_until_planning(h)
     sp, bend = _lap_past_its_start()
     c = len(sp) - 4                              # a pivot vertex in the short tail
@@ -5552,9 +5586,11 @@ def test_poor_quality_but_stationary_cog_starts_without_a_drive():
     assert not [e for e in h.since(0, f.StartAction) if e.name in MOVING_ACTIONS]
 
 
-def _short_pass_h(stretch):
+def _short_pass_h(x0, x1):
+    """A skipped stretch of sub-path 0 (y = 2) from x0 to x1 left for the retry pass."""
     h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
     m = h.fsm.mission
+    h.st = stretch = (_ix(h, x0), _ix(h, x1))
     ac = h.fsm.cursor.areas[0]
     ac.completed.update({0, 1})
     ac.skipped = [stretch]
@@ -5568,7 +5604,7 @@ def _short_pass_h(stretch):
 def test_stretch_below_retry_minimum_is_dropped_and_the_mow_completes():
     """Field 2026-11-03: a 0.23 m stretch 'not re-tried' was counted blocked, so a 99.8 %
     mow ended MOWING_INCOMPLETE."""
-    h, m = _short_pass_h((20, 22))                 # 0.2 m < stretch_min_retry_m 0.5
+    h, m = _short_pass_h(2.5, 2.7)                 # 0.2 m < stretch_min_retry_m 0.5
     logs = [e.text for e in h.since(0, f.Log)]
     assert any('dropped as too short to matter (0.20 m < 0.50 m)' in t for t in logs)
     assert h.name == 'RETURNING_HOME' and not h.fsm.cursor.available
@@ -5578,12 +5614,12 @@ def test_stretch_below_retry_minimum_is_dropped_and_the_mow_completes():
 
 
 def test_stretch_above_retry_minimum_is_still_retried():
-    h, m = _short_pass_h((20, 26))                 # 0.6 m
-    assert m.stretch == (20, 26) and not m.ignored_short_m
+    h, m = _short_pass_h(2.5, 3.1)                 # 0.6 m
+    assert m.stretch == h.st and not m.ignored_short_m
 
 
 def test_retried_stretch_blocked_static_stays_excluded():
-    h, m = _short_pass_h((20, 26))
+    h, m = _short_pass_h(2.5, 3.1)
     h.fsm.obstacle_decision = {'kind': 'static', 'on_path': True, 'action': 'act'}
     h.fsm._begin(h.t)
     h.fsm._stretch_blocked('obstacle_decision act, trunk on_path')

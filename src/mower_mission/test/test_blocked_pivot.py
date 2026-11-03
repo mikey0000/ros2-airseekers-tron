@@ -8,11 +8,32 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from mower_mission import mission_fsm as f             # noqa: E402
 from test_mission_fsm import Harness, start_until_planning   # noqa: E402
-from test_path_conditioning import ring, ring_h        # noqa: E402
+from test_mission_fsm import line, plan, square          # noqa: E402
+from test_path_conditioning import ring                # noqa: E402
+from keep_harness import KeepHarness                   # noqa: E402
+
+
+def ring_h(yaw=None, **params):
+    """test_path_conditioning.ring_h on a KeepHarness: the pivot back-up runs with the blade
+    on inside the area (owner rule 2026-10-23)."""
+    params.setdefault('path_conditioning', True)
+    h = KeepHarness(**params)
+    h.areas = [square(-8, -4, 12)]
+    r = ring()
+    start_until_planning(h)
+    y0 = math.atan2(r[1][1] - r[0][1], r[1][0] - r[0][0])
+    h.fsm.inputs.pose = (r[0][0], r[0][1], y0 if yaw is None else yaw)
+    sp = [(q[0], q[1], math.atan2(r[min(i + 1, len(r) - 1)][1] - q[1],
+                                  r[min(i + 1, len(r) - 1)][0] - q[0]))
+          for i, q in enumerate(r)]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp, line(-4.0, 3.0, -1.0, 3.0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    return h
 
 
 def _blocked(**params):
-    params.setdefault('pivot_backout_m', 0.0)
+    params.setdefault('backout_m', 0.0)
     r = ring()
     y0 = math.atan2(r[1][1] - r[0][1], r[1][0] - r[0][0])
     h = ring_h(yaw=y0 + math.radians(140), **params)
@@ -43,15 +64,6 @@ def test_blocked_coverage_pivot_is_skipped_not_resent():
         assert h.pending_action(f.ACT_NAV) and m.step == 'transit'
     else:                                               # next sub-path
         assert m.sub_i == 1
-
-
-def test_blocked_pivot_without_requeue_is_reported_uncut():
-    h = _blocked(blocked_pivot_requeue=False)
-    m = h.fsm.mission
-    h.finish(f.ACT_SPIN, f.TIMEOUT)
-    assert m.blocked and m.blocked[0][0] == m.area_idx and m.blocked[0][1] == 0
-    assert not h.fsm.cursor.area(m.area_idx).skipped
-    assert 'blocked' in h.fsm._not_mowed_text()
 
 
 def test_blocked_pivot_cap_falls_back_to_resend_then_stuck():
@@ -138,22 +150,16 @@ def test_edge_lap_collision_monitor_stop_held_skips_the_segment():
     assert m.edge_skipped_m > 0.0
 
 
-def test_edge_blocked_skip_revert_keeps_the_retry():
-    h = _edge_h(edge_blocked_skip=False)
-    h.fsm.inputs.cm_stop_since = h.fsm._now
-    h.tick(dt=0.5, n=10)
-    assert h.fsm._action.name == f.ACT_FOLLOW and h.fsm.mission.edge_skipped_m == 0.0
-
-
 def test_refused_pivot_backs_up_then_pivots_once_more_then_skips():
-    h = _blocked(pivot_backout_m=0.35)
+    h = _blocked(backout_m=0.30)     # unified back-out (pivot_backout_m 0.35 until 2026-11-03)
     m = h.fsm.mission
     h.finish(f.ACT_SPIN, f.ABORTED)
     a = h.pending_action(f.ACT_BACKUP)
     assert a.purpose == 'pivot_backout'
     g = h.goal(f.ACT_BACKUP)
-    assert abs(g['distance_m'] - 0.35) < 1e-6 and g['speed_mps'] >= 0.06
-    assert not h.blade                                  # never reversing with the blade on
+    assert abs(g['distance_m'] - 0.30) < 1e-6 and g['speed_mps'] >= 0.06
+    # owner 2026-10-23: inside the area the blade stays on
+    assert h.blade and any('blade kept on (pivot back-up)' in t for t in _logs(h))
     h.finish(f.ACT_BACKUP)
     h.fsm.inputs.is_cutting = True
     for _ in range(40):
@@ -178,11 +184,3 @@ def test_stuck_moves_the_resume_cursor_past_the_failing_pivot():
     assert ac.skipped and ac.skipped[0][0] == 0
     assert ac.resume_index == ac.skipped[0][1] > 0     # START resumes after the piece
 
-
-def test_stuck_resume_skip_revert():
-    h = _blocked(blocked_pivot_policy='retry', resume_skip_failing=False)
-    area = h.fsm.mission.area_idx
-    for _ in range(3):
-        h.finish(f.ACT_SPIN, f.ABORTED)
-    ac = h.fsm.cursor.area(area)
-    assert not ac.skipped and ac.resume_index == 0

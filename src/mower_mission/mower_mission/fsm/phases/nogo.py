@@ -292,7 +292,7 @@ class NogoMixin:
             return None
         x, y, yaw = float(pose[0]), float(pose[1]), float(pose[2])
         plan = nogo.plan_pivot(x, y, yaw, delta, discs, body=self._nogo_body,
-                               backoff=self._nogo_backoff, backup_m=float(p.nogo_pivot_backup_m),
+                               backoff=self._nogo_backoff, backup_m=float(p.backout_m),
                                shifts=[float(s) for s in (p.nogo_pivot_shifts_m or [])])
         if plan.kind == 'clear':
             return None
@@ -434,7 +434,7 @@ class NogoMixin:
                 self._send_route_leg(s['purpose'])
             return
         kind, val = s['steps'].pop(0)
-        speed = max(float(p.nogo_move_speed_mps), 0.06)
+        speed = max(float(p.slow_maneuver_mps), 0.06)
         m.step = s.get('step', 'nogo_step') if s['site'] == 'cov' else m.step
         if kind == 'spin':
             allowance = abs(val) / max(0.05, float(p.route_cusp_spin_rps)) + 10.0

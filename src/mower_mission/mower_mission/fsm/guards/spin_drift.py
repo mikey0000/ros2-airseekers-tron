@@ -115,7 +115,7 @@ class SpinDriftGuardMixin:
         straight reverse over the last lookahead once the track points are used up (the
         caller stops at the track's length: never a blind reverse beyond the driven track)."""
         k, p = self._hb, self.p
-        v = -min(abs(float(p.hard_boundary_retrace_speed_mps)), 0.10)   # owner: slow reverse
+        v = -abs(float(p.slow_maneuver_mps))   # owner: slow reverse
         path, la = k['path'], float(p.hard_boundary_lookahead_m)
         while k['i'] < len(path) and math.hypot(path[k['i']][0] - pose[0],
                                                 path[k['i']][1] - pose[1]) < la:
@@ -158,14 +158,13 @@ class SpinDriftGuardMixin:
             if k.get('mode') is not None and not k.get('side'):
                 k['stage'], k['t'], k['back_from'] = 'back', now, tuple(pose)
                 self._go(self.phase, 'boundary: moving %.2f m %s' % (
-                    float(p.hard_boundary_back_m), 'forward' if k['dir'] > 0 else 'back'))
+                    float(p.backout_m), 'forward' if k['dir'] > 0 else 'back'))
                 self._hb_back_tick(pose)
                 return
             k['stage'], k['prog_t'], k['last'] = 'drive', now, tuple(pose)
             self._go(self.phase, 'boundary: reversing along the driven track')
             self._log('info', 'boundary: reversing along %d track points at %.2f m/s'
-                      % (len(k['path']), min(abs(float(p.hard_boundary_retrace_speed_mps)),
-                                             0.10)))
+                      % (len(k['path']), abs(float(p.slow_maneuver_mps))))
         if k['stage'] == 'plan':
             self._hb_plan_tick(pose)
             return

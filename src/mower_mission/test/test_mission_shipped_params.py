@@ -7,7 +7,7 @@ import dataclasses
 import pytest
 
 from mower_common.shipped_params import drift, shipped_params
-from mower_mission.fsm.common import Params
+from mower_mission.fsm.common import Params, SAFETY_GUARDS, disabled_safety_guards
 
 # Host paths: the yaml carries the container mount (/ros2_ws/maps), the code a per-user
 # default so tests and dev runs never write into a mower path.
@@ -43,4 +43,12 @@ def test_every_yaml_key_is_a_parameter():
 def test_field_values_review_2026_11_02():
     p = Params()
     assert (p.dock_timeout_s, p.dock_action_timeout_s, p.manual_blade_requires_enable) == \
-        (480.0, 540.0, True)
+        (900.0, 960.0, True)
+
+
+def test_disabled_safety_guards_are_listed_for_the_startup_warning():
+    assert disabled_safety_guards(Params()) == []          # shipped: every guard on
+    p = Params.from_dict({'stuck_guard': False, 'manual_blade_requires_enable': False})
+    assert disabled_safety_guards(p) == ['stuck_guard', 'manual_blade_requires_enable']
+    assert set(SAFETY_GUARDS) == {'hard_boundary', 'stuck_guard', 'tilt_guard', 'loc_hold',
+                                  'manual_blade_requires_enable'}

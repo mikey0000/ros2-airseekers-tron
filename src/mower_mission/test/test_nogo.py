@@ -16,6 +16,7 @@ from mower_mission.fsm.phases import nogo as nogo_phase    # noqa: E402
 from test_mission_fsm import (Harness, follow_current, line, plan, square,  # noqa: E402
                               start_until_planning)
 from test_path_conditioning import ring                    # noqa: E402
+from keep_harness import KeepHarness                       # noqa: E402
 
 Z = nogo.Zone
 
@@ -102,14 +103,14 @@ def test_e_blocked_when_nothing_is_clear():
 def _cov_pivot_h(monkeypatch, plans, zs=None, **params):
     """ring_h with the planned pivot's check answered by ``plans`` (a list, one per call)."""
     params.setdefault('path_conditioning', True)
-    params.setdefault('pivot_backout_m', 0.0)
+    params.setdefault('backout_m', 0.0)
     calls = []
 
     def fake(x, y, yaw, delta, discs, **kw):
         calls.append((x, y, yaw, delta))
         return plans.pop(0) if plans else nogo.PivotPlan('clear')
     monkeypatch.setattr(nogo_phase.nogo, 'plan_pivot', fake)
-    h = Harness(**params)
+    h = KeepHarness(**params)      # the steps run with the blade on (owner rule 2026-10-23)
     h.areas = [square(-8, -4, 12)]
     r = ring()
     start_until_planning(h)
@@ -140,6 +141,7 @@ def test_cov_gate_b_backs_up_then_checks_again_and_pivots(monkeypatch):
     g = h.goal(f.ACT_BACKUP)
     assert a.purpose == 'nogo_step' and g['distance_m'] == 0.3 and g['speed_mps'] >= 0.06
     assert any('(b)' in t for t in logs(h))
+    assert h.blade and any('blade kept on' in t for t in logs(h))   # inside the area
     m = h.mark()
     h.finish(f.ACT_BACKUP)
     h.fsm.inputs.is_cutting = True
@@ -213,7 +215,10 @@ def _corner_route(deg, tgt):
 
 def _route_corner_h(zs):
     from test_mission_fsm import _answer_route, _route_h, _route_resp
-    h = _route_h()
+    # The sweep check runs at a route corner the conditioner pivots at (no fillet fits). The
+    # toy 2 m legs would take the shipped r 0.8 m fillet (0.95 m tangents) round the 100 deg
+    # corner, so a fillet radius whose tangents exceed the legs forces the pivot here.
+    h = _route_h(path_conditioning_route_r_min_m=3.0)
     zones(h, *zs)
     _answer_route(h, resp=_route_resp(_corner_route(100.0, h.fsm.mission.transit_target)))
     h.finish(f.ACT_FOLLOW)                     # at the corner (2, 0), yaw 0
@@ -455,20 +460,6 @@ def test_edge_lap_proactive_detour_for_a_zone_ahead_without_stopping():
 def test_edge_detour_without_a_disc_is_none():
     lap = [(0.1 * i, 0.0, 0.0) for i in range(50)]
     assert nogo.edge_detour(lap, 0, [Z(2.0, 2.0, 0.2)], lambda x, y: y > 0) is None
-
-
-# =====================================================================
-# costmap clears on retries: only the 5 s obstacle layer
-# =====================================================================
-def test_retry_clear_is_selective_by_default_and_full_when_off():
-    for sel in (True, False):
-        h = Harness(clear_costmaps_selective=sel)
-        start_until_planning(h)
-        h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(2, 2, 4, 2)]))
-        mk = h.mark()
-        h.finish(f.ACT_NAV, f.ABORTED)
-        c = [e for e in h.since(mk, f.CallService) if e.name == f.SRV_CLEAR_COSTMAPS]
-        assert c and all(e.request['selective'] is sel for e in c)
 
 
 def test_edge_detour_ignores_marks_and_too_large_offsets():

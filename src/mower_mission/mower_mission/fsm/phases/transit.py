@@ -21,12 +21,10 @@ class TransitMixin:
 
     def _transit_run(self):
         """Run index for plan_route's transit variation (0 = base route)."""
-        if not self.p.route_variation:
-            return 0
         return int(self.alternate_counts.get(self.TRANSIT_RUN_KEY, 0))
 
     def _bump_transit_run(self):
-        if self.p.route_transits and self.p.route_variation:
+        if self.p.route_transits:
             self.alternate_counts[self.TRANSIT_RUN_KEY] = self._transit_run() + 1
             self._fx.append(SaveAlternateCounts(dict(self.alternate_counts)))
 
@@ -150,14 +148,14 @@ class TransitMixin:
                                 m.transit_fails, self.p.transit_retries, delay), delay=delay)
 
     def _sweep_blocked_skip(self, why):
-        """sweep_blocked_skip (2026-11-01): the transit to the current sub-path is exhausted
+        """Sweep-blocked skip (2026-11-01): the transit to the current sub-path is exhausted
         by a blocked pre-pivot sweep. Skip only edge_blocked_skip_m of the sub-path from the
         rejoin pose (at least to the next pose, at most to the next pivot vertex), record it
         like a detour skip and transit to the pose after it. False (off, another cause, a
         detour / recovery / stretch re-try, or sweep_blocked_max_skips consecutive skips on
         this sub-path): the caller drops the sub-path as before."""
         m, p = self.mission, self.p
-        if not p.sweep_blocked_skip or 'sweep blocked' not in why or m.stretch is not None \
+        if 'sweep blocked' not in why or m.stretch is not None \
                 or m.detour is not None or m.recovering:
             return False
         key = (m.area_idx, m.sub_i)
@@ -622,11 +620,11 @@ class TransitMixin:
     def _route_pivot_backout(self, outcome, key, heading, lim):
         """A mission-transit route corner pivot refused pivot_retries times (field 2026-10-23
         20:30:52: a Spin refused 0.71 m from a trunk went to STUCK_NEEDS_HELP): back off
-        route_pivot_backout_m, then re-plan the transit (a transit abort: re-routed from there;
+        backout_m, then re-plan the transit (a transit abort: re-routed from there;
         transit_retries used up -> the sub-path is skipped). A second refusal at the same
         corner re-plans at once. True = handled."""
         m, p, pose = self.mission, self.p, self.inputs.pose
-        dist = float(p.route_pivot_backout_m)
+        dist = float(p.backout_m)
         if dist <= 0.0 or m is None or outcome == CANCELED or heading is None or \
                 pose is None or len(pose) < 3:
             return False
@@ -653,8 +651,8 @@ class TransitMixin:
         if not self._keep_blade_inside('route pivot back-off'):
             self._blade_off('route pivot back-off')
         self._start_action(ACT_BACKUP, {'distance_m': dist,
-                                        'speed_mps': float(p.pivot_backout_speed_mps)},
-                           dist / max(0.02, float(p.pivot_backout_speed_mps)) + 15.0,
+                                        'speed_mps': float(p.slow_maneuver_mps)},
+                           dist / max(0.02, float(p.slow_maneuver_mps)) + 15.0,
                            purpose='route_pivot_backout')
         return True
 
@@ -1048,8 +1046,8 @@ class TransitMixin:
                         self._edge_lap(m.sub_i) and self._nogo_edge_detour(
                             prog, 'follow_path %s, obstacle on the lap' % outcome):
                     return     # option C / B6: detour inward around it, rejoin, no stop-wait
-                if self.p.edge_blocked_skip and (collided or self.inputs.cm_stop_since
-                                                 is not None) and self._edge_lap(m.sub_i):
+                if (collided or self.inputs.cm_stop_since is not None) and \
+                        self._edge_lap(m.sub_i):
                     self._edge_skip(prog, 'follow_path %s, collision ahead' % outcome)
                     return
                 # aborts inside a blocked wait count toward the unclassified-detour threshold

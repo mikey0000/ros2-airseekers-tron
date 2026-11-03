@@ -1264,3 +1264,39 @@ map_server from the two map_server commits, controller_server from the batch siz
 Sim in-container CPU is not the mower's (3x message rates, /clock wakes every node).
 Projected mower saving: map_server ~65 % -> ~40 % of a core, controller_server ~25 % less
 (~7 % of a core): about 0.3 core of 8. To verify on the mower: per-thread `top -H`.
+
+## Mission parameter diet, first pass (2026-11-03, branch ws/param-diet, sim gate)
+
+Source: the 2026-11-02 params audit. Mission `Params` 369 -> 338 fields, mission.yaml 385 -> 354
+keys (-31 each). mower_mission source 15 356 -> 15 302 lines (209 deleted, 124 added; the
+added lines are mostly re-wrapped comments, the startup warning and the unified params).
+
+- Tests run what ships: the FSM test `Harness` no longer pins route_transits /
+  path_conditioning / hard_boundary_body / hard_boundary_snapshot false, detour_unclassified_after
+  -1 or 1.0 / 3.0 m detour skips. FSM-driven tests on the shipped flags: 0 of 690 -> 643 of 693;
+  the other 50 set a flag explicitly, marked `# revert path` (or a pinned tuning value with its
+  reason). The toy squares answer plan_route "no route graph" (auto_route), and a conditioning
+  pivot completes when a test asks for the next action (auto_spin).
+- Deleted uncalled code: `parity._speed_cap_params`, `nogo.wrap`, `external_rain.parse_rain_payload`.
+- Retired 17 flags, shipped path only: the costmap-clear trio (always local, selective),
+  require_blade_confirmation + blade_spinup_s (also out of the GUI param catalog), route_variation
+  (area setting transit_variation still applies), obstacle_path_filter, requeue_failed_transits,
+  requeue_skipped, blocked_pivot_requeue, resume_skip_failing, edge_blocked_skip,
+  sweep_blocked_skip, retry_each_skipped_stretch (with stretch_block_radius_m and the unbypassable
+  shortcut it gated), exclude_marked_obstacles, turn_leg_end_by_distance, blade_keep_on_obstacles
+  (owner rule). Kept: manual_blade_requires_enable (owner toggles it), route_transits,
+  path_conditioning, hard_boundary_*, heading calibration flags.
+- Unified: `slow_maneuver_mps` 0.10 (7 speeds + the hard-coded `min(v, 0.10)` clamps in
+  boundary.py / spin_drift.py), `caution_speed_mps` 0.15 (tilt / camera blocked / loc degraded),
+  `backout_m` 0.30 (5 distances; pivot_backout_m was 0.35, no test needed it),
+  `heading_status_timeout_s` 5 s is also the post-calibration COG wait (was 3 s).
+- Startup WARN for each of hard_boundary, stuck_guard, tilt_guard, loc_hold,
+  manual_blade_requires_enable set false.
+- Dock timeout: the docking server enforces the Dock goal's timeout_s itself; its worst case is
+  1 + 8 retries x (docking_timeout_s 60 + final 10 s) + 8 x retry_timeout_s 15 = 750 s, so the old
+  480 s cut the stock 8-retry cycle off around retry 5. `dock_timeout_s` 480 -> 900,
+  `dock_action_timeout_s` 540 -> 960; max_retries stays 8 (stock, owner choice 2026-10-21).
+
+Gate real_run5 `-d -s 2 -x 3`: a 0.078 m / 0, b-h PASS, i 0.111 / 0.077 / 0.080, transit 0.388
+(FAIL as on the baseline: 0.101 / 0.098 / 0.082, 0.364), g 25 %, controller 20 Hz. Same as the
+baseline within run-to-run spread. Not field tested.
