@@ -7,7 +7,7 @@ from mower_mission.fsm.common import (ACT_PLAN, AREA_SETTINGS_DEFAULTS, AreaCurs
     BLADE_POLICIES, CONDITIONED_KEY, CUTTER_HEIGHT_MAX_MM, CUTTER_HEIGHT_MIN_MM, EDGE_MODES,
     MOTION_PHASES, OBSTACLE_DETECTION_LEVELS, PARAM_NODE_CONTROLLER, PARAM_NODE_COVERAGE,
     PARAM_NODE_DET_RANGE, PARAM_NODE_OBSTACLE_GUARD, PATH_MODES, PIVOT_SUB,
-    PublishAreaSettings, PublishPlan, ROUTE_ORDERS, SRV_CUTTER_HEIGHT, SRV_GET_AREA_SETTINGS,
+    PublishAreaSettings, PublishPlan, ROUTE_ORDERS, ROW_LINK_MODES, SRV_CUTTER_HEIGHT, SRV_GET_AREA_SETTINGS,
     SRV_SET_PARAMS, STEREO_STALE_SUB, SUCCEEDED, TURN_TYPES, UNAVAILABLE, absolute_to_local,
     coverage_route_params, geo, json, math, subpath_offsets)  # noqa: F401
 
@@ -99,6 +99,14 @@ class AreasMixin:
         if st['turn_type'] not in TURN_TYPES:
             self._log('warn', 'unknown turn_type %r: auto' % st['turn_type'])
             st['turn_type'] = 'auto'
+        if st.get('row_link_mode') not in ROW_LINK_MODES:
+            self._log('warn', 'unknown row_link_mode %r: auto' % st.get('row_link_mode'))
+            st['row_link_mode'] = 'auto'
+        st['tangent_approach'] = bool(st.get('tangent_approach'))
+        try:
+            st['pivot_rate_rad_s'] = max(0.0, float(st.get('pivot_rate_rad_s') or 0.0))
+        except (TypeError, ValueError):
+            st['pivot_rate_rad_s'] = 0.0
         if st.get('edge_mode') not in EDGE_MODES:
             self._log('warn', 'unknown edge_mode %r: soft' % st.get('edge_mode'))
             st['edge_mode'] = 'soft'

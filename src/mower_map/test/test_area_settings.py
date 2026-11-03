@@ -18,7 +18,8 @@ def test_builtin_defaults_match_the_contract():
         'swath_width_m': 0.18, 'edge_margin_m': 0.05, 'edge_first': True,
         'edge_mode': 'soft', 'edge_laps': 3, 'repeat': 1, 'alternate_angle_offset_deg': 90.0,
         'route_order': 'racetrack', 'route_spiral_size': 6, 'min_turn_radius_m': 0.5,
-        'turn_type': 'auto', 'obstacle_detection': 'standard',
+        'turn_type': 'auto', 'row_link_mode': 'auto', 'tangent_approach': False,
+        'pivot_rate_rad_s': 0.0, 'obstacle_detection': 'standard',
         'blade_policy': 'continuous', 'transit_variation': 'none',
         'slope_mode': 'off', 'slope_contour_above_deg': 10.0,
         'avoid_non_grass': True}

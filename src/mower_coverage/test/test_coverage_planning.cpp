@@ -2129,3 +2129,122 @@ TEST(CoverageTurnMode, PlannedTurnsStayInsideTheArea) {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// row_link_mode (2026-11-03, docs/analysis/2026-11-03_turns.md appendix B): a row change no
+// turn joins becomes a snake connector (pivot, straight along the row-end band, pivot) inside
+// one sub-path instead of a transit, where the body limits allow.
+// ---------------------------------------------------------------------------
+TEST(CoverageRowLink, ParseRowLinkMode) {
+  using mower_coverage::RowLinkMode;
+  RowLinkMode m;
+  EXPECT_TRUE(mower_coverage::parseRowLinkMode("", &m));
+  EXPECT_EQ(m, RowLinkMode::kAuto);
+  EXPECT_TRUE(mower_coverage::parseRowLinkMode("transit", &m));
+  EXPECT_EQ(m, RowLinkMode::kTransit);
+  EXPECT_TRUE(mower_coverage::parseRowLinkMode("snake", &m));
+  EXPECT_EQ(m, RowLinkMode::kSnake);
+  EXPECT_FALSE(mower_coverage::parseRowLinkMode("weave", &m));
+  EXPECT_EQ(m, RowLinkMode::kAuto);
+}
+
+// Row end at x = 0, the line `room` m past it, next racetrack row 1.08 m over. The soft
+// layout's 0.45 m inset holds the two 90 deg pivot sweeps (nose radius 0.645 -> 0.195 out)
+// and the straight; 0.20 m of room does not (0.445 out).
+TEST(CoverageRowLink, SnakeConnectorGeometry) {
+  mower_coverage::RouteOptions r;
+  const Point2D a{0.0, 0.0}, b{0.0, 1.08};
+  auto cellsFor = [](double room) {
+    f2c::types::Cells c;
+    c.addGeometry(mower_coverage::makeFieldCell(
+        {{-6.0, -1.5}, {room, -1.5}, {room, 2.6}, {-6.0, 2.6}}, {}));
+    return c;
+  };
+  auto link = [&](double room, std::vector<mower_coverage::TurnPose>* poses) {
+    const auto base = cellsFor(room - r.body_half_width - r.turn_base_margin);
+    const auto body = cellsFor(room + r.turn_body_limit);
+    return mower_coverage::snakeLink(a, 0.0, b, M_PI, r, &base, &body, poses);
+  };
+  std::vector<mower_coverage::TurnPose> poses;
+  ASSERT_TRUE(link(0.45, &poses));
+  ASSERT_GE(poses.size(), 2u);  // <= 0.5 m apart over 1.08 m
+  for (const auto& tp : poses) {
+    EXPECT_FALSE(tp.reverse);
+    EXPECT_NEAR(tp.p.first, 0.0, 1e-9);  // on the row-end line: 0.45 >= 0.285 inside
+    EXPECT_GT(tp.p.second, 0.0);
+    EXPECT_LT(tp.p.second, 1.08);
+  }
+  EXPECT_FALSE(link(0.20, nullptr));
+  // a 0.285 base margin with 0.30 of room: base fits, the pivot nose (0.645) does not
+  EXPECT_FALSE(link(0.30, nullptr));
+}
+
+namespace {
+// Area 1 of the sim gate world real_run5 (map metres, mower_sim/worlds/real_run5_areas.dat)
+const std::vector<Point2D> kRun5Area1 = {
+    {-1.62, 1.82}, {-0.89, 2.25}, {-0.68, 2.61}, {-0.48, 4.42}, {-0.34, 5.52}, {-1.15, 5.26},
+    {-3.35, 4.33}, {-4.37, 3.80}, {-4.75, 3.25}, {-5.49, 2.18}, {-6.04, 1.43}, {-5.59, 0.67},
+    {-5.36, 0.18}, {-5.15, -0.03}, {-5.39, -0.59}, {-4.75, -1.39}, {-3.29, 0.25}, {-1.92, 1.31}};
+
+mower_coverage::CoveragePlan rowLinkPlan(mower_coverage::RowLinkMode link,
+                                         mower_coverage::TurnMode turn) {
+  mower_coverage::RouteOptions route;
+  EXPECT_TRUE(mower_coverage::parseRouteOrder("racetrack", &route.order));
+  route.min_turn_radius = 0.5;
+  route.min_drivable_turn_radius = 0.40;
+  route.fill_gaps = true;
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &route));
+  route.turn_mode = turn;
+  route.row_link_mode = link;
+  return mower_coverage::planCoverage(field(kRun5Area1), 0.18, 0.20, 2, 0.05, -1.0, 0.15,
+                                      mower_coverage::PathMode::kZigzag, true, route);
+}
+
+}  // namespace
+
+// Whole plans on the sim gate's Area 1 (racetrack rows ~1.1 m apart, no loop fits): the
+// default (auto with turn_mode pivot) equals transit; snake turns the transits into snake
+// links (2 pivots instead of ~3 each), every connector pose 0.285 inside the line.
+TEST(CoverageRowLink, SnakePlanReplacesTransits) {
+  if (!mower_coverage::builtWithF2CV3()) GTEST_SKIP() << "F2C v3 only";
+  using mower_coverage::RowLinkMode;
+  using mower_coverage::TurnKind;
+  using mower_coverage::TurnMode;
+  const auto transit = rowLinkPlan(RowLinkMode::kTransit, TurnMode::kPivot);
+  const auto dflt = rowLinkPlan(RowLinkMode::kAuto, TurnMode::kPivot);
+  const auto snake = rowLinkPlan(RowLinkMode::kSnake, TurnMode::kPivot);
+  ASSERT_FALSE(transit.swaths.empty());
+  std::printf("transit: %zu rows, %zu transit, %zu pivot, %zu wide; snake: %zu transit, "
+              "%zu snake, %zu pivot -> expected pivots %zu vs %zu\n",
+              transit.row_changes, transit.transit_links, transit.pivot_turns,
+              transit.wide_pivot_turns, snake.transit_links, snake.snake_links,
+              snake.pivot_turns, transit.expectedRowChangePivots(),
+              snake.expectedRowChangePivots());
+  // default parity: identical swaths and turns
+  ASSERT_EQ(dflt.swaths.size(), transit.swaths.size());
+  for (size_t i = 0; i < dflt.swaths.size(); ++i) {
+    EXPECT_EQ(dflt.swaths[i], transit.swaths[i]);
+    EXPECT_EQ(dflt.turns[i].kind, transit.turns[i].kind);
+  }
+  EXPECT_EQ(transit.snake_links, 0u);
+  EXPECT_EQ(dflt.snake_links, 0u);
+  EXPECT_GT(transit.transit_links, 0u);
+  EXPECT_GT(snake.snake_links, 0u);
+  EXPECT_LT(snake.transit_links, transit.transit_links);
+  EXPECT_LT(snake.expectedRowChangePivots(), transit.expectedRowChangePivots());
+  EXPECT_LE(snake.row_changes, snake.swaths.size() - 1);  // + fill passes after
+  size_t n = 0;
+  for (const auto& t : snake.turns) {
+    if (t.kind != TurnKind::kSnake) continue;
+    ++n;
+    EXPECT_FALSE(t.poses.empty());
+    for (const auto& tp : t.poses) {
+      EXPECT_FALSE(tp.reverse);
+      EXPECT_GE(polyInset(tp.p, kRun5Area1), 0.235 + 0.05 - 0.011);
+    }
+  }
+  EXPECT_EQ(n, snake.snake_links);
+  // auto with turn_mode auto (edge band enabled) links the same way snake does
+  const auto autob = rowLinkPlan(RowLinkMode::kAuto, TurnMode::kAuto);
+  EXPECT_GT(autob.snake_links, 0u);
+}

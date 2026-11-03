@@ -154,6 +154,11 @@ AREA_SETTINGS_DEFAULTS = {
     'route_spiral_size': 6,
     'min_turn_radius_m': 0.5,
     'turn_type': 'auto',
+    # row change no turn joins: transit | snake | auto (planner row_link_mode)
+    'row_link_mode': 'auto',
+    # transit ends on a straight along the sub-path's first leg (transit.py _route_tangent)
+    'tangent_approach': False,
+    'pivot_rate_rad_s': 0.0,            # 0 = the stack's pivot rate (recorded only)
     'obstacle_detection': 'standard',   # none | standard | sensitive (obstacle_guard)
     # continuous: blade stays on through waits / retries / in-area transits and detours;
     # conservative: blade off on each of them (pre-2026-10-07 behaviour)
@@ -164,6 +169,7 @@ AREA_SETTINGS_DEFAULTS = {
 PATH_MODES = ('zigzag', 'cross', 'alternate', 'spiral', 'contour_only')
 ROUTE_ORDERS = ('boustrophedon', 'snake', 'spiral', 'racetrack')
 TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
+ROW_LINK_MODES = ('transit', 'snake', 'auto')
 EDGE_MODES = ('soft', 'hard')
 OBSTACLE_DETECTION_LEVELS = ('none', 'standard', 'sensitive')
 BLADE_POLICIES = ('continuous', 'conservative')
@@ -214,6 +220,7 @@ def coverage_route_params(st):
             'route_spiral_size': int(st['route_spiral_size']),
             'min_turn_radius_m': float(st['min_turn_radius_m']),
             'turn_type': str(st['turn_type']),
+            'row_link_mode': str(st.get('row_link_mode', 'auto')),
             # stock-style edge layout per area edge_mode
             'edge_layout': str(st.get('edge_layout', st.get('edge_mode', 'soft'))),
             'edge_laps': int(st.get('edge_laps', AREA_SETTINGS_DEFAULTS['edge_laps']))}
@@ -1230,6 +1237,18 @@ class Params:
     # / resume point) ends edge_approach_inset_m inside, beside it; 0 = at the start.
     edge_approach_inset_m: float = 0.30
     edge_approach_near_m: float = 0.25
+    # Area setting tangent_approach (2026-11-03, docs/analysis/2026-11-03_turns.md appendix B):
+    # a route to a sub-path start (the start itself, not an edge-approach point) ends on a
+    # straight of tangent_approach_m along the first leg's heading, when base_link stays
+    # tangent_approach_base_m inside the line and the body at most tangent_approach_body_m out
+    # along it (and the shortened route stays inside); else the route is unchanged. A route
+    # already arriving within leg_start_align_deg of the leg is left alone. The leg-start
+    # pivot itself keeps its rule (path_conditioning_pivot_min_rad, 20 deg >= this), so a
+    # tangent arrival skips it.
+    tangent_approach_m: float = 1.0
+    tangent_approach_base_m: float = 0.285
+    tangent_approach_body_m: float = 0.26
+    leg_start_align_deg: float = 15.0
     edge_join_m: float = 1.5     # ... then the leg's first metres fade from that inset onto the
     #                              lap (tangent join, round 4); 0 = join across from the inset
     # --- repeated bumper hits (field 2026-10-21 07:29: a real object just outside the line,
@@ -1493,6 +1512,7 @@ class Mission:
     route_full: Optional[list] = None           # the planned route (route_cusps index into it)
     route_cusps: list = field(default_factory=list)   # [(i, x, y, heading_after)] of route_full
     final_approach: bool = False                # this transit's final approach leg was sent
+    tangent: object = None                      # transit target the route ends tangent onto
     join: Any = None
     route_backouts: set = field(default_factory=set)   # route corners backed off from
     unbypassable: list = field(default_factory=list)   # [(x, y)] stretches that stayed blocked
