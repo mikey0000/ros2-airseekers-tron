@@ -838,6 +838,30 @@ injection and process kills in the gate. `real_run5_slope -d -s 2 -x 3`: no STUC
 BOUNDARY OUT; the downhill creep stays under the body limits, so the recovery and the slip
 check were not reached. Plain real_run5 unchanged (PASS, a 0.084, i 0.096 / 0.087 / 0.091, 0.364).
 
+2026-11-03 (ws/boundary-resume, field 03:46 UTC, area 5, roll 8-11 deg): a rear_left trip
+during an edge-lap no-go detour was recovered (one forward arc, worst corner 0.06 m out), then
+the mission went MOWING -> TRANSIT, the transit re-tripped 5 s later 0.04 m away and the spot
+rule ended in STUCK_NEEDS_HELP ("left the boundary 2 times within 1.0 m"). Cause of the
+transit: the trip came in step `nogo_detour`, not `follow`, so the pause kept the stale chunk
+start (2 m back, (-0.12, 3.19)) as the resume point, `m.nogo_detour` stayed set, and the
+dispatch had to transit there from the recovery spot. Fixes: planned recovery moves go on until
+the worst corner is `boundary_recover_margin_m` (0.10) under its limit (cap and no-worsening
+kept; under the limit but no admissible move left = resume with a warning). The resume rejoins
+the interrupted leg (follow or edge detour; the detour is re-planned from there) ahead of the
+robot, offset the margin inward over edge_join_m, without a leg-start pivot when the leg is
+within 60 deg of the yaw (a larger turn only when its footprint passes the margin check).
+A resume that still needs a transit first drives a `boundary_recover_resume_in_m` (0.3 m)
+straight, forward or reverse by the planner's (now signed) clearance scoring, and checks the
+pivot toward the transit target, one more straight if it fails. A trip within
+`boundary_recover_grace_s` (10 s) / `_grace_m` (1.0 m) of a resume is not a spot strike: one
+more recovery with twice the margin, then counted in the mission total; a later excursion at
+the same spot still stops. Regression: replay fixture `20261103_slope_resume_retrip` (test_d)
+and field-geometry tests in test_body_boundary.py. Gates (seed 2, -x 3):
+real_run5_slope -d: complete and docked, STUCK 0, 0 excursions / 0 recoveries (the recovery
+and resume paths are again not reached in the sim), a 0.232 m / 353 samples, e 6 of 19
+(0.701 m), j FAIL (the same slope tracking failures as the ws/sim-fidelity run). Plain
+real_run5: PASS, a 0.076 / 0, i 0.076 / 0.039 / 0.073, transit 0.337.
+
 ## GUI UX batch (2026-11-02, branch ws/ux-batch, vitest + sim GUI check)
 
 Fixes from the GUI UX audit (`docs/gui.md` "Owner-facing states, alerts and layout"). The

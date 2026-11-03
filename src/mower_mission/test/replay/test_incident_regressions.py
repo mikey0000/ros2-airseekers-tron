@@ -320,3 +320,110 @@ def test_d_ladder_seen_in_parts_makes_one_zone_not_a_stack():
     assert near, 'the replay made no zone at the ladder (inputs do not reproduce it)'
     assert len(near) <= 2, 'stacked zones at the ladder: %s' % sorted(
         (round(t, 1), round(x, 2), round(y, 2)) for t, x, y in near.values())
+
+
+# ---------------------------------------------------------------------------------------
+# (d) 2026-11-03 03:46:39 UTC (area 5, side slope roll 8-11 deg, edge lap inset 0.05): a
+# rear_left trip during an edge-lap no-go detour; the recovery ended 0.06 m out (under the
+# 0.35 limit), the resume went MOWING -> TRANSIT back to the chunk start (the detour step
+# left start_local stale), the transit re-tripped 5 s later 0.04 m away and the spot rule
+# ended in STUCK_NEEDS_HELP. Derived: the detour state at the recorded detour log line (the
+# bag has no no-go zone topic); the plan is the recorded mow_plan from the leg-start join.
+# ---------------------------------------------------------------------------------------
+def test_d_slope_trip_in_an_edge_detour_rejoins_the_lap_without_a_retrip():
+    fx = rl.load('20261103_slope_resume_retrip')
+    (t_trip, trip), _second = rl.recorded_log(fx, 'BOUNDARY OUT')
+    assert 'rear_left 0.35 m outside' in trip
+    assert rl.recorded_log(fx, 'detour inward around it on the lap')
+    assert rl.recorded_log(fx, 'left the boundary 2 times within 1.0 m')          # the field
+    area = fx['areas'][0]
+    poly = [tuple(p) for p in area['outer']]
+    h = Harness(hard_boundary_body=True)
+    h.areas = [rl.area_dict(area)]
+    r = rl.Replay(h, fx)
+    # from 3 s before the trip (on the detour; earlier, the field's plan-relative corner
+    # allowance that this plan slice lacks kept a bend from tripping)
+    t_from = t_trip - 3.0
+    od = _odoms(r, t_from, t_trip)
+    p0 = od[0]['msg']
+    poses = fx['plan']['poses']
+    j0 = min(range(len(poses)), key=lambda i: math.hypot(poses[i][0] - p0['x'],
+                                                         poses[i][1] - p0['y']))
+    path = [(x, y, 0.0) for x, y in poses[j0:]]
+    r.apply(od[0])
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    for _ in range(20):
+        h.tick()
+        h.answer_services()
+        if h.fsm._action is not None:
+            break
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, {'success': True, 'drivable_subpaths': [path],
+                                        'full_path': path})
+    h.fsm.inputs.is_cutting = True
+    assert h.name == 'MOWING'
+    m = h.fsm.mission
+    r.base = h.t - t_from
+    r.k = next(k for k, e in enumerate(r.events) if e['t'] >= t_from)
+    for _ in range(int((t_trip + 2.0 - t_from) * 10)):
+        if h.fsm._hb is not None:
+            break
+        # the field robot was on the edge-lap detour ("poses 384 -> 413"; derived state)
+        m.nogo_detour = {'from': 0, 'end': 413 - fx['plan']['from_pose'] - j0,
+                         'why': 'no-go zone'}
+        m.step = 'nogo_detour'
+        r.run_until(h.t - r.base + 0.1)
+    assert h.fsm._hb is not None, [t for t in _logs(h) if 'BOUNDARY' in t]
+    assert 'rear_left' in [t for t in _logs(h) if 'BOUNDARY OUT' in t][0]
+    assert h.fsm._hb['step'] == 'nogo_detour'
+    mark = h.mark()
+
+    def closed_loop(ticks):
+        for _ in range(ticks):
+            k = h.mark()
+            h.tick()
+            dc = h.since(k, f.DriveCmd)
+            x, y, th = h.fsm.inputs.pose
+            if dc:
+                th += dc[-1].angular * 0.1
+                x += dc[-1].linear * 0.1 * math.cos(th)
+                y += dc[-1].linear * 0.1 * math.sin(th)
+            rl.Replay.apply(r, {'topic': '/odometry/filtered_map',
+                                'msg': {'x': x, 'y': y, 'yaw': th}})
+            if h.fsm._hb is None:
+                return
+    closed_loop(600)
+    assert h.fsm._hb is None and h.name == 'MOWING', (h.name, _logs(h, mark)[-8:])
+    ev = h.fsm._hb_body_eval(h.fsm.inputs.pose, 'soft')
+    assert ev['excess'] <= -0.10 + 1e-6, ev                # boundary_recover_margin_m
+    assert 'TRANSIT' not in _states(h, mark), _logs(h, mark)
+    # drive the rejoined lap (its sent poses) for 1 m: no re-trip, no STUCK
+    for _ in range(40):
+        a = h.fsm._action
+        if a is not None and a.name == f.ACT_SPIN:
+            x, y, th = h.fsm.inputs.pose
+            d = h.goal(f.ACT_SPIN)['angle']
+            for _k in range(10):
+                th += d / 10.0
+                rl.Replay.apply(r, {'topic': '/odometry/filtered_map',
+                                    'msg': {'x': x, 'y': y, 'yaw': th}})
+                h.tick()
+                assert h.fsm._hb is None
+            h.finish(f.ACT_SPIN, f.SUCCEEDED)
+        if a is not None and a.name == f.ACT_FOLLOW:
+            break
+        h.tick()
+    poses = h.goal(f.ACT_FOLLOW)['poses']
+    acc, prev = 0.0, h.fsm.inputs.pose
+    for q in poses[1:]:
+        th = math.atan2(q[1] - prev[1], q[0] - prev[0])
+        acc += math.hypot(q[0] - prev[0], q[1] - prev[1])
+        prev = (q[0], q[1], th)
+        rl.Replay.apply(r, {'topic': '/odometry/filtered_map',
+                            'msg': {'x': q[0], 'y': q[1], 'yaw': th}})
+        h.tick()
+        assert h.fsm._hb is None and h.name == 'MOWING', _logs(h, mark)[-6:]
+        assert rl.worst_corner(prev, poly) < 0.35
+        if acc >= 1.0:
+            break
+    assert acc >= 1.0

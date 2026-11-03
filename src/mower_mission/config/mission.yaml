@@ -544,6 +544,10 @@ behavior_tree_node:
     boundary_recover_pivot_rad: 0.35
     boundary_recover_max_moves: 4
     boundary_recover_reverse_bias_m: 0.02
+    boundary_recover_margin_m: 0.10        # recovery ends this far under the trip limit
+    boundary_recover_resume_in_m: 0.30     # planned straight before a resume transit
+    boundary_recover_grace_s: 10.0         # re-trip this soon after a resume: escalate, no strike
+    boundary_recover_grace_m: 1.0
     boundary_recover_slip_check: true      # wheel odom vs RTK displacement during the recovery
     boundary_recover_slip_ratio: 3.0
     boundary_recover_slip_min_m: 0.3
