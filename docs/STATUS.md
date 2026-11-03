@@ -1107,6 +1107,16 @@ no-progress counters. Dock transits and docking are exempt unless lost for more 
 Details: docs/localization.md "RTK-loss policy". The sim cannot inject an RTK loss yet, so
 this has only had unit tests and a plain no-regression gate.
 
+2026-11-03, branch `ws/rtk-stale`: the new sim RTK-loss injection showed `/fix_status`
+never went stale in sim. Five nodes compared the pump's node-clock receipt times with
+`time.monotonic()`. They now use the node clock, and production behaviour is unchanged.
+New `lost_after_s` (30 s): no RTK FIXED/FLOAT that long reads `lost` ("no RTK for N s").
+The retrace trail is a 10 m ring recorded in every phase. Gates (`-d -s 2 -x 3`): a 60 s
+dropout gives k PASS (lost at 30 s, resumed 3 s after the fix returned). A 700 s dropout
+gives lost at 30 s, a 2.91 m retrace, then MOWING_INCOMPLETE "no RTK fixed, stopping in
+place" at 600 s, with no dock. The earlier run docked only because the stale RTK still
+read `fixed`. Its k FAIL (not resumed) is expected, because the policy has it stay put.
+
 
 
 ## Stock-parity small behaviours (2026-11-03, branch ws/stock-parity, unit-tested only)
