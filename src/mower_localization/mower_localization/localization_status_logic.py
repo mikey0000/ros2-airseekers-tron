@@ -60,7 +60,7 @@ class StatusParams:
     vio_timeout_s: float = 1.0          # /odometry/vio_gated older -> VIO not active
     max_step_m: float = 1.0             # odom pose step larger than this = jump, not travel
     loc_sigma_ok_m: float = 0.15        # ok also needs ekf_map xy sigma <= this (<= 0 = off)
-    lost_after_s: float = 30.0          # no RTK FIXED/FLOAT this long -> lost (<= 0 = off)
+    lost_after_s: float = 10.0          # no RTK FIXED/FLOAT this long -> lost (<= 0 = off); stock and OpenMower use 10 s
 
 
 class LocalizationStatus:

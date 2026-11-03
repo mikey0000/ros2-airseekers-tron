@@ -260,7 +260,7 @@ sigma, or no finite covariance, reads `degraded` whatever the receiver reports, 
 flag alone no longer makes `ok`. `loc_sigma_ok_m: 0.0` turns this gate off.
 
 No `/fix_status` for more than `fix_status_timeout_s` (2 s) reads `rtk: stale`. No RTK
-FIXED or FLOAT for more than `lost_after_s` (30 s, `0` = off) is `lost` with the reason
+FIXED or FLOAT for more than `lost_after_s` (10 s, `0` = off) is `lost` with the reason
 `no RTK for N s`, whatever the drift estimate says: the estimate only grows with distance,
 so a mower that has stopped would otherwise stay `degraded` through any outage. The status
 carries that age as `no_rtk_s`.
