@@ -52,7 +52,7 @@
 #              evaluate.py reports recovery
 #   -- ARGS    extra sim.launch.py arguments (e.g. mission_params_file:=/abs/path.yaml)
 #
-# Preflight: refuses to start (exit 2) unless `powerprofilesctl get` is performance (skipped
+# Preflight: sets the power profile to performance (refuses, exit 2, only if that fails; skipped
 # when powerprofilesctl is absent), and prints the 1-minute load average.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -110,9 +110,15 @@ fi
 if command -v powerprofilesctl >/dev/null 2>&1; then
   prof="$(powerprofilesctl get 2>/dev/null || true)"
   if [ "$prof" != performance ]; then
-    echo "sim_gate: power profile is '${prof:-unknown}', not performance: the controller loop" \
-      "misses its sim-time budget (INVALID runs). Run: powerprofilesctl set performance" >&2
-    exit 2
+    # the desktop keeps resetting it to balanced: set it ourselves, refuse only if that fails
+    powerprofilesctl set performance 2>/dev/null || true
+    prof="$(powerprofilesctl get 2>/dev/null || true)"
+    if [ "$prof" != performance ]; then
+      echo "sim_gate: power profile is '${prof:-unknown}' and could not be set to performance:" \
+        "the controller loop misses its sim-time budget (INVALID runs)" >&2
+      exit 2
+    fi
+    echo "sim_gate: power profile set to performance"
   fi
 fi
 echo "sim_gate: host load average (1 min) $(cut -d' ' -f1 /proc/loadavg), power profile ${prof:-n/a}"
