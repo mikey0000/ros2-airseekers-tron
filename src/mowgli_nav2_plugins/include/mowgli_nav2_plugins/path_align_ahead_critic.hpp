@@ -25,8 +25,14 @@
 #ifndef MOWGLI_NAV2_PLUGINS__PATH_ALIGN_AHEAD_CRITIC_HPP_
 #define MOWGLI_NAV2_PLUGINS__PATH_ALIGN_AHEAD_CRITIC_HPP_
 
+#include <atomic>
 #include <cmath>
+#include <string>
 #include <vector>
+
+#include "mowgli_nav2_plugins/path_trim.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/imu.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Warray-bounds"
@@ -149,6 +155,19 @@ protected:
   unsigned int power_{0};
   float weight_{0};
   std::vector<float> cost_;
+
+  // path trim (path_trim.hpp): trim_enabled, trim_tau_s, trim_max_m, trim_max_err_m,
+  // trim_min_speed, trim_leak_tau_s, k_roll, roll_topic (sensor_msgs/Imu), roll_timeout_s
+  mowgli_nav2_plugins::path_trim::Params trim_;
+  mowgli_nav2_plugins::path_trim::State trim_state_;
+  rclcpp::Clock::SharedPtr clock_;
+  rclcpp::Time last_t_{0, 0, RCL_ROS_TIME};
+  bool have_last_{false};
+  float roll_timeout_s_{1.0f};
+  std::atomic<float> roll_{0.0f};
+  std::atomic<double> roll_t_{-1.0};
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+  xt::xtensor<float, 1> px_, py_;
 };
 
 }  // namespace mppi::critics

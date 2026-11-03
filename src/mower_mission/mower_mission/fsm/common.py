@@ -128,6 +128,7 @@ SRV_POWEROFF = 'request_poweroff'             # /base_keys/request_poweroff (hos
 PARAM_NODE_COVERAGE = 'coverage_server'
 PARAM_NODE_CONTROLLER = 'controller_server'
 PARAM_NODE_OBSTACLE_GUARD = 'obstacle_guard'   # mower_vision: obstacle_detection level
+PARAM_NODE_SLEW = 'cmd_vel_slew'               # pivot_max_radps (roll-aware pivot rate)
 PARAM_NODE_DET_RANGE = 'det_range'             # publish_obstacle_points (costmap marks)
 
 # Per-area mowing settings (mower_map area_settings.py BUILTIN_DEFAULTS; used
@@ -1212,6 +1213,31 @@ class Params:
     # hard_boundary_body_soft_front_m, so an edge lap on a side slope does not run the nose
     # past the edge. Logged once per episode. 0 = off.
     edge_slope_roll_deg: float = 8.0
+    # hysteresis (2026-11-03 slope sim: on/off within 2 s at a region fade edge): off only
+    # below edge_slope_roll_deg - edge_slope_roll_hyst_deg and after edge_slope_hold_s on
+    edge_slope_roll_hyst_deg: float = 2.0
+    # --- Pivot creep on a side slope (2026-11-03 slope sim: corner pivots slid 0.42-0.72 m
+    # downhill). A coverage pivot with |roll| > pivot_creep_roll_deg whose sweep passes the
+    # upslope heading is split there: pivot to face upslope, drive up pivot_creep_share of
+    # the creep the whole pivot is expected to cause (pivot_creep_mps x min(1, tilt /
+    # pivot_creep_ref_deg) x pivot time at pivot_creep_spin_rps, x pivot_creep_drive_gain
+    # for the drive's forward slip, at most pivot_creep_max_m), then pivot onto the leg.
+    # No extra rotation is ever added. Skipped when the drive would put the body past the
+    # edge-mode limit or the distance is under 0.03 m. 0 = off.
+    pivot_creep_roll_deg: float = 6.0
+    # roll-aware pivot rate (2026-11-03): cmd_vel_slew pivot_max_radps = flat below
+    # pivot_creep_roll_deg, slope above (Spin runs at its max_rotational_vel 0.35). The
+    # turn shaper's pivot floor 2 x 0.06 / 0.40 = 0.3 rad/s lifts any slower pure rotation
+    # back to 0.3, so the slope rate is 0.3 in effect. 0 = leave the slew cap alone.
+    pivot_rate_flat_rad_s: float = 0.35
+    pivot_rate_slope_rad_s: float = 0.3
+    pivot_creep_mps: float = 0.045
+    pivot_creep_ref_deg: float = 10.0
+    pivot_creep_spin_rps: float = 0.3
+    pivot_creep_drive_gain: float = 1.3
+    pivot_creep_max_m: float = 0.2
+    pivot_creep_share: float = 0.5
+    edge_slope_hold_s: float = 5.0
     # --- Spin drift (field 2026-10-21 07:05:32: a 64 deg route-corner Spin slid 0.40 m on the
     # west-edge slope, then the drive out tripped the boundary). base_link more than
     # spin_drift_m from where a pivot Spin started: cancel it, log, re-plan the approach
@@ -1375,6 +1401,11 @@ class Params:
     tilt_guard: bool = True
     tilt_status_timeout_s: float = 2.0  # older /tilt/status -> band unknown (no action)
     tilt_caution_speed_mps: float = 0.15
+    # |roll| above this (fresh /tilt/status, band ok) also applies the caution speed cap
+    # (2026-11-03 slope sim: a 10 deg side slope sat in the ok band, caution at 15 deg);
+    # off again below slope_caution_roll_deg - slope_caution_roll_hyst_deg. 0 = off.
+    slope_caution_roll_deg: float = 8.0
+    slope_caution_roll_hyst_deg: float = 2.0
     tilt_transit_speed_param: str = 'FollowPath.vx_max'  # MPPI transit
     tilt_transit_speed_mps: float = 0.3     # restored after caution (nav2_params FollowPath)
     # front camera blocked (mower_vision camera_blocked, stock CameraBlocked 100105): both
@@ -1547,6 +1578,7 @@ class Mission:
     nogo_replan: Any = None                     # in-flight re-plan context
     nogo_check_at: float = -1e9
     nogo_seq: Any = None                        # pre-pivot maneuver in flight
+    slope_pivot_key: Any = None                 # pivot key whose slope pre-drive ran
     nogo_tries: dict = field(default_factory=dict)      # pivot key -> maneuvers
     nogo_route_aborts: set = field(default_factory=set)
     nogo_living_wait: Any = None                # {'xy', 'since'}: route-corner living wait
@@ -1610,7 +1642,8 @@ def blade_allowed(fsm):
     m = fsm.mission
     if m is None:
         return False
-    if fsm.phase == 'MOWING' and m.step in ('spinup', 'follow', 'corner_pivot', 'nogo_detour'):
+    if fsm.phase == 'MOWING' and m.step in ('spinup', 'follow', 'corner_pivot', 'nogo_detour',
+                                               'slope_pivot'):
         return True
     # continuous blade policy: waits / retries / in-area transits inside the area
     return fsm._blade_keep_ok()

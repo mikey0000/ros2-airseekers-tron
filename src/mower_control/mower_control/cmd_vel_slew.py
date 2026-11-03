@@ -128,6 +128,10 @@ see :class:`DriveShaper`). Applied to the *target* angular.z before slewing:
                                      ~0 while driving (|linear.x| > 0.05) and steer
                                      back onto it
 ``heading_hold_kp``        ``1.0``   rad/s per rad of yaw error
+``pivot_max_radps``        ``0.0``   cap on |angular.z| of a pure rotation (|linear.x| <=
+                                     0.02); 0 = off. The mission sets it live from the
+                                     roll (pivot_rate_flat/slope_rad_s, 2026-11-03): Nav2
+                                     Spin reads max_rotational_vel only at configure
 ``heading_hold_kd``        ``0.1``   rad/s per rad/s of gyro z (damping)
 ``heading_hold_max_radps`` ``0.15``  clamp on the heading-hold correction
 ``robot_settings_file``    ``$MOWER_ROBOT_SETTINGS_FILE`` or
@@ -226,6 +230,7 @@ SHAPER_PARAMS = {
     'heading_hold_kp': (1.0, float),
     'heading_hold_kd': (0.1, float),
     'heading_hold_max_radps': (0.15, float),
+    'pivot_max_radps': (0.0, float),
 }
 
 TRIM_MIN_LINEAR = 0.02      # m/s: trim / deadband only while actually driving
@@ -268,6 +273,9 @@ class DriveShaper:
             self.yaw_ref = None
         if driving and self.angular_trim_radps:
             ang += math.copysign(self.angular_trim_radps, lin)
+        cap = self.pivot_max_radps
+        if not driving and cap > 0.0 and abs(ang) > cap:
+            ang = math.copysign(cap, ang)
         return ang
 
 
@@ -618,7 +626,7 @@ SHAPE_DEFAULTS = {
     'track_width_m': TRACK_WIDTH_M,
     'min_inner_wheel_mps': 0.06,
     'linear_max': 0.3,
-    'angular_max': 0.3,       # MCU clamp
+    'angular_max': 0.35,      # = mcu_node angular_max (0.3 until 2026-11-03: Spin 0.35 flat)
     'pivot_deadband_rps': 0.03,   # |w| below this in a pure rotation -> (0, 0)
     # Task 0.4 (b), 2026-10-14 run 3: MPPI asked for slow tight corners (r 0.2-0.3 m) and
     # _tight_arc widened them to r 0.5-1.0 m, overshooting every corner. A command whose
@@ -1062,7 +1070,7 @@ TURN_PARAMS = {   # node parameter -> (TurnShaper attribute / params key, type)
     'turn_shaper_transit_pivot_hold_rps': ('transit_pivot_hold_rps', float),
 }
 TURN_DEFAULTS = {'turn_shaper': True, 'shape_manual': False, 'track_width_m': TRACK_WIDTH_M,
-                 'min_inner_wheel_mps': 0.06, 'linear_max': 0.3, 'angular_max': 0.3,
+                 'min_inner_wheel_mps': 0.06, 'linear_max': 0.3, 'angular_max': 0.35,
                  'turn_shaper_hysteresis_mps': 0.02, 'turn_shaper_latch_ticks': 6,
                  'turn_shaper_pivot_deadband_rps': 0.03,
                  'turn_shaper_dock_transit': True,

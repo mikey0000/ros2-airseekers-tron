@@ -78,7 +78,7 @@ def wrap(a: float) -> float:
 @dataclass
 class DriveParams:
     linear_max: float = 0.3          # MCU clamp, m/s
-    angular_max: float = 0.3         # MCU clamp, rad/s
+    angular_max: float = 0.35        # host clamp (mcu_node angular_max), rad/s
     # 2026-10-20 geometry: the MCU splits (v, w) into wheel speeds with b 0.40 (cmd_vel_slew
     # TRACK_WIDTH_M; was 0.48), the tyres sit 0.39 apart (owner-measured): a pivot turns
     # 0.40 / 0.39 = 2.6 % faster than commanded (field bag: IMU / MCU yaw rate 1.02-1.03).

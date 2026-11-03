@@ -26,6 +26,7 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>tf2_eigen</depend>
   <depend>visualization_msgs</depend>
+  <depend>sensor_msgs</depend>
   <depend>eigen3_cmake_module</depend>
   <depend>nav2_mppi_controller</depend>
   <depend>xtensor</depend>

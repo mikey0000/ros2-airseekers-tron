@@ -95,14 +95,29 @@ class BoundaryGuardMixin:
 
     def _edge_slope(self):
         """True while |roll| (fresh /tilt/status) exceeds edge_slope_roll_deg: the soft
-        front-corner allowance is withdrawn (logged once per episode)."""
-        thr, i = float(self.p.edge_slope_roll_deg), self.inputs
-        on = thr > 0.0 and i.tilt_roll_deg is not None and i.tilt_stamp is not None and \
-            self._now - i.tilt_stamp <= float(self.p.tilt_status_timeout_s) and \
-            abs(float(i.tilt_roll_deg)) > thr
-        if on != getattr(self, '_edge_slope_on', False):
+        front-corner allowance is withdrawn (logged once per episode). Hysteresis (slope
+        sim 2026-11-03: the rule flapped on/off within 2 s at a region's fade edge): once on
+        it stays on until |roll| falls below edge_slope_roll_deg - edge_slope_roll_hyst_deg
+        (or the status goes stale) AND it has been on edge_slope_hold_s."""
+        p, i = self.p, self.inputs
+        thr = float(p.edge_slope_roll_deg)
+        was = getattr(self, '_edge_slope_on', False)
+        fresh = i.tilt_roll_deg is not None and i.tilt_stamp is not None and \
+            self._now - i.tilt_stamp <= float(p.tilt_status_timeout_s)
+        roll = abs(float(i.tilt_roll_deg)) if fresh else 0.0
+        if thr <= 0.0:
+            on = False
+        elif not was:
+            on = fresh and roll > thr
+        else:
+            below = not fresh or roll < thr - max(0.0, float(p.edge_slope_roll_hyst_deg))
+            held = self._now - getattr(self, '_edge_slope_since', self._now) >= \
+                float(p.edge_slope_hold_s)
+            on = not (below and held)
+        if on != was:
             self._edge_slope_on = on
             if on:
+                self._edge_slope_since = self._now
                 self._log('warn', 'boundary: side slope (roll %.1f deg > %.1f): front corners '
                                   'get the side limit %.2f m (no convex-bend allowance)'
                           % (float(i.tilt_roll_deg), thr,

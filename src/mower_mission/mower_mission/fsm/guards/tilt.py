@@ -4,6 +4,7 @@
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
 from mower_mission.fsm.common import (AREA_SETTINGS_DEFAULTS, DriveCmd, PARAM_NODE_CONTROLLER,
+    PARAM_NODE_SLEW,
     SRV_SET_PARAMS, STUCK_PHASES, SUB_MANUAL_BLADE_OFF, math)
 from mower_mission.fsm.budget import Budget
 from mower_mission.fsm.escape import Escape
@@ -56,12 +57,26 @@ class TiltGuardMixin:
         n = int(float(self.p.tilt_trail_m) / max(0.01, float(self.p.tilt_trail_step_m))) + 1
         del tr[:-n]
 
+    def _slope_caution(self):
+        """|roll| (fresh /tilt/status) above slope_caution_roll_deg, with hysteresis: a side
+        slope the monitor still calls ok (caution at 15 deg) gets the caution cap too."""
+        p, i = self.p, self.inputs
+        thr = float(p.slope_caution_roll_deg)
+        was = getattr(self, '_slope_roll_on', False)
+        if thr <= 0.0 or i.tilt_roll_deg is None:
+            on = False
+        else:
+            roll = abs(float(i.tilt_roll_deg))
+            on = roll > (thr - max(0.0, float(p.slope_caution_roll_hyst_deg)) if was else thr)
+        self._slope_roll_on = on
+        return on
+
     def _tilt_speed(self, band):
         """Caution cap on the coverage + transit controllers; restored when back to ok.
         'unknown' keeps the current state (no flapping on a lost status)."""
         if band == 'unknown':
             return
-        want = band in ('caution', 'limit', 'critical')
+        want = band in ('caution', 'limit', 'critical') or self._slope_caution()
         if want == self._tilt_capped:
             return
         self._tilt_capped = want
@@ -102,10 +117,31 @@ class TiltGuardMixin:
             self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER, 'params': params},
                        track=False)
 
+    def _pivot_rate_tick(self):
+        """Roll-aware pivot rate: cmd_vel_slew pivot_max_radps = pivot_rate_slope_rad_s while
+        |roll| (fresh /tilt/status) > pivot_creep_roll_deg, else pivot_rate_flat_rad_s; sent
+        on change (a stale status keeps the last rate)."""
+        p, i = self.p, self.inputs
+        flat, slope = float(p.pivot_rate_flat_rad_s), float(p.pivot_rate_slope_rad_s)
+        if flat <= 0.0 or slope <= 0.0 or not p.set_cut_speed:
+            return
+        if i.tilt_roll_deg is None or i.tilt_stamp is None or \
+                self._now - i.tilt_stamp > float(p.tilt_status_timeout_s):
+            return
+        thr = float(p.pivot_creep_roll_deg)
+        want = slope if thr > 0.0 and abs(float(i.tilt_roll_deg)) > thr else flat
+        if want == getattr(self, '_pivot_rate_sent', None):
+            return
+        self._pivot_rate_sent = want
+        self._log('info', 'pivot rate %.2f rad/s (roll %.1f deg)' % (want, float(i.tilt_roll_deg)))
+        self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_SLEW,
+                                    'params': {'pivot_max_radps': want}}, track=False)
+
     def _tilt_tick(self):
         """Returns True while the tilt guard owns the tick."""
         if not self.p.tilt_guard:
             return False
+        self._pivot_rate_tick()
         self._tilt_trail_add()
         band = self._tilt_band()
         self._tilt_speed(band)

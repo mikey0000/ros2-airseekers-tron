@@ -77,6 +77,10 @@ class PivotsMixin:
             return True
         if g is not None:
             delta = g
+        if m.slope_pivot_key == key:
+            m.slope_pivot_key = None                  # the upslope pre-drive ran: pivot
+        elif self._slope_pivot(key, pose, delta):
+            return True
         q = sp[m.start_local]
         self._log('info', 'area %d sub-path %d: %s at (%.2f, %.2f): pivot %.0f deg in place, '
                           '%s, then follow' % (m.area_idx, m.sub_i,
@@ -92,6 +96,62 @@ class PivotsMixin:
         allowance = abs(delta) / max(0.05, float(p.route_cusp_spin_rps)) + 10.0
         self._start_action(ACT_SPIN, {'angle': delta, 'time_allowance_s': allowance},
                            allowance + 5.0, purpose='cov_pivot')
+        return True
+
+    def _slope_pivot_plan(self, pose, delta):
+        """[('spin', a), ('drive', d)] that pre-compensates the downhill creep of a pivot of
+        ``delta`` on a side slope (see pivot_creep_* in MissionParams); None = pivot as is."""
+        p, i = self.p, self.inputs
+        thr = float(p.pivot_creep_roll_deg)
+        if thr <= 0.0 or i.tilt_roll_deg is None or i.tilt_stamp is None or \
+                self._now - i.tilt_stamp > float(p.tilt_status_timeout_s) or \
+                abs(float(i.tilt_roll_deg)) <= thr:
+            return None
+        sr = math.sin(math.radians(float(i.tilt_roll_deg)))
+        sp = math.sin(math.radians(float(i.tilt_pitch_deg or 0.0)))
+        tilt = math.degrees(math.asin(min(1.0, math.hypot(sr, sp))))
+        yaw = float(pose[2])
+        # REP-103 tilt: roll > 0 right side down, pitch > 0 nose down
+        down = yaw + math.atan2(-sr, sp)
+        up = geo.wrap_angle(down + math.pi)
+        a1 = geo.wrap_angle(up - yaw)
+        if a1 * delta <= 0.0:
+            a1 += math.copysign(2.0 * math.pi, delta)
+        if abs(a1) >= abs(delta):
+            return None                  # upslope is not inside the sweep: no extra rotation
+        a2 = delta - a1
+        rate = float(p.pivot_creep_mps) * min(1.0, tilt / max(1e-3, float(p.pivot_creep_ref_deg)))
+        t = abs(delta) / max(0.05, float(p.pivot_creep_spin_rps))
+        # drive up pivot_creep_share of the creep: the robot ends that far below the vertex
+        # instead of the whole creep, and the deviation peaks at share x creep at the drive
+        d = min(float(p.pivot_creep_max_m), float(p.pivot_creep_share) * rate * t *
+                float(p.pivot_creep_drive_gain))
+        if d < 0.03:
+            return None
+        x, y = float(pose[0]), float(pose[1])
+        ex, ey = x + d * math.cos(up), y + d * math.sin(up)
+        worst = self._nogo_body([(x, y, up), (ex, ey, up), (ex, ey, up + a2)])
+        if worst is not None and worst > 0.0:
+            return None
+        return [('spin', a1), ('drive', d)], tilt, d
+
+    def _slope_pivot(self, key, pose, delta):
+        """Start the upslope pre-drive of a coverage pivot on a side slope. True = started
+        (the pivot site runs again from the new pose and then pivots onto the leg)."""
+        plan = self._slope_pivot_plan(pose, delta)
+        if plan is None:
+            return False
+        steps, tilt, d = plan
+        m = self.mission
+        self._log('info', 'pivot %.0f deg on a %.0f deg side slope at (%.2f, %.2f): face upslope '
+                          '(%+.0f deg), drive up %.2f m against the pivot creep, then pivot'
+                  % (math.degrees(delta), tilt, pose[0], pose[1], math.degrees(steps[0][1]), d))
+        m.slope_pivot_key = key
+        m.nogo_seq = {'site': 'cov', 'key': key, 'steps': steps, 'purpose': 'route',
+                      'step': 'slope_pivot'}
+        if self.blade_on and not self._keep_blade_inside('slope pre-drive'):
+            self._blade_off('slope pre-drive')      # DriveOnHeading: blade per maneuver rule
+        self._nogo_next_step()
         return True
 
     def _pivot_way(self, pose, delta):

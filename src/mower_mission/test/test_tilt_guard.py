@@ -260,3 +260,51 @@ def test_limit_in_idle_does_nothing():
     for kind in (f.DriveCmd, f.BladeOff, f.BladeOn, f.CancelActions, f.RecordIncident,
                  f.StartAction, f.ZeroBurst, f.SuppressStuckGuard):
         assert not h.since(m, kind), kind
+
+
+def test_side_slope_roll_in_the_ok_band_caps_with_hysteresis():
+    """2026-11-03 slope sim: 10 deg roll stays in the ok band (caution 15); above
+    slope_caution_roll_deg (8) the caution cap applies, released below 8 - 2 = 6 deg."""
+    h = Harness()
+    mowing(h)
+    m = h.mark()
+    step(h, 'ok', 7.5, n=3)
+    assert speed_calls(h, m) == []
+    step(h, 'ok', 10.0, n=3)
+    assert speed_calls(h, m) == [{'FollowCoveragePathMPPI.vx_max': 0.15,
+                                  'FollowPath.vx_max': 0.15}]
+    m2 = h.mark()
+    step(h, 'ok', 7.0, n=3)                 # inside the hysteresis band: still capped
+    step(h, 'ok', -8.5, n=3)                # either side
+    assert speed_calls(h, m2) == []
+    step(h, 'ok', 5.5, n=3)
+    calls = speed_calls(h, m2)
+    assert len(calls) == 1 and calls[0]['FollowPath.vx_max'] == 0.3
+
+
+def test_side_slope_cap_off_when_zero():
+    h = Harness(slope_caution_roll_deg=0.0)
+    mowing(h)
+    m = h.mark()
+    step(h, 'ok', 12.0, n=3)
+    assert speed_calls(h, m) == []
+
+
+def slew_calls(h, m):
+    return [e.request['params'] for e in h.since(m, f.CallService)
+            if e.name == f.SRV_SET_PARAMS and e.request['node'] == f.PARAM_NODE_SLEW]
+
+
+def test_pivot_rate_follows_the_roll():
+    """Roll-aware pivot rate: 0.35 flat, 0.3 above pivot_creep_roll_deg, sent on change."""
+    h = Harness()
+    mowing(h)
+    m = h.mark()
+    step(h, 'ok', 2.0, n=3)
+    assert slew_calls(h, m) == [{'pivot_max_radps': 0.35}]
+    m = h.mark()
+    step(h, 'ok', -7.0, n=3)
+    assert slew_calls(h, m) == [{'pivot_max_radps': 0.3}]
+    m = h.mark()
+    step(h, 'ok', 3.0, n=3)
+    assert slew_calls(h, m) == [{'pivot_max_radps': 0.35}]
