@@ -39,7 +39,6 @@ Called
 
 import json
 import math
-import time
 
 import rclpy
 from rclpy.node import Node
@@ -52,6 +51,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from mower_control import tilt_logic
+from mower_common.clock import node_clock
 from mower_common.sub_pump import PeriodicRunner, SubscriptionPump, parse_imu
 
 
@@ -59,6 +59,8 @@ class TiltMonitorNode(Node):
 
     def __init__(self):
         super().__init__('tilt_monitor')
+        # node clock: the pump's receipt times are sim time under use_sim_time
+        self._clk_now = node_clock(self).now
         d = tilt_logic.DEFAULTS
         dp = self.declare_parameter
         dp('imu_topic', '/imu/data')
@@ -134,7 +136,7 @@ class TiltMonitorNode(Node):
 
     def _tick(self):
         self._pump.poll()
-        now = time.monotonic()
+        now = self._clk_now()
         s, self._sample = self._sample, None
         if s is not None:
             self._bands.update(s[0], s[1], s[2])
@@ -187,7 +189,7 @@ class TiltMonitorNode(Node):
         else:
             self.get_logger().info(text)
         if new == 'critical' and self._critical_stop:
-            now = time.monotonic() if now is None else now
+            now = self._clk_now() if now is None else now
             self._burst_until = max(self._burst_until, now + self._zero_burst_s)
             self._twist_pub.publish(Twist())
             if getattr(self, '_estop_pub', None) is not None:

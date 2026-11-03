@@ -485,7 +485,7 @@ class HoldsMixin:
 
     def _loc_observe(self, state):
         """Every tick: the 'lost' run timer, the degraded speed cap and the driven track
-        since the last RTK-fixed pose (the retrace path)."""
+        (the retrace path, a ring of the last loc_trail_len_m)."""
         if state == 'lost':
             if self._loc_lost_since is None:
                 self._loc_lost_since = self._now
@@ -504,16 +504,18 @@ class HoldsMixin:
         pose, d = self.inputs.pose, self._loc
         if pose is None or (d is not None and d.get('rt') is not None):
             return
+        # A continuous ring of the last loc_trail_len_m of the driven track, recorded in
+        # every phase whatever the RTK state, so a retrace always has track to follow (it
+        # used to restart at each RTK-fixed tick and came out empty when the loss was
+        # only noticed after the mower had stopped).
         xy = (float(pose[0]), float(pose[1]))
-        if state == 'ok' and self._loc_fixed():
-            self._loc_trail = [xy]
-            return
         tr = self._loc_trail
         if tr and math.hypot(xy[0] - tr[-1][0], xy[1] - tr[-1][1]) \
                 < float(self.p.loc_trail_step_m):
             return
         tr.append(xy)
-        keep, acc = float(self.p.loc_lost_retrace_max_m) + 1.0, 0.0
+        keep = max(float(self.p.loc_trail_len_m), float(self.p.loc_lost_retrace_max_m) + 1.0)
+        acc = 0.0
         for k in range(len(tr) - 1, 0, -1):
             acc += math.hypot(tr[k][0] - tr[k - 1][0], tr[k][1] - tr[k - 1][1])
             if acc > keep:

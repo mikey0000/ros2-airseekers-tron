@@ -259,6 +259,17 @@ FIXED; degraded above 0.3 m, lost above 1.0 m). `ok` also needs the fused `ekf_m
 sigma, or no finite covariance, reads `degraded` whatever the receiver reports, so a FIXED
 flag alone no longer makes `ok`. `loc_sigma_ok_m: 0.0` turns this gate off.
 
+No `/fix_status` for more than `fix_status_timeout_s` (2 s) reads `rtk: stale`. No RTK
+FIXED or FLOAT for more than `lost_after_s` (30 s, `0` = off) is `lost` with the reason
+`no RTK for N s`, whatever the drift estimate says: the estimate only grows with distance,
+so a mower that has stopped would otherwise stay `degraded` through any outage. The status
+carries that age as `no_rtk_s`.
+
+Receipt times from the sampled `SubscriptionPump` are on the node clock (sim time under
+`use_sim_time`). Every consumer must compare them with `node_clock(node).now()`, never
+`time.monotonic()`. Until 2026-11-03 the monitor did the latter, so in mower_sim
+`/fix_status` never went stale and a 700 s dropout kept reading `rtk: fixed`.
+
 `mower_mission` (`fsm/holds.py`, `_loc_hold_tick`) acts on the status by tier. All
 parameters are in `config/mission.yaml`:
 
@@ -266,7 +277,7 @@ parameters are in `config/mission.yaml`:
 |---|---|---|
 | degraded | Coverage and transit controllers capped at 0.15 m/s, through the same `set_parameters` call as the tilt caution cap (the lower cap wins, and lifting one cap keeps the other). A mow follow finishes the straight swath it is on (plan heading within 20 deg of the current pose's) while `est_drift_m + 0.3 m` is at most that swath's least distance to the area outline and its obstacle holes. It holds at the swath end, as soon as the drift outgrows the clearance, or at once with no drift estimate. Transits, pivots and spin-ups hold at once. | `loc_degraded_speed_mps` 0.15, `loc_degraded_edge_margin_m` 0.3, `loc_degraded_swath_turn_deg` 20 |
 | lost | Hold: stop, blade off, the interrupted goal kept. | |
-| held 120 s, not ok | Retrace the driven track (sampled every 0.1 m since the last `ok` + RTK FIXED pose) back toward that pose, at most 3 m at 0.10 m/s on `/cmd_vel_emergency`, with the stuck guard suppressed. Then wait. Runs once per hold. A return to `ok` stops it. | `loc_lost_retrace_s` 120, `loc_lost_retrace_max_m` 3.0, `loc_lost_retrace_speed_mps` 0.10, `loc_trail_step_m` 0.1 |
+| held 120 s, not ok | Retrace the driven track (a ring of the last 10 m, sampled every 0.1 m in every phase whatever the RTK state) back toward the last fix, at most 3 m at 0.10 m/s on `/cmd_vel_emergency`, with the stuck guard suppressed. Then wait. Runs once per hold. A return to `ok` stops it. | `loc_lost_retrace_s` 120, `loc_lost_retrace_max_m` 3.0, `loc_lost_retrace_speed_mps` 0.10, `loc_trail_step_m` 0.1, `loc_trail_len_m` 10 |
 | held 600 s | Resume cursor saved, MOWING_INCOMPLETE. With RTK FIXED (the status is fresh and its `rtk` is `fixed`, for example when only the sigma gate keeps it from `ok`) the robot then docks as `return_home_on_incomplete` says. Without a fix it stays stopped and logs the reason; mower_alerts raises `mowIncomplete` from the state. | `loc_lost_dock_s` 600 (replaces `loc_hold_max_s`) |
 | ok for 3 s | Resume: a follow re-dispatches from its held progress (transit back first after a retrace), a transit re-sends its goal, a dock re-docks. | `loc_resume_s` 3 |
 

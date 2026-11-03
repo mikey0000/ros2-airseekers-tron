@@ -82,6 +82,7 @@ behavior_tree_node:
     loc_lost_dock_s: 600.0            # held this long: MOWING_INCOMPLETE; RTK fixed -> dock, else stay + alert
     loc_hold_dock_exempt_max_s: 60.0  # dock transit / docking held only when lost longer than this
     loc_trail_step_m: 0.1             # driven-track sample spacing for the retrace
+    loc_trail_len_m: 10.0             # driven-track ring length kept (every phase, any RTK state)
     # 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py,
     # docs/analysis/2026-10-23_obstacle_nogo_options.md section C)
     nogo_enabled: true
