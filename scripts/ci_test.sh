@@ -14,7 +14,8 @@
 #      (src/mower_mission/test/replay, docs/DEVELOPMENT.md "Incident -> regression")
 #   2. scripts/ble/test_*.py, scripts/sim_gate/test_*.py
 #   3. the incident replay tests on their own (a named summary; they also ran in 1)
-#   4. --gate: scripts/sim_gate.sh -s 2 -x 3 (ideal drive, real_run5) under
+#   4. --gate (needs a writable log/: chown it if colcon in docker left it root-owned):
+#      scripts/sim_gate.sh -s 2 -x 3 (ideal drive, real_run5) under
 #      flock /tmp/mower_sim_gate.lock. Exit 0 PASS; 4 INVALID (the host could not hold the
 #      18 Hz controller loop at x3: reported as INVALID, not as a code failure, and fails CI
 #      unless CI_GATE_ALLOW_INVALID=1); anything else FAIL.
@@ -110,6 +111,7 @@ if [ "$gate" = 1 ]; then
     0) stage gate PASS ;;
     4) if [ "${CI_GATE_ALLOW_INVALID:-0}" = 1 ]; then result[gate]="INVALID (tolerated)"
        else stage gate "INVALID (controller < 18 Hz sim at x3: host too slow; rerun at -x 1)"; fi ;;
+    2) stage gate "NOT RUN (sim_gate preflight refused: power profile / load, see above)" ;;
     *) stage gate "FAIL (exit $rc, log/sim_gate/$name)" ;;
   esac
 fi
