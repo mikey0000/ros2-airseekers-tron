@@ -319,6 +319,19 @@ and resumed after 2 s.
   - Walk up to the robot from the front: it must still stop at about 1 m.
   - Stand about 1 m to the side of a pivoting robot: the result must be advisory.
 
+## Row links and tangent transits (2026-11-03, ws/routing-snake, gates pending)
+
+New area settings, all off by default (docs/analysis/2026-11-03_turns.md appendix B):
+
+- `row_link_mode` snake: a row change that would become a transit is driven as a
+  pivot -> row-end straight -> pivot connector inside the sub-path, within the 0.285 / 0.26
+  body limits.
+- `tangent_approach`: transits end on a 1.0 m straight along the first leg, so the
+  leg-start pivot is skipped.
+- `pivot_rate_rad_s`: recorded only.
+
+All three are unit-tested. The real_run5 gate comparison has not been run yet.
+
 ## Swath-end turns without pivot loops (2026-10-13, unit-tested only)
 
 At 11:25 (54 sub-paths, snake, cross, 2 headland rings, `turn_type auto`) the owner saw what
