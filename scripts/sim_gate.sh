@@ -284,8 +284,9 @@ kill_one() {
     for p in $after; do case " $before " in *" $p "*) ;; *) new="$p" ;; esac; done
     if [ -n "$new" ]; then tr="$(simsec)"; break; fi
   done
-  echo "{\"node\": \"$node\", \"pattern\": \"$pat\", \"t\": $at, \"t_kill\": $(awk "BEGIN{printf \"%.2f\", $tk - $t_start}"), \"pids\": \"${before% }\", \"respawn_s\": ${tr:+$(awk "BEGIN{printf \"%.2f\", $tr - $tk}")}${tr:-null}, \"new_pids\": \"${after% }\"}" >> "$OUT/kills.jsonl"
-  echo "  $(date +%T) --kill $node: ${tr:+respawned after $(awk "BEGIN{printf \"%.1f\", $tr - $tk}") s sim}${tr:-NOT respawned within 120 s wall}"
+  local rs=null; [ -n "$tr" ] && rs=$(awk "BEGIN{printf \"%.2f\", $tr - $tk}")
+  echo "{\"node\": \"$node\", \"pattern\": \"$pat\", \"t\": $at, \"t_kill\": $(awk "BEGIN{printf \"%.2f\", $tk - $t_start}"), \"pids\": \"${before% }\", \"respawn_s\": $rs, \"new_pids\": \"${after% }\"}" >> "$OUT/kills.jsonl"
+  echo "  $(date +%T) --kill $node: $([ "$rs" != null ] && echo "respawned after $rs s sim" || echo "NOT respawned within 120 s wall")"
 }
 rm -f "$OUT/kills.jsonl"
 KILL_PIDS=()
