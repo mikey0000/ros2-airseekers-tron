@@ -50,6 +50,12 @@
 #              (coverage_action_server), map_server, controller_server, mission (mission_node),
 #              or any pgrep -f pattern; the kill / respawn times go to $OUT/kills.jsonl and
 #              evaluate.py reports recovery
+#   --at T:ACTION  (repeatable) a scripted step T sim seconds after START (2026-11-04):
+#              cmd:N   HighLevelControl command N (1 START, 8 STOP, 7 manual, ...);
+#              stuck:X:Y  a 'stuck' incident at map (X, Y) on /mission/incident (two at one
+#              spot >= 60 s WALL apart make obstacle_tracker propose a PENDING no-go zone, as
+#              the field stuck spots do). An IDLE / docked state does not end the run while
+#              steps are left; each step is logged to $OUT/actions.log
 #   -- ARGS    extra sim.launch.py arguments (e.g. mission_params_file:=/abs/path.yaml)
 #
 # Preflight: sets the power profile to performance (refuses, exit 2, only if that fails; skipped
@@ -61,13 +67,15 @@ IMG=mower:jazzy-dev-amd64
 DOMAIN="${MOWER_SIM_ROS_DOMAIN_ID:-175}"
 WORLD="$STACK/src/mower_sim/worlds/real_run5.yaml"
 NAME="gate-$(date +%Y%m%d-%H%M%S)"
-RTK_SPECS=(); KILL_SPECS=(); ARGS=()
+RTK_SPECS=(); KILL_SPECS=(); ACT_SPECS=(); ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --rtk-loss) RTK_SPECS+=("$2"); shift 2 ;;
     --rtk-loss=*) RTK_SPECS+=("${1#*=}"); shift ;;
     --kill) KILL_SPECS+=("$2"); shift 2 ;;
     --kill=*) KILL_SPECS+=("${1#*=}"); shift ;;
+    --at) ACT_SPECS+=("$2"); shift 2 ;;
+    --at=*) ACT_SPECS+=("${1#*=}"); shift ;;
     --) ARGS+=("$@"); break ;;
     *) ARGS+=("$1"); shift ;;
   esac
@@ -179,7 +187,8 @@ trap cleanup EXIT
 {
   echo "world=$WORLD"; echo "domain=$DOMAIN"; echo "disturb=$DISTURB drift=$DRIFT seed=$SEED args=$DARGS"
   echo "extra=$EXTRA"; echo "rate=$RATE"; echo "rtk=$RTK ${RTK_SPECS[*]+"${RTK_SPECS[*]}"}"
-  echo "kill=${KILL_SPECS[*]+"${KILL_SPECS[*]}"}"; echo "commit=$(git -C "$STACK" rev-parse --short HEAD 2>/dev/null)"
+  echo "kill=${KILL_SPECS[*]+"${KILL_SPECS[*]}"}"; echo "at=${ACT_SPECS[*]+"${ACT_SPECS[*]}"}"
+  echo "commit=$(git -C "$STACK" rev-parse --short HEAD 2>/dev/null)"
   echo "dirty=$(git -C "$STACK" status --porcelain 2>/dev/null | grep -c . || true)"
 } > "$OUT/run.txt"
 echo "sim_gate: run $NAME -> $OUT (container $C, domain $DOMAIN, rate x$RATE, disturbance $DISTURB, drift $DRIFT${RESUME:+, resume at pose $RESUME})"
@@ -295,6 +304,38 @@ for k in "${KILL_SPECS[@]+"${KILL_SPECS[@]}"}"; do
   kill_one "$k" & KILL_PIDS+=($!)
 done
 
+# --at T:ACTION: scripted steps (cmd:N, stuck:X:Y) at T sim s after START
+act_one() {
+  local i="$1" spec="$2" at="${2%%:*}" what="${2#*:}"
+  local tgt; tgt=$(awk "BEGIN{printf \"%.3f\", ${t_start} + $at}")
+  while :; do
+    t="$(simsec)"; [ -n "$t" ] && awk "BEGIN{exit !($t >= $tgt)}" && break
+    docker inspect "$C" >/dev/null 2>&1 || return 0
+    sleep 1
+  done
+  case "$what" in
+    cmd:*)
+      cx "ros2 service call /behavior_tree_node/high_level_control mowgli_interfaces/srv/HighLevelControl '{command: ${what#cmd:}}'" | tail -1 >/dev/null ;;
+    stuck:*)
+      local xy="${what#stuck:}"
+      local js="{\\\"kind\\\": \\\"stuck\\\", \\\"x\\\": ${xy%%:*}, \\\"y\\\": ${xy#*:}, \\\"detail\\\": \\\"sim_gate --at\\\"}"
+      cx "ros2 topic pub --once -w 1 /mission/incident std_msgs/msg/String \"{data: '$js'}\"" >/dev/null ;;
+  esac
+  echo "$(date +%T) sim +$at s: $what (state $(state))" >> "$OUT/actions.log"
+  echo "  $(date +%T) --at $spec done"
+  touch "$OUT/act_$i.done"
+}
+rm -f "$OUT"/act_*.done "$OUT/actions.log"
+ACT_PIDS=()
+n_act=0
+for a in "${ACT_SPECS[@]+"${ACT_SPECS[@]}"}"; do
+  [[ "$a" =~ ^[0-9]+(\.[0-9]+)?:(cmd:[0-9]+|stuck:-?[0-9.]+:-?[0-9.]+)$ ]] || {
+    echo "sim_gate: --at $a: want T:cmd:N or T:stuck:X:Y" >&2; continue; }
+  n_act=$((n_act + 1))
+  act_one "$n_act" "$a" & ACT_PIDS+=($!)
+done
+acts_left() { [ "$(ls "$OUT"/act_*.done 2>/dev/null | wc -l)" -lt "$n_act" ]; }
+
 # -t is sim seconds; the wall cap only guards against a stalled sim clock
 end_sim=$(awk "BEGIN{printf \"%d\", ${t_start%.*} + $TIMEOUT}")
 end_wall=$(( $(date +%s) + $(awk "BEGIN{printf \"%d\", 2 * $TIMEOUT / $RATE + 120}") ))
@@ -310,12 +351,13 @@ while [ "$(date +%s)" -lt "$end_wall" ] && [ "$now_sim" -lt "$end_sim" ]; do
     STUCK_NEEDS_HELP|EMERGENCY|NAV_TO_DOCK_FAILED|UNDOCK_FAILED|MOWING_INCOMPLETE)
       verdict_state="$s"; sleep 5; break ;;
     IDLE_DOCKED|CHARGING|IDLE)
-      if [ "$active" = 1 ]; then verdict_state="$s"; sleep 5; break; fi ;;
+      if [ "$active" = 1 ] && ! acts_left; then verdict_state="$s"; sleep 5; break; fi ;;
     *) active=1 ;;
   esac
 done
 [ -n "$verdict_state" ] || echo "sim_gate: timeout after $(( now_sim - ${t_start%.*} )) s sim (limit ${TIMEOUT}s, last state $last)"
 for p in "${KILL_PIDS[@]+"${KILL_PIDS[@]}"}"; do kill "$p" 2>/dev/null || true; done
+for p in "${ACT_PIDS[@]+"${ACT_PIDS[@]}"}"; do kill "$p" 2>/dev/null || true; done
 cx "pkill -INT -f 'ros2 bag record'" >/dev/null; sleep 4
 grep "behavior_tree_node\]" "$OUT/launch.log" | sed 's/\x1b\[[0-9;]*m//g' > "$OUT/mission.log" || true
 docker stop -t 5 "$C" >/dev/null 2>&1 || true

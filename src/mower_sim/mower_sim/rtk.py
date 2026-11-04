@@ -8,7 +8,9 @@ declare::
 
     rtk:
       anchor: blade            # event times count from: blade (first cutter on), undock
-                               # (first time off the dock) or sim (sim start)
+                               # (first time off the dock), sim (sim start) or pivot (the
+                               # first in-place rotation with the cutter on, held
+                               # PIVOT_MIN_S: a coverage pivot; 2026-11-04 scenario ii)
       events:
         - {t0: 120, dur: 60, kind: float}     # FLOAT: /fix offset by a random walk
         - {t0: 400, dur: 30, kind: dropout}   # no /fix, no /fix_status at all
@@ -39,7 +41,9 @@ from typing import List, Optional, Sequence, Tuple
 from .terrain import _edge_dist, _pip
 
 FIXED, FLOAT, DROPOUT = 'fixed', 'float', 'dropout'
-ANCHORS = ('blade', 'undock', 'sim')
+ANCHORS = ('blade', 'undock', 'sim', 'pivot')
+PIVOT_MIN_S = 0.4        # anchor 'pivot': in-place rotation held this long
+PIVOT_V, PIVOT_W = 0.02, 0.15   # |v| below, |w| above: rotating in place
 
 
 @dataclass
@@ -130,14 +134,24 @@ class RtkModel:
         self.rng = random.Random(int(p.seed) * 104729 + 3)
         self.anchor_t: Optional[float] = 0.0 if p.anchor == 'sim' else None
         self._was_docked = False
+        self._rot_since: Optional[float] = None
         self.err = [0.0, 0.0]
         self.mode = FIXED
 
-    def notify(self, t: float, docked: bool, cutting: bool):
-        """Feed the anchor: first cutter on (blade) / first departure from the dock."""
+    def notify(self, t: float, docked: bool, cutting: bool, v: float = 0.0, w: float = 0.0):
+        """Feed the anchor: first cutter on (blade) / first departure from the dock / first
+        in-place rotation with the cutter on (pivot; body twist ``v``, ``w``)."""
         if self.anchor_t is not None:
             return
-        if self.p.anchor == 'blade' and cutting:
+        if self.p.anchor == 'pivot':
+            if cutting and not docked and abs(v) < PIVOT_V and abs(w) > PIVOT_W:
+                if self._rot_since is None:
+                    self._rot_since = t
+                elif t - self._rot_since >= PIVOT_MIN_S:
+                    self.anchor_t = t
+            else:
+                self._rot_since = None
+        elif self.p.anchor == 'blade' and cutting:
             self.anchor_t = t
         elif self.p.anchor == 'undock':
             if docked:

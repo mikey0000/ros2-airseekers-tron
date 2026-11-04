@@ -728,7 +728,7 @@ class SimNode(Node):
                             float(self.get_parameter('gps_antenna_y').value))
         mode = 'fixed'
         if self.rtk is not None:
-            self.rtk.notify(t, s.is_docking_done, self.cutting)
+            self.rtk.notify(t, s.is_docking_done, self.cutting, self.drive.v, self.drive.w)
             mode, dx, dy = self.rtk.step(t, 0.1, ax, ay)
             if mode != self.rtk_mode:
                 self.get_logger().warn('RTK %s -> %s (sim injection)' % (self.rtk_mode, mode))
