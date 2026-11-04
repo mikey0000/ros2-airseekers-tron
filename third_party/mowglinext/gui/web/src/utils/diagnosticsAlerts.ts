@@ -24,10 +24,22 @@ export function alertSeverity(level: number): number {
     return LEVEL_SEVERITY[level] ?? 0;
 }
 
+/** gui_bridge camera freshness statuses: "<image topic> topic status" (diagnostics.camera_status). */
+const CAMERA_TOPIC_STATUS = /^\/\S*image\S* topic status$/;
+
+/** Component an alert is grouped under: the name before the first "/", "cameras" for camera topics. */
+export function alertComponent(name: string | undefined): string {
+    const n = (name ?? "").trim();
+    // A camera status is named after its image topic, which starts with "/",
+    // so the plain split put every camera alert under "unknown".
+    if (CAMERA_TOPIC_STATUS.test(n)) return "cameras";
+    return n.replace(/^\/+/, "").split("/")[0] || "unknown";
+}
+
 export function groupAlertsByComponent<T extends DiagnosticAlertLike>(alerts: T[]): AlertGroup<T>[] {
     const groups = new Map<string, AlertGroup<T>>();
     for (const alert of alerts) {
-        const component = (alert.name ?? "").split("/")[0] || "unknown";
+        const component = alertComponent(alert.name);
         const existing = groups.get(component);
         if (existing === undefined) {
             groups.set(component, {component, worstLevel: alert.level, items: [alert]});

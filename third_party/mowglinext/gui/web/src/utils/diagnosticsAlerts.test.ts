@@ -31,6 +31,21 @@ describe("groupAlertsByComponent", () => {
         expect(groups.map(g => g.component)).toEqual(["warn_comp", "stale_comp"]);
     });
 
+    test("puts camera topic statuses in one cameras group, not unknown", () => {
+        const groups = groupAlertsByComponent([
+            {level: 2, name: "/left_oa_camera/image_raw topic status"},
+            {level: 2, name: "/vio/left/image_raw topic status"},
+            {level: 1, name: "/rear_camera/image_raw topic status"},
+        ]);
+        expect(groups.map(g => g.component)).toEqual(["cameras"]);
+        expect(groups[0].items).toHaveLength(3);
+    });
+
+    test("a leading slash does not hide the component", () => {
+        const groups = groupAlertsByComponent([{level: 1, name: "/fusion_graph/anchor"}]);
+        expect(groups[0].component).toBe("fusion_graph");
+    });
+
     test("handles missing names", () => {
         const groups = groupAlertsByComponent([{level: 2}]);
         expect(groups).toHaveLength(1);
