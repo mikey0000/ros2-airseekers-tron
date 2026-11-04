@@ -922,7 +922,7 @@ Settings > Connection opens with a Bluetooth setup guide. The updater 503 and ba
 console noise is gone, and the Schedule rules read the real settings. Checked in the
 real_run5 sim GUI at 390x844 and 1280x800 (stuck, unfinished and dock-failed states faked on
 `high_level_status`). Not done: the new-zone dialog (F12), path labels and taps (F14), the
-Logs backlog (F24).
+Logs backlog (F24); all three done on 2026-11-04 (see "GUI small batch" below).
 
 ## Review fixes (2026-11-02, branch ws/review-fixes, unit-tested; sim gate pending)
 
@@ -1244,7 +1244,8 @@ All alerts go through the new `/mower_alerts/notice` (JSON, `mower_alerts/rules.
   -> `/base_keys/request_poweroff` (new Trigger service: the power-key power-off sequence).
 * **Charger moved**: after a successful dock with RTK fixed and a measured dock pose, docked
   pose vs stored dock pose > `dock_moved_warn_m` 0.5 -> alert + latched `/mower_docking/dock_moved`
-  JSON (for the GUI dock card's re-calibration offer; the GUI side is not wired yet).
+  JSON (for the GUI dock card's re-calibration offer; wired on 2026-11-04, see "GUI small
+  batch" below).
 * **Camera blocked** (stock CameraBlocked 100105): new `mower_vision camera_blocked` node; dark /
   washed-out / uniform front image for 10 s while MOWING in `daylight_hours` -> latched
   `/vision/camera_blocked`, alert, mission caps both controllers at `camera_blocked_speed_mps` 0.15.
@@ -1253,7 +1254,7 @@ All alerts go through the new `/mower_alerts/notice` (JSON, `mower_alerts/rules.
   (`auto: stuck spot #id`) for owner Accept; it survives the session-end drop.
 * **Recorded-vertex RTK quality**: recordings save `<recording_quality_dir>/<name>.json` with
   fix type + hdop per vertex; `record_require_fixed` warns and flags vertices without RTK fixed
-  (the GUI does not colour them yet).
+  (the GUI map colours them since 2026-11-04, see "GUI small batch" below).
 
 ## Row-end turns vs pivot time (2026-11-03, branch ws/turns, sim only)
 
@@ -1347,3 +1348,47 @@ added lines are mostly re-wrapped comments, the startup warning and the unified 
 Gate real_run5 `-d -s 2 -x 3`: a 0.078 m / 0, b-h PASS, i 0.111 / 0.077 / 0.080, transit 0.388
 (FAIL as on the baseline: 0.101 / 0.098 / 0.082, 0.364), g 25 %, controller 20 Hz. Same as the
 baseline within run-to-run spread. Not field tested.
+
+## GUI small batch (2026-11-04, branch ws/small1104, vitest + Go tests; not run against the sim or the mower)
+
+Open GUI items from the open-work audit (2.2, 2.4, 2.6) and `REVIEW_2026-11-02.md` section 5
+"Also:". Paths are under `third_party/mowglinext/gui/`.
+
+* **Charger moved.** `/mower_docking/dock_moved` is in the provider topic map and the multiplex
+  allowlist as `dockMoved`. The vision dock card (Settings > Docking) shows a warning with the
+  distance and points at "Set dock = current robot pose" while the last check found the charger
+  moved and the stored dock pose is still more than `warn_m` from where the robot docked. The
+  bell titles `dockMoved`, `cameraBlocked` and `batteryTemp` notices.
+* **Recorded-vertex RTK quality.** `GET /api/mowglinext/recording-quality` reads the mission's
+  sidecars from the shared maps volume (`/ros2_ws/maps/record_quality`). The map draws the
+  recorded vertices of every area, no-go zone and path whose name is still in the map: view
+  mode only the vertices without RTK fixed (amber float, red worse), Edit Map all of them
+  (green fixed). The match is by name, so a renamed item loses its marks and a new item that
+  reuses an old recording's name shows the old marks.
+* **F12.** The dialog after drawing a polygon is a corner panel (bottom sheet on phones), so
+  the polygon stays visible; every type takes a name; the saved shape is the draw store's
+  current copy; no-go zones are labelled on the map ("No-go zone N" without a name). The
+  "vanishes for 4-6 s" part was not reproduced (no sim GUI run in this batch).
+* **F14.** Path and navigation-area labels sit on the middle of the path's centreline (or on the
+  polygon), not on the centroid. Tapping a path opens a path sheet (name, width, length, Edit
+  path) instead of the Mow settings drawer.
+* **F24.** The `/rosout` hub subscribes at GUI start (`RosoutHub.Pin`), so the Logs page opens
+  with up to 1,000 earlier lines. Cost: `/rosout` now flows through foxglove_bridge all the time.
+* **Naming.** The map polygon is a "No-go zone" everywhere; "obstacle" is kept for detected
+  things (tracked obstacles, obstacle detection). The boundary line's "keep-out width" reads
+  "clearance from the line"; the French no-go sheet is translated.
+* **Mow angle.** The planner takes `mow_angle_deg` as a map-frame heading (0 deg east, 90 deg
+  north, counter-clockwise), but the area picker drew it as a compass bearing (0 deg north,
+  clockwise). The picker now uses the planner's convention; stored values and what the mower
+  does with them are unchanged. Area Mow settings, Settings > Mowing, the parameter catalog and
+  the live binding now describe the same order: the area's own direction, else (area on Auto)
+  the slope-aware angle, else the global default, else the planner's choice.
+* **Diagnostics.** Camera freshness statuses ("/left_oa_camera/image_raw topic status") are
+  grouped under "cameras" instead of "unknown".
+* **Schedule rules.** Checked, nothing to do: `components/schedule/scheduleRules.ts` reads
+  `rain_mode`, `battery_low_action` and `battery_low_percent` (ws/ux-batch).
+* **B11 drive-load detector.** Not wired into any node. `motor_load.replay()` and
+  `scripts/drive_load_events.py` run it over a mow bag (`/mower_sensor_info`, `/cmd_vel`,
+  `/fix`) and print the hits, so "log-only for 2 mows" can be done from the bags with no effect
+  on the robot. The rule uses the sum of both drive currents, so B10 does not change it (tested).
+  Smoke run on one 2026-10-28 incident bag: 240 motor frames, 0 events.

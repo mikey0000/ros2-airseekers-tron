@@ -47,7 +47,7 @@ Status words: open (not started), partial, in progress, merged-unverified (code 
 | Edge-lap branch skipped instead of detoured | in progress | Owner brief; stock detours and rejoins ahead (`stock_firmware_findings.md` "Lessons" item 1) | Fix is on `ws/fix1104` (not my finding) | `ws/fix1104` |
 | B6 owner variant, on-path edge-lap detour with map tag | merged-unverified | Merged with `ws/nogo-c` (`project` notes 2026-10-23; `STATUS.md:725-760` for bounded skips). 2026-10-28 field run found stacked zones and a sliver re-plan; fixes merged later | One field mow with an on-path obstacle in an edge lap | Field mow |
 | Same-place obstacle counter, bump-mark growth, end-of-mow confirmation pass | partial | `stock_firmware_findings.md` "Lessons" items 2 and 7. Bumper contacts already create per-place tracks with `bumper_hits` (`mower_map/obstacle_tracker_core.py:426-434`, `obstacle_tracker_stuck.py`); whether the radius grows with repeats, and whether STUCK_NEEDS_HELP counts contacts instead of boundary-outs, is unverified. No end-of-mow confirm pass found | Check radius growth and the escalation trigger; add the confirm pass | None |
-| B11 motor-current `DriveLoadDetector` unwired | open | `mower_control/motor_load.py` is referenced only by `test_motor_load.py`; `code_review.md` stuck table row 6 | Wire it log-only for 2 mows as a `/stuck` reason `load`, after B10 | B10 wheels-up check |
+| B11 motor-current `DriveLoadDetector` unwired | partial (2026-11-04) | Still not in any node. `motor_load.replay()` + `scripts/drive_load_events.py` run it over a mow bag, log-only, no effect on the robot (`ws/small1104`); the rule uses the sum of both drive currents, so B10 does not change it | Run the script on the next 2 mow bags and compare hits with `/stuck` and the field notes; only then decide on a `/stuck` reason `load` | Mow bags |
 | B10 left/right motor label swap, pivot reversing-wheel deficit | open | `mcu_node.py:201` `MOTOR_NAMES`; `independent_review.md` B10 | Wheels-up check, then fix the names | Owner on the robot |
 | Slip handling vs stock (early speed caps, direction-aware step 1, wheel-yaw vs IMU rule) | open | `code_review.md` "Recommendation" items 1-2, marked Stage 2 | Cap speed on first slip evidence; make escape step 1 oppose the commanded direction | Owner approval (Stage 2) |
 | Grass segmentation off by default; obstacle reroute | unverified | `STATUS.md:697-699` still say "not yet run on the mower", `nongrass:=false` | Confirm whether either ran since 2026-10-09; update the status text | Mower access |
@@ -71,7 +71,7 @@ Status words: open (not started), partial, in progress, merged-unverified (code 
 | Night and dusk dock: SEARCH re-seeds heading from a flipping marker solution (2026-10-31 night dock, 77 s, 5 approaches, daylight same day 27 s) | open | No `src/mower_docking` change since 2026-10-31 except 0cab7da and e416d46; project note lists the candidate fixes | Seed the SEARCH heading from RTK when the dock pose is measured; or `solvePnPGeneric` and keep the solution nearest the RTK heading; consider a darker night preset (20 or 10). Add a dusk marker to the sim | Dusk field test |
 | `marker_size` 0.04 vs measured 0.055 | decided in code, undocumented in the review | `docking.yaml:33-41` keeps 0.04 on purpose (stock-equivalent thresholds); `code_review.md` stage 2 item 12 still says "set to measured 0.055" | Close item 12 as "kept"; remove the stale instruction from the review | None |
 | Dock timeout 900 s and 8 retries | merged-unverified | `STATUS.md:1268+` param diet (dock timeout 900) | Watch one full retry cycle | Field |
-| Charger-moved alert GUI hook | open | `STATUS.md:1189-1192` "the GUI side is not wired yet" | Wire the dock card offer | None |
+| Charger-moved alert GUI hook | done, unverified (2026-11-04) | `ws/small1104`: `dockMoved` topic key, vision dock card warning until the dock is re-set; `STATUS.md` "GUI small batch" | Check on the mower after the next dock with a moved charger | Field |
 | Dock-after-incomplete | merged-unverified | `return_home_on_incomplete` now true (`mission.yaml:397`, `fsm/common.py:1017`) | One mow that ends MOWING_INCOMPLETE with RTK fixed; confirm it docks. The 2026-11-01 mow idled 92 min before this default | Field |
 
 ### 2.5 Mission and FSM
@@ -92,9 +92,9 @@ Status words: open (not started), partial, in progress, merged-unverified (code 
 
 | Item | Status | Evidence | Next step | Blocked on |
 |---|---|---|---|---|
-| UX findings F12, F14 (new-zone dialog, path labels) | open | `STATUS.md:877` "Not done" | Fix with Playwright against the sim | None |
-| Remaining audit items: obstacle/no-go/keepout naming, mow angle in four places, Diagnostics "unknown" group, Logs page empty before open, Schedule rules hard-coded ON | open | `REVIEW_2026-11-02.md` section 5 "Also:" | Batch into one UX pass | None |
-| GUI hooks for dock-moved, float-fix vertex colouring, alert translations | open | `STATUS.md:1189-1192`, `:1207-1209` | Wire and test | None |
+| UX findings F12, F14 (new-zone dialog, path labels) | done, unverified (2026-11-04) | `ws/small1104` (vitest only); the F12 "vanishes for 4-6 s" part was not reproduced | Check both in the sim GUI | Sim GUI run |
+| Remaining audit items: obstacle/no-go/keepout naming, mow angle in four places, Diagnostics "unknown" group, Logs page empty before open, Schedule rules hard-coded ON | done (2026-11-04) | `ws/small1104`: no-go zone naming, one mow angle convention and description (the area picker used a compass bearing the planner does not), cameras group, `/rosout` history from GUI start; Schedule rules already read the settings (ws/ux-batch) | None | None |
+| GUI hooks for dock-moved, float-fix vertex colouring, alert translations | partial (2026-11-04) | Dock-moved and vertex colouring done on `ws/small1104`; bell titles added for `dockMoved`, `cameraBlocked`, `batteryTemp` only | Translate the remaining notice ids | None |
 | Wi-Fi setup page: only tested against a fake | merged-unverified | `STATUS.md:1055-1067` | Check connect, forget and band on the mower | Mower access |
 | BLE transport, secure origin, Tailscale card | merged-unverified | 335ef53; `analysis/2026-10-30_ble_link_measurements.md` | Field check of auto-switch and reconnect | Mower access |
 | Rain: sensor verified on hardware, dock-until-dry | open | `REVIEW_2026-11-02.md` step 10 | Verify the sensor, then the mode | Hardware |
@@ -155,7 +155,7 @@ Other tidy-ups:
 |---|---|---|
 | RPP and FTC controllers are gone, but comments still describe them | `nav2_params.yaml:16-17, 84-86, 116, 141-177, 582, 881-882`; `slip_detector.py:103-106`; `cmd_vel_slew.py:325`; `nav2_param_tools.py:6-9`. A6 item "delete the RPP configs" is done (stage 0.1 merged: `9ac9cd7`) | Rewrite the comments; the file is 1,412 lines |
 | `gnss_smoothing` switch and its config | `ekf_map_gnss_smoothing.yaml`, `mower_localization/setup.py`, `test_ekf_dual_config.py`, `mcu_node.py` | Remove after the owner reverts the override |
-| `motor_load.py` | Unwired (see 2.2) | Wire (B11) or delete |
+| `motor_load.py` | Offline replay only (see 2.2) | Wire (B11) after the bag check, or delete |
 | Superseded packages and the off-by-default perception stack in the build | `src/` has no `COLCON_IGNORE`; `mower_proto` and `base_ble` remain (`base_ble_node.py:174,240,331` are TODO stubs); `REVIEW_2026-11-02.md` step 5 estimates about 16k lines | Move out of the build or delete, as step 5 says |
 | `dig_stall` terrain kind | `mower_map/terrain.py:43` (kept for old saved incidents) | Fine; remove once old incident files are gone |
 | Velocity smoother and `nav_lane_watchdog` | See 2.5 (stage 2) | Decide with the stage 2 approval |

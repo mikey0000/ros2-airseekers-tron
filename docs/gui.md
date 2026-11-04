@@ -265,6 +265,35 @@ Paths below are under `third_party/mowglinext/gui/web/src/`.
 * **Schedule.** The Rules card reads `rain_mode`, `battery_low_action` and
   `battery_low_percent` instead of always showing "ON".
 
+## Map items, dock and logs (2026-11-04)
+
+Paths below are under `third_party/mowglinext/gui/`.
+
+* **Names.** A map polygon the mower keeps out of is a "No-go zone" in every string; "obstacle"
+  is only a detected thing (tracked obstacles, obstacle detection). Use these two words in new
+  strings. A boundary line has a "clearance from the line", not a keep-out width.
+* **New map item** (`web/src/pages/map/components/NewAreaModal.tsx`): a corner panel (bottom
+  sheet on phones) after drawing a polygon, with type and name for every type. No-go zones and
+  paths are labelled on the map; path labels sit on the middle of the centreline
+  (`pages/map/utils/pathLabel.ts`). Tapping a path in view mode opens `PathSheet.tsx`.
+* **Mow angle convention.** `mow_angle_deg` everywhere (area settings, global setting, catalog,
+  live binding) is the planner's map-frame heading: 0 deg east, 90 deg north,
+  counter-clockwise. `AnglePicker` draws it that way on a north-up rose
+  (`utils/areaSettings.ts angleFromPoint`). Effective order: area value, else the slope-aware
+  angle (area `slope_mode`), else the global `mow_angle_deg`, else the planner's choice.
+* **Recorded-vertex quality.** `GET /api/mowglinext/recording-quality`
+  (`pkg/api/recording_quality.go`) lists the mission's sidecars from
+  `/ros2_ws/maps/record_quality`; `web/src/utils/recordingQuality.ts` turns them into vertex
+  circles (green RTK fixed, amber float, red worse) for items whose name is still in the map,
+  only the non-fixed ones outside Edit Map.
+* **Charger moved.** Topic key `dockMoved` (`/mower_docking/dock_moved`, latched JSON);
+  `VisionDockCard` warns until the stored dock pose is within `warn_m` of where the robot docked
+  (`utils/dockMoved.ts`).
+* **Logs history.** `pkg/api/rosout.go`: `RosoutRoutes` pins the `/rosout` subscription at
+  start-up, so the Logs page starts with the last 1,000 lines.
+* **Diagnostics groups.** `utils/diagnosticsAlerts.ts alertComponent`: camera topic statuses
+  go to "cameras"; a leading "/" is skipped.
+
 ## Vertex editing in the map editor (2026-11-03)
 
 In Edit Map, a selected area, no-go zone or path shows a Points card with its vertex count. Dragging
