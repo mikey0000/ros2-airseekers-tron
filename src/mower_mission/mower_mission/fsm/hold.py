@@ -24,7 +24,16 @@ class Hold:
 
     @staticmethod
     def stop(fsm, why):
-        """Cancel the running action (``why``) and zero the wheels."""
+        """Cancel the running action (``why``) and zero the wheels. A coverage pivot cut
+        short (step corner_pivot: an in-place Spin, a K-turn about-turn, the pivot after a
+        slope pre-drive) is no longer "done": ``_cov_pivot`` marks it done when it STARTS,
+        so the resume (``_dispatch`` -> ``_cov_pivot``) would follow the leg from the half-
+        turned heading (field 2026-11-04 23:42 / 23:53: loc hold mid-pivot, resume sent
+        /follow_path with no spin, BOUNDARY OUT 8 s later). Cleared, the resume pivots the
+        rest of the way from the pose then (nothing when within the pivot threshold)."""
+        m = fsm.mission
+        if m is not None and fsm.phase == 'MOWING' and m.step == 'corner_pivot':
+            m.pivot_done, m.pivot_target = None, None
         if fsm._action is not None:
             fsm._fx.append(CancelActions(why))
             fsm._action = None
