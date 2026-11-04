@@ -210,6 +210,14 @@ mower_docking:
     search_consistency_m: 0.15
     rtk_check_max_deg: 30.0        # detections vs RTK (dock measured, RTK fixed); 0 = off
     rtk_check_max_m: 0.3
+    # SEARCH -> DOCKING filter heading from RTK (map yaw - measured dock yaw) instead of the
+    # median marker yaw: dock pose measured + RTK fixed + heading aligner quality in
+    # heading_trusted_qualities (status fresher than heading_status_timeout_s). The marker
+    # stays the position source. 2026-10-31 night dock: marker yaw +-20 deg per frame.
+    search_seed_rtk_heading: true
+    heading_status_topic: /heading_aligner/status
+    heading_trusted_qualities: ['good']
+    heading_status_timeout_s: 5.0
     forward_cap_margin: 0.10       # realign/retry/LATERAL_ALIGN forward never beyond approach + this (RTK); 2026-10-23: was 0.25
     teleop_topic: /cmd_vel_teleop  # joystick active -> pause; resume from the current pose
     teleop_hold: true

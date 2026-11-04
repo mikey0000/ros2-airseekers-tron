@@ -69,6 +69,10 @@ class DockingServer(Node):
         decl('dock_pose_measured_topic', '/map_server_node/docking_pose_measured')
         decl('progress_odom_topic', '/odometry/filtered')   # stall guard (fused pose)
         decl('gps_status_topic', '/gps/status')
+        # trusted map yaw for the SEARCH filter seed (search_seed_rtk_heading)
+        decl('heading_status_topic', '/heading_aligner/status')
+        decl('heading_trusted_qualities', ['good'])
+        decl('heading_status_timeout_s', 5.0)
         decl('image_topic', '/rear_camera/image_raw')
         decl('camera_info_topic', '/rear_camera/camera_info')
         decl('charging_service', '/charging')
@@ -198,7 +202,7 @@ class DockingServer(Node):
                   'realign_steer', 'realign_forward_per_lateral', 'realign_forward_max',
                   'align_to_marker_bearing', 'near_check_remaining', 'near_check_max_lateral',
                   'near_check_max_heading_deg', 'near_check_forward',
-                  'near_check_max_realigns'):
+                  'near_check_max_realigns', 'search_seed_rtk_heading'):
             decl(n, getattr(dp, n))
         decl('max_angular_accel', g.max_angular_accel)
         # 2026-10-21 stock-structure port (README "Stock structure port")
@@ -260,6 +264,8 @@ class DockingServer(Node):
         self._is_charging = False
         self._map_pose_t = -1e9
         self._rtk_fixed = False
+        self._heading_trusted = False
+        self._heading_status_t = -1e9
         self._marker: Optional[dl.MarkerObs] = None
         self._cam_K = None
         self._cam_D = None
@@ -320,6 +326,8 @@ class DockingServer(Node):
         sub(Bool, p('dock_pose_measured_topic').value, self._on_dock_measured, latched)
         if p('rear_blocked_topic').value:
             sub(Bool, p('rear_blocked_topic').value, self._on_rear_blocked, latched)
+        if p('heading_status_topic').value:
+            sub(String, p('heading_status_topic').value, self._on_heading_status, latched)
         if GnssStatus is not None:
             sub(GnssStatus, p('gps_status_topic').value, self._on_gps, 10)
         else:
@@ -434,6 +442,16 @@ class DockingServer(Node):
     def _on_gps(self, msg) -> None:
         with self._lock:
             self._rtk_fixed = int(msg.fix_type) == 3
+
+    def _on_heading_status(self, msg: String) -> None:
+        trusted = dl.heading_status_trusted(
+            msg.data, self.get_parameter('heading_trusted_qualities').value)
+        with self._lock:
+            changed = self._heading_trusted != trusted
+            self._heading_trusted = trusted
+            self._heading_status_t = self._clk.now()
+        if changed and self._busy:
+            self.get_logger().info('heading aligner yaw trusted: %s' % trusted)
 
     def _on_camera_info(self, msg: CameraInfo) -> None:
         if len(msg.k) >= 9 and msg.k[0] > 0:
@@ -621,7 +639,9 @@ class DockingServer(Node):
                 rear_blocked=self._rear_blocked,
                 teleop=now - self._teleop_t <= p('teleop_active_timeout_s').value,
                 nav_status=self._nav_status, charging_result=self._charging_result,
-                rtk_fixed=self._rtk_fixed)
+                rtk_fixed=self._rtk_fixed,
+                heading_trusted=self._heading_trusted and
+                now - self._heading_status_t <= p('heading_status_timeout_s').value)
 
     def _publish_cmd(self, v: float, w: float) -> None:
         t = Twist()
@@ -794,7 +814,7 @@ class DockingServer(Node):
                   'realign_steer', 'realign_forward_per_lateral', 'realign_forward_max',
                   'align_to_marker_bearing', 'near_check_remaining', 'near_check_max_lateral',
                   'near_check_max_heading_deg', 'near_check_forward',
-                  'near_check_max_realigns'):
+                  'near_check_max_realigns', 'search_seed_rtk_heading'):
             extra[n] = type(getattr(dl.DockParams, n))(p(n))
         return dl.DockParams(
             **extra,

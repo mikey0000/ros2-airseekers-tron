@@ -18,6 +18,7 @@ A world is a YAML file (``worlds/*.yaml``)::
     battery: {voltage: 25.2, percentage: 0.8}
     terrain: {regions: [{polygon, slope_deg, downhill_deg, fade_m}], slip: {...}}  # terrain.py
     rtk: {anchor, events: [{t0, dur, kind: float|dropout}], multipath: {...}}       # rtk.py
+    rear_camera: {dusk: true, corner_noise_px: 0.6, seed: 1}   # marker.RearCameraParams fields
 
 Instead of ``lawn``/``areas`` a world can take its map from an existing
 mower_map ``areas.dat`` (e.g. a copy of the robot's map)::
@@ -234,6 +235,9 @@ class World:
     # degradation (mower_sim/rtk.py); None = flat ground / always RTK FIXED (unchanged)
     terrain: Optional[object] = None
     rtk: Optional[object] = None
+    # rear-camera rendering overrides (marker.RearCameraParams field names), e.g. the dusk
+    # scene; {} = the sim node's parameters only
+    rear_camera: dict = field(default_factory=dict)
 
     def footprint_at(self, x: float, y: float, yaw: float) -> Polygon:
         return transform(FOOTPRINT, x, y, yaw)
@@ -350,7 +354,8 @@ def world_from_dict(doc: dict, name: str = 'world', base_dir: Optional[str] = No
                                      for o in lawn_map_obstacles],
                  area_settings=dict(doc.get('area_settings') or {}),
                  terrain=terrain_from_dict(doc.get('terrain')),
-                 rtk=rtk_from_dict(doc.get('rtk')))
+                 rtk=rtk_from_dict(doc.get('rtk')),
+                 rear_camera=dict(doc.get('rear_camera') or {}))
 
 
 def load_world(path: str) -> World:

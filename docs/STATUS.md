@@ -35,7 +35,9 @@ mid-mow re-plan, obstacle detours on labelled detections, docking by day, and re
 - Straight-line weave: p90 about 1.9-2.0 cm, unchanged by GNSS smoothing (A/B failed 2026-11-01,
   `analysis/2026-10-29_localisation_wander.md` section 7). Further work is controller-side.
 - Lap 0 runs about 1 cm over its soft limit at some convex bends; sim criterion (i) fails on master.
-- Night and dusk docking: the SEARCH heading is seeded from a marker solution that flips.
+- Night and dusk docking: the SEARCH filter heading is now seeded from RTK (branch `ws/dusk1104`,
+  unit + sim, not field tested). Frequent marker flips still trip the near-field check, whose
+  heading is the raw marker median.
 - The hard-boundary check does nothing when `outside_m` is stale (code review stage 2, item 10).
 - Side-slope pivots on the west edge creep 0.15-0.30 m; slope-aware planning (A5) is open.
 - No coverage map (A3): "% mowed" comes from plan progress and resume is a plan cursor.
@@ -1392,3 +1394,51 @@ Open GUI items from the open-work audit (2.2, 2.4, 2.6) and `REVIEW_2026-11-02.m
   `/fix`) and print the hits, so "log-only for 2 mows" can be done from the bags with no effect
   on the robot. The rule uses the sum of both drive currents, so B10 does not change it (tested).
   Smoke run on one 2026-10-28 incident bag: 240 motor frames, 0 events.
+
+## Night dock: SEARCH filter heading from RTK (2026-11-04, branch ws/dusk1104, unit + sim; not field tested)
+
+Field 2026-10-31 20:02 night dock: 77 s and 5 approaches, against 27 s by day. The scene was
+black and only the lit marker was visible. Detection stayed at 100 %, so the exposure stepper
+never stepped, but the marker yaw swung +-20 deg per frame. Each SEARCH seeded the filter from
+the median marker yaw: -13.5, -7.5, -13.3 and -21.2 deg, against RTK -3..+9 deg. Each approach
+therefore started 0.1-0.2 m off in lateral, which cost 2 pose realigns, 2 near realigns and a
+retry.
+
+- `search_seed_rtk_heading` (mower_docking, default true). Three conditions must hold: the dock
+  pose is measured, RTK is fixed, and `/heading_aligner/status` reports `quality` in
+  `heading_trusted_qualities` (['good'], fresher than `heading_status_timeout_s` 5 s). The
+  filter then starts on the RTK docked heading, and the accepted detections are re-headed onto
+  it (`rehead_errors`), so the marker centres stay the position source. Otherwise the seed is the
+  marker median as before. The log line is "filter heading seeded from RTK".
+- Tried and dropped: picking the `solvePnPGeneric` IPPE solution nearest the RTK / filter
+  heading. On mower_sim-rendered frames it gave 3-5 approaches where the seed alone gave 1. The
+  0.055 m marker read at `marker_size` 0.04 biases the true solution's normal, so the mirror
+  solution is often the nearer one (mower_docking README, "Night dock").
+- mower_sim: the world key `rear_camera: {dusk, bloom_px, corner_noise_px, seed}` renders a black
+  scene (brightness about 10) with a blooming lit marker. Per-frame corner jitter swings the
+  marker yaw by +-15-20 deg. World `dock_dusk` = `dock_approach` with that scene.
+- Tests: `test_dock_dusk_2026_10_31.py`. On the night-like stream, the master seed lands 12-16 deg
+  and 0.2-0.3 m off, and the RTK seed within 1 deg and 2 cm. When the dock pose is not measured,
+  RTK is not fixed or the heading is not trusted, the seed is exactly master's. Over 10 seeds in
+  closed loop, master needs 24 realigns and the RTK seed 17.
+
+Results (master-equivalent = this branch with `search_seed_rtk_heading: false`, which is
+master's code path):
+
+| Run | Master | Branch |
+|---|---|---|
+| mower_sim `dock_dusk` seed 1 | docked 41 s, 3 approaches, 2 near realigns | docked 40 s, 3 approaches, 2 near realigns |
+| mower_sim `dock_dusk` seed 2 | docked 16 s, 1 approach | docked 14 s, 1 approach |
+| Offline loop on rendered dusk frames, 0.5 px jitter, seeds 1-6 from 1.2 m | 5/6 docked, 14 approaches, 30 s mean | 6/6, 11 approaches, 22 s |
+| Same, no jitter (the sim's fixed yaw bias only) | 6/6, 18 approaches, 34 s | 6/6, 6 approaches, 12 s |
+| Gate real_run5 `-d -s 1 -x 1` | 41e61e3 (fix1104 `master-d1`): a 0.078 / 0 PASS, h FAIL 0.084 / 0.104, i FAIL; dock 3 approaches | c81a556: a FAIL 0.121 m / 85 samples (MOWING at (-5.28, -0.88), the spot where master's body worst lies), h PASS 0.099 / 0.092, i FAIL; b-g PASS; docked and charging, 3 approaches |
+
+The gate differences are in MOWING, where the docking change does nothing, so they are
+run-to-run spread. The mower_sim dock runs show no gain on these two seeds. The SEARCH
+acceptance already rejects most clusters 20 deg off, and the near-field check still realigns on
+the raw marker heading. The fix removes the seed error that the night showed, but the
+near-field check at night is still open. Dusk field test: dock in the dark with RTK fixed and a
+'good' heading. Look for "filter heading seeded from RTK" and fewer pose realigns. Note the
+near-field check outcomes (raw-heading trips) to decide whether that check needs the filter
+heading next. A darker night exposure preset is not built.
+
