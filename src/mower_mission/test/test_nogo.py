@@ -190,9 +190,9 @@ def test_cov_gate_maneuvers_are_capped_then_e_skips_the_leg(monkeypatch):
     assert h.name != 'STUCK_NEEDS_HELP'
 
 
-def test_cov_gate_e_replans_around_a_pending_zone_in_the_area(monkeypatch):
+def test_cov_gate_e_replans_around_an_accepted_zone_in_the_area(monkeypatch):
     r = ring()
-    z = Z(r[0][0] + 0.5, r[0][1] + 0.2, 0.25, 9, 'trunk', 'pending')
+    z = Z(r[0][0] + 0.5, r[0][1] + 0.2, 0.25, 9, 'trunk', 'accepted')
     hit = nogo.nz.SweepHit(z, 0.0)
     h, _calls = _cov_pivot_h(monkeypatch, [nogo.PivotPlan('blocked', [], 'x', [hit])], zs=[z])
     a = h.pending_action(f.ACT_PLAN)
@@ -327,7 +327,7 @@ def test_replan_around_a_new_zone_on_the_remaining_path_keeps_progress():
     h = _mowing_row2()
     m = h.fsm.mission
     mk = h.mark()
-    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'pending'))
+    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'accepted'))
     h.tick(dt=1.1)
     assert h.pending_action(f.ACT_PLAN).purpose == 'nogo_replan'
     assert any(isinstance(e, f.CancelActions) for e in h.since(mk))
@@ -347,18 +347,18 @@ def test_replan_around_a_new_zone_on_the_remaining_path_keeps_progress():
 
 def test_replan_is_rate_limited_and_a_zone_in_the_plan_is_not_replanned():
     h = _mowing_row2()
-    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'pending'))
+    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'accepted'))
     h.tick(dt=1.1)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([list(sp) for sp in ROWS]))
     h.fsm.inputs.is_cutting = True
     h.tick(n=3)
     m0 = h.mark()
     # the same zone again: already a hole of the plan
-    zones(h, Z(1.55, 2.0, 0.25, 3, 'trunk', 'pending'))
+    zones(h, Z(1.55, 2.0, 0.25, 3, 'trunk', 'accepted'))
     h.tick(dt=1.1, n=3)
     assert not starts(h, m0, f.ACT_PLAN)
     # a second zone within nogo_replan_min_interval_s: no re-plan
-    zones(h, Z(1.5, 3.0, 0.2, 4, 'stone', 'pending'))
+    zones(h, Z(1.5, 3.0, 0.2, 4, 'stone', 'accepted'))
     h.tick(dt=1.1, n=3)
     assert not starts(h, m0, f.ACT_PLAN)
 
@@ -377,7 +377,7 @@ def test_candidate_and_expired_zones_never_replan_and_the_plan_stays():
 
 def test_replan_failure_keeps_the_old_plan_and_resumes():
     h = _mowing_row2()
-    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'pending'))
+    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'accepted'))
     h.tick(dt=1.1)
     h.finish(f.ACT_PLAN, f.ABORTED, {'success': False, 'message': 'boom'})
     m = h.fsm.mission
@@ -394,19 +394,55 @@ def test_mowed_progress_maps_done_rows_and_a_prefix():
 
 
 # =====================================================================
-# pending zones on a re-START (policy): holes for the current mow
+# pending zones on a re-START (policy 2026-11-04): never holes; accepted ones are
 # =====================================================================
-def test_restart_plans_pending_zones_as_holes_and_replanned_zones_stay_holes():
+def test_restart_plans_accepted_zones_as_holes_and_replanned_zones_stay_holes():
     h = Harness()
     a = square(0, 0, 5)
-    a['obstacles'] = [nogo.zone_polygon(2.0, 2.0, 0.25)]       # pending zone in the map
+    a['obstacles'] = [nogo.zone_polygon(2.0, 2.0, 0.25)]       # accepted zone in the map
     h.areas = [a]
     start_until_planning(h)
     obs = h.goal(f.ACT_PLAN)['obstacles']
-    assert len(obs) == 1                       # the pending zone is a hole of this mow
+    assert len(obs) == 1                       # the accepted zone is a hole of this mow
     m = h.fsm.mission
     m.nogo_extra[0] = [nogo.zone_polygon(3.0, 3.0, 0.2)]
     assert len(h.fsm._nogo_area_holes(0)) == 2  # + zones added mid-mow (re-plans, run 2)
+
+
+def test_restart_never_plans_a_pending_zone_as_a_hole():
+    """Field 2026-11-04 00:02: a stuck-spot proposal (pending, #1097) became a hole on the
+    STOP / START re-plan: plan 541 -> 526 m, cursor discarded, mow restarted at sub-path 1."""
+    h = Harness()
+    a = square(0, 0, 5)
+    acc, pend = nogo.zone_polygon(2.0, 2.0, 0.25), nogo.zone_polygon(3.5, 3.5, 1.0)
+    a['obstacles'] = [acc, pend]
+    a['obstacle_pending'] = [False, True]
+    h.areas = [a]
+    start_until_planning(h)
+    obs = h.goal(f.ACT_PLAN)['obstacles']
+    assert obs == [list(acc)]
+    m = h.fsm.mission
+    assert m.areas[0]['obstacles'] == [acc] and m.areas[0]['pending_obstacles'] == [pend]
+    assert any('1 pending (unreviewed) keepout' in t for t in logs(h))
+
+
+def test_pending_zone_on_the_remaining_path_never_replans():
+    h = _mowing_row2()
+    m0 = h.mark()
+    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'pending'))
+    h.tick(dt=1.1, n=3)
+    assert not starts(h, m0, f.ACT_PLAN)
+    assert h.fsm.mission.nogo_replans.get(0, 0) == 0
+
+
+def test_cov_gate_e_pending_zone_in_the_sweep_skips_the_leg_no_replan(monkeypatch):
+    r = ring()
+    z = Z(r[0][0] + 0.5, r[0][1] + 0.2, 0.25, 9, 'trunk', 'pending')
+    hit = nogo.nz.SweepHit(z, 0.0)
+    h, _calls = _cov_pivot_h(monkeypatch, [nogo.PivotPlan('blocked', [], 'x', [hit])], zs=[z])
+    assert h.fsm.mission.nogo_replans.get(0, 0) == 0
+    assert h.fsm._action is None or h.fsm._action.name != f.ACT_PLAN
+    assert any('(e)' in t and 'skip the leg' in t for t in logs(h))
 
 
 # =====================================================================
@@ -477,7 +513,7 @@ def test_edge_detour_ignores_marks_and_too_large_offsets():
 
 def test_replan_hole_is_grown_for_the_nose():
     h = _mowing_row2()
-    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'pending'))
+    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'accepted'))
     h.tick(dt=1.1)
     obs = h.goal(f.ACT_PLAN)['obstacles'][0]
     r = min(math.hypot(q[0] - 1.5, q[1] - 2.0) for q in obs)

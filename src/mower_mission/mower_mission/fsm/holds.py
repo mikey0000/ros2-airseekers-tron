@@ -4,7 +4,7 @@
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
 from mower_mission.fsm.common import (ACT_NAV, DOCK_PHASES, SRV_GET_AREA,
-    SRV_SET_CHANNEL, DriveCmd, SuppressStuckGuard, ZeroBurst, _STILL_V, _STILL_W, _along, _seg_dist, absolute_to_local, geo, json, math,
+    SRV_SET_CHANNEL, DriveCmd, accepted_area, SuppressStuckGuard, ZeroBurst, _STILL_V, _STILL_W, _along, _seg_dist, absolute_to_local, geo, json, math,
     subpath_offsets)
 from mower_mission.fsm.hold import Hold
 
@@ -1052,7 +1052,11 @@ class HoldsMixin:
             if e is None:
                 return
             if ok and resp.get('success'):
-                area = resp.get('area', {})
+                area = accepted_area(resp.get('area', {}))
+                if area.get('pending_obstacles') and e['purpose'] == 'start':
+                    self._log('info', 'area %d: %d pending (unreviewed) keepout(s) left out of '
+                                      'the plan: run time only until accepted'
+                              % (e['index'], len(area['pending_obstacles'])))
                 e['count'] += 1
                 e.setdefault('all', {})[e['index']] = area
                 if not area.get('is_navigation_area', False):

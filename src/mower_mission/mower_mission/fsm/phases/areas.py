@@ -12,6 +12,10 @@ from mower_mission.fsm.common import (ACT_PLAN, AREA_SETTINGS_DEFAULTS, AreaCurs
     coverage_route_params, geo, json, math, subpath_offsets)  # noqa: F401
 
 
+from mower_mission import nogo
+from mower_mission.resume import mowed_pieces, simplify_polyline
+
+
 class AreasMixin:
     """Area progression, per-area mowing settings, planning."""
 
@@ -334,20 +338,7 @@ class AreasMixin:
             self._log('info', 'area %d: resuming (%d/%d sub-paths done, cursor %s)' % (
                 m.area_idx, len(ac.completed), len(subpaths), m.resume_sub))
         else:
-            new = AreaCursor(total, fp, -1, set())
-            kept = 0
-            if ac is not None and ac.done_fps:
-                for k, sp in enumerate(subpaths):
-                    f = geo.plan_fingerprint([sp])
-                    if f in ac.done_fps:
-                        new.completed.add(k)
-                        new.done_fps.add(f)
-                        kept += 1
-            if ac is not None and (ac.completed or ac.resume_index >= 0):
-                self._log('warn', 'area %d: plan geometry changed, stale resume cursor '
-                                  'discarded%s' % (m.area_idx, '' if not kept else
-                                                   '; kept %d done sub-path(s) whose geometry '
-                                                   'is unchanged' % kept))
+            new = self._cursor_remap(ac, subpaths, fp, total)
             self.cursor.areas[m.area_idx] = new
         excl = self._exclude_marks(subpaths, m.cum)
         self._persist()
@@ -356,6 +347,80 @@ class AreasMixin:
             '' if excl is None else '; %d stretches / %.1f m excluded by obstacle marks' % excl))
         m.sub_i = 0
         self._next_subpath()
+
+    def _cursor_remap(self, ac, subpaths, fp, total):
+        """The area cursor for a new plan whose geometry differs from the cursor's (a map
+        edit, an accepted zone, other settings): the old plan's mowed polylines (AreaCursor
+        .mowed) mapped onto it by position (nogo.mowed_progress, the mid-mow re-plan rule:
+        a sub-path >= 90 % mowed is done, the mowed lead-in of the first other one is the
+        resume point), plus the sub-paths whose own geometry is unchanged (done_fps). Never a
+        silent restart: a cursor with progress that maps to nothing is logged as an error.
+        Field 2026-11-04 00:02: the cursor was discarded, the mow restarted at sub-path 1."""
+        m, p = self.mission, self.p
+        new = AreaCursor(total, fp, -1, set())
+        m.resume_sub = None
+        if ac is None:
+            return new
+        had = bool(ac.completed or ac.resume_index >= 0)
+        kept = 0
+        if ac.done_fps:
+            for k, sp in enumerate(subpaths):
+                f = geo.plan_fingerprint([sp])
+                if f in ac.done_fps:
+                    new.completed.add(k)
+                    new.done_fps.add(f)
+                    kept += 1
+        mapped, prefix = set(), {}
+        if ac.mowed:
+            tol = 0.5 * self._swath_spacing(m.settings or {}) + float(p.nogo_progress_tol_m)
+            mapped, prefix = nogo.mowed_progress(subpaths, ac.mowed, tol)
+            for k in mapped - new.completed:
+                new.completed.add(k)
+                new.done_fps.add(geo.plan_fingerprint([subpaths[k]]))
+        first = next((k for k in range(len(subpaths)) if k not in new.completed), None)
+        if first is not None and first in prefix:
+            offs, _ = subpath_offsets(subpaths)
+            m.resume_sub = (first, prefix[first])
+            new.resume_index = offs[first] + prefix[first]
+        if not had:
+            return new
+        if new.completed or m.resume_sub is not None:
+            self._log('warn', 'area %d: plan geometry changed: resume cursor mapped onto the '
+                              'new plan by position: %d/%d sub-paths mowed (%d unchanged), '
+                              'resume %s' % (m.area_idx, len(new.completed), len(subpaths),
+                                             kept, m.resume_sub))
+        else:
+            self._log('error', 'area %d: plan geometry changed and the resume cursor (%d '
+                               'sub-paths done, resume pose %d) could not be mapped onto the '
+                               'new plan (%s): mowing the area from its start'
+                      % (m.area_idx, len(ac.completed), ac.resume_index,
+                         'no mowed geometry stored' if not ac.mowed else
+                         'no mowed part lies on it'))
+        return new
+
+    def _cursor_mowed_update(self):
+        """Store the mowed part of the current plan in its area cursor (AreaCursor.mowed:
+        simplified polylines, cached per piece) for _cursor_remap. Only while the cursor
+        belongs to this plan (same pose count)."""
+        m = self.mission
+        if m is None or m.area_idx is None or not m.subpaths:
+            return
+        ac = self.cursor.areas.get(m.area_idx)
+        _offs, total = subpath_offsets(m.subpaths)
+        if ac is None or ac.pose_count != total:
+            return
+        cut = list(ac.skipped) + list(ac.blocked_static) + \
+            [(a, b) for (i, a, b) in m.blocked if i == m.area_idx]
+        cache = getattr(self, '_mowed_cache', None)
+        if cache is None or cache[0] is not m.subpaths:
+            cache = self._mowed_cache = (m.subpaths, {})
+        out = []
+        for k, lo, hi in mowed_pieces(m.subpaths, ac.completed, ac.resume_index, cut):
+            pl = cache[1].get((k, lo, hi))
+            if pl is None:
+                pl = cache[1][(k, lo, hi)] = simplify_polyline(m.subpaths[k][lo:hi + 1])
+            out.append(pl)
+        ac.mowed = out
 
     def _exclude_marks(self, subpaths, cums):
         """Sub-path poses within (mark r + robot half-width +

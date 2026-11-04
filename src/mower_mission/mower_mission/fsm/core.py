@@ -453,6 +453,7 @@ class MissionFSM(PreviewMixin,
         self._fx.append(CancelActions(reason))
 
     def _persist(self):
+        self._cursor_mowed_update()
         self._fx.append(SaveResume(self.cursor.dumps()))
         self._fx.append(PublishResumeAvailable(self.cursor.available))
 

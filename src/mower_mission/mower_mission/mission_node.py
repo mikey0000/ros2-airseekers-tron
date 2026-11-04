@@ -1537,6 +1537,10 @@ class MissionNode(Node):
                 'name': a.name,
                 'outer': [(p.x, p.y) for p in a.area.points],
                 'obstacles': [[(p.x, p.y) for p in o.points] for o in a.obstacles],
+                # per obstacle: an unreviewed robot proposal (the FSM keeps it out of the
+                # plan, fsm.common.accepted_area)
+                'obstacle_pending': [bool(getattr(o, 'pending', False))
+                                     for o in getattr(a, 'obstacle_info', [])],
                 'is_navigation_area': bool(a.is_navigation_area)}}
         elif e.name == fsm_mod.SRV_ADD_AREA:
             resp = {'success': bool(res.success)}

@@ -267,3 +267,23 @@ def test_buffer_polyline_band():
     assert len(corner) == 6
     assert abs(corner[1][0] - (4 - 0.35)) < 1e-9 and abs(corner[1][1] - 0.35) < 1e-9
     assert g.buffer_polyline([(0, 0)], 0.35) == []
+
+
+def test_area_mowed_rows_round_trip_and_are_ignored_without_geometry():
+    from mower_mission.resume import mowed_pieces, simplify_polyline
+    c = ResumeCursor()
+    c.current_command = 1
+    c.areas[1] = AreaCursor(30, 7, 12, {0}, mowed=[[(0.0, 0.0), (4.0, 0.0)],
+                                                   [(4.0, 1.0), (2.5, 1.0)]])
+    text = c.dumps()
+    assert 'area_mowed 1 0.00,0.00 4.00,0.00' in text
+    assert ResumeCursor.loads(text) == c
+    # a straight row collapses to its ends; an out-and-back keeps its far end
+    row = [(0.1 * k, 0.0) for k in range(41)]
+    assert simplify_polyline(row) == [(0.0, 0.0), (4.0, 0.0)]
+    back = row + [(4.0 - 0.1 * k, 0.0) for k in range(1, 41)]
+    assert (4.0, 0.0) in simplify_polyline(back)
+    # completed sub-path 0, sub-path 1 up to the resume pose, minus a skipped stretch
+    sps = [[(k, 0.0)] for k in range(10)], [[(k, 1.0)] for k in range(10)]
+    sps = [[q[0] for q in sps[0]], [q[0] for q in sps[1]]]
+    assert mowed_pieces(sps, {0}, 10 + 6, cut=[(3, 5)]) == [(0, 0, 2), (0, 5, 9), (1, 0, 6)]

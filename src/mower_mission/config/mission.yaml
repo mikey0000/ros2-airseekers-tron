@@ -90,7 +90,7 @@ behavior_tree_node:
     nogo_enabled: true
     nogo_zones_max_age_s: 10.0        # /obstacle_tracker/nogo_zones older than this: ignored
     nogo_replan: true                 # re-plan the area around a zone on its remaining path
-    nogo_replan_states: [pending, accepted]
+    nogo_replan_states: [accepted]     # never pending: unreviewed zones never re-shape the plan
     nogo_replan_pad_m: 0.10
     nogo_replan_min_interval_s: 60.0
     nogo_replan_max_per_area: 3

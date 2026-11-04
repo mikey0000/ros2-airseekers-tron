@@ -1445,9 +1445,11 @@ class Params:
     # ---- 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py) ----
     nogo_enabled: bool = True
     nogo_zones_max_age_s: float = 10.0       # /obstacle_tracker/nogo_zones receipt age
-    # mid-mow re-plan around a zone (pending / accepted) on the remaining path of the area
+    # mid-mow re-plan around a zone on the remaining path of the area. Accepted zones only
+    # (2026-11-04 owner rule): a pending (unreviewed) zone never changes the plan geometry;
+    # it acts at run time only (edge-lap detour, pre-pivot check: skip the leg)
     nogo_replan: bool = True
-    nogo_replan_states: list = field(default_factory=lambda: ['pending', 'accepted'])
+    nogo_replan_states: list = field(default_factory=lambda: ['accepted'])
     nogo_replan_pad_m: float = 0.10          # footprint growth for the on-path test
     nogo_replan_min_interval_s: float = 60.0
     nogo_replan_max_per_area: int = 3
@@ -1629,6 +1631,25 @@ def blocked_text(n):
     """Sub_state for stretches the end-of-area pass could not mow (vendor IotNotice
     900027 'obstacle cannot be bypassed')."""
     return '%d stretch%s blocked by obstacles' % (n, '' if n == 1 else 'es')
+
+
+def accepted_area(area):
+    """``area`` (a get_mowing_area response dict) with its PENDING obstacles (robot
+    proposals the owner has not reviewed: obstacle_tracker stuck / det zones, dig keepouts)
+    moved from ``obstacles`` to ``pending_obstacles``. Pending zones never shape the coverage
+    plan, the path conditioning region or the boundary keepouts: a STOP / START with one
+    present re-planned 541 -> 526 m and discarded the resume cursor (field 2026-11-04
+    00:02, zone #1097). They act at run time only (/obstacle_tracker/nogo_zones: edge-lap
+    detour, pre-pivot check) until accepted. No / mismatched flags: unchanged."""
+    obs = list(area.get('obstacles') or [])
+    pend = list(area.get('obstacle_pending') or [])
+    if not any(pend) or len(pend) != len(obs):
+        return area
+    out = dict(area)
+    out['obstacles'] = [o for o, pd in zip(obs, pend) if not pd]
+    out['pending_obstacles'] = [o for o, pd in zip(obs, pend) if pd]
+    out['obstacle_pending'] = [False] * len(out['obstacles'])
+    return out
 
 
 def blade_allowed(fsm):
