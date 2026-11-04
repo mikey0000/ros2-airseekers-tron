@@ -647,9 +647,9 @@ class NogoMixin:
         aborted within 1 s, "Optimizer fail to compute path"), and Nav2's BackUp refuses too
         ("Collision Ahead - Exiting DriveOnHeading": its footprint check fails at the start
         pose, whose nose is on the cells). Within nogo_edge_costmap_backup_near_m of the cells
-        the mission reverses straight itself (DriveCmd, as the retrace / boundary moves do)
-        by up to nogo_edge_costmap_backup_m: back down the lap it has just driven (clear),
-        _safe_backoff keeps the body inside. The detour is then bent from the lap pose
+        the mission reverses itself (DriveCmd, the loc retrace's track steering,
+        _track_cmd) by up to nogo_edge_costmap_backup_m back along the lap it has just
+        driven (clear, and inside: lap 0 follows the line). The detour is then bent from the lap pose
         nearest the robot (_nogo_backup_tick -> _nogo_detour_backup_done). True = started."""
         m, p, pose = self.mission, self.p, self.inputs.pose
         want = float(p.nogo_edge_costmap_backup_m)
@@ -658,22 +658,30 @@ class NogoMixin:
         near = min(math.hypot(z.x - pose[0], z.y - pose[1]) for z in cm)
         if near > float(p.nogo_edge_costmap_backup_near_m):
             return False
-        back = self._safe_backoff(want)
-        if back < 0.1:
+        # back down the lap just driven (not straight: lap 0 curves with the line, a
+        # straight reverse took base_link 0.14 m outside, sim 2026-11-05 branch-scen8)
+        sp = m.subpaths[m.sub_i]
+        path, run, k = [], 0.0, max(0, min(prog, len(sp) - 1))
+        while k > 0 and run < want:
+            run += math.hypot(sp[k][0] - sp[k - 1][0], sp[k][1] - sp[k - 1][1])
+            k -= 1
+            path.append((float(sp[k][0]), float(sp[k][1])))
+        back = min(run, want)
+        if back < 0.1 or not path:
             return False
         if self._action is not None:
             self._fx.append(CancelActions('edge detour back-up'))
             self._action = None
         speed = max(float(p.slow_maneuver_mps), 0.06)
         m.nogo_detour = {'backup': True, 'from': prog, 'why': why, 'dist': back, 'v': speed,
-                         'start': (float(pose[0]), float(pose[1])),
+                         'start': (float(pose[0]), float(pose[1])), 'path': path, 'i': 0,
                          'until': self._now + back / speed + 5.0}
         m.step = 'nogo_detour'
         self._log('warn', 'edge lap: %s: obstacle %.2f m from the robot: back up %.2f m, then '
                           'detour' % (why, near, back))
         if self.blade_on and not self._keep_blade_inside('edge detour back-up'):
             self._blade_off('edge detour back-up')
-        self._fx.append(DriveCmd(-speed, 0.0))
+        self._fx.append(DriveCmd(*self._track_cmd(pose, path[0], speed)))
         return True
 
     def _nogo_backup_tick(self):
@@ -685,12 +693,19 @@ class NogoMixin:
         pose = self.inputs.pose
         driven = 0.0 if pose is None else math.hypot(pose[0] - d['start'][0],
                                                     pose[1] - d['start'][1])
-        if driven >= d['dist'] - 0.02 or self._now >= d['until'] or pose is None:
+        path = d['path']
+        if pose is not None:
+            while d['i'] < len(path) - 1 and math.hypot(path[d['i']][0] - pose[0],
+                                                        path[d['i']][1] - pose[1]) < 0.3:
+                d['i'] += 1
+        done = pose is not None and math.hypot(path[-1][0] - pose[0],
+                                               path[-1][1] - pose[1]) < 0.05
+        if driven >= d['dist'] - 0.02 or done or self._now >= d['until'] or pose is None:
             self._fx.append(DriveCmd(0.0, 0.0))
             self._nogo_detour_backup_done(SUCCEEDED if driven >= 0.5 * d['dist'] else
                                           'stopped after %.2f m' % driven)
             return True
-        self._fx.append(DriveCmd(-d['v'], 0.0))
+        self._fx.append(DriveCmd(*self._track_cmd(pose, path[d['i']], d['v'])))
         return True
 
     def _nogo_detour_backup_done(self, outcome):

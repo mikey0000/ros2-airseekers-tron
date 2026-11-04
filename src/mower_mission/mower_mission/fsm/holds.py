@@ -747,6 +747,17 @@ class HoldsMixin:
         self._log('info', 'localization retrace ended after %.2f m (%s): waiting'
                   % (rt['driven'], why))
 
+    @staticmethod
+    def _track_cmd(pose, target, v0):
+        """(v, w) toward ``target`` (x, y) at speed ``v0``: forward when it is ahead of the
+        robot, reversing when behind (pure pursuit on the arc through it, |w| <= 0.3)."""
+        dx, dy = target[0] - pose[0], target[1] - pose[1]
+        c, s = math.cos(pose[2]), math.sin(pose[2])
+        xr, yr = c * dx + s * dy, -s * dx + c * dy
+        v = v0 if xr > 0 else -v0
+        w = max(-0.3, min(0.3, v * 2.0 * yr / max(1e-6, xr * xr + yr * yr)))
+        return v, w
+
     def _loc_retrace_tick(self, d):
         rt, pose = d['rt'], self.inputs.pose
         if pose is None:
@@ -770,13 +781,7 @@ class HoldsMixin:
         if self._now - rt['best_t'] > 10.0:
             self._loc_retrace_stop('no progress for 10 s')
             return
-        tx, ty = path[rt['i']]
-        dx, dy = tx - pose[0], ty - pose[1]
-        c, s = math.cos(pose[2]), math.sin(pose[2])
-        xr, yr = c * dx + s * dy, -s * dx + c * dy
-        v0 = abs(float(self.p.slow_maneuver_mps))
-        v = v0 if xr > 0 else -v0
-        w = max(-0.3, min(0.3, v * 2.0 * yr / max(1e-6, xr * xr + yr * yr)))
+        v, w = self._track_cmd(pose, path[rt['i']], abs(float(self.p.slow_maneuver_mps)))
         self._fx.append(DriveCmd(v, w))
         Hold.show_wait(self, 'localization lost: retracing (%.1f of %.1f m)'
                        % (rt['driven'], rt['len']))

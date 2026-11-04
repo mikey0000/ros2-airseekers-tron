@@ -741,3 +741,33 @@ def test_costmap_lethal_points_maps_odom_cells_into_the_map_frame():
            'data': np.full((100, 100), 100, dtype=np.int8)}
     assert len(costmap_lethal_points((big, (1.0, 0.0, 0.0, 0.0)), cap=500)) == 500
     assert costmap_lethal_points(None) == []
+
+
+def test_costmap_detour_back_up_follows_a_curved_lap_back():
+    """Sim 2026-11-05 (branch-scen8 446-448 s): a straight reverse on lap 0 where the line
+    curves took base_link 0.14 m outside; the back-up retraces the lap it just drove."""
+    h = Harness()
+    h.areas = [square(-6, -6, 12)]
+    start_until_planning(h)
+    R = 4.0                                         # lap: arc of radius 4 about (0, 4)
+    arc = [(R * math.sin(a), 4.0 - R * math.cos(a), a)
+           for a in [k * 0.0125 for k in range(160)]]
+    h.fsm.inputs.pose = arc[0]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([arc, line(-2.0, 2.0, -4.0, 2.0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.fsm.mission.edge_laps[(h.fsm.mission.area_idx, 0)] = True
+    q = arc[40]
+    h.fsm.inputs.pose = q
+    h.tick(n=2)
+    ahead = arc[50]                                 # the branch 0.5 m ahead on the arc
+    h.fsm.inputs.costmap_lethal = [(ahead[0] + 0.05 * k * -math.sin(ahead[2]),
+                                    ahead[1] + 0.05 * k * math.cos(ahead[2]))
+                                   for k in range(-4, 8)]
+    h.fsm.inputs.costmap_lethal_stamp = h.t
+    mk = h.mark()
+    h.fsm.inputs.collision_stamp = h.t
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.fsm.mission.step == 'nogo_detour' and h.fsm._action is None, logs(h, mk)
+    cmd = h.since(mk, f.DriveCmd)[-1]
+    assert cmd.linear < 0.0 and abs(cmd.angular) > 0.01   # reversing along the arc
