@@ -40,7 +40,9 @@ mid-mow re-plan, obstacle detours on labelled detections, docking by day, and re
   heading is the raw marker median.
 - The hard-boundary check does nothing when `outside_m` is stale (code review stage 2, item 10).
 - Side-slope pivots on the west edge creep 0.15-0.30 m; slope-aware planning (A5) is open.
-- No coverage map (A3): "% mowed" comes from plan progress and resume is a plan cursor.
+- Coverage map (A3) slice 1 on `ws/cov1105` (2026-11-05, unit + sim): a mowed raster per area,
+  `mowed_area_percent` next to the plan %, resume and re-plans mapped by the raster, missed-patch
+  report (off by default). Driving the missed patches and the GUI display are slice 2.
 - `mission.yaml` has 359 keys against 238 when the A6 guard freeze was agreed.
 - Deploy has no rollback or health check (B8).
 
@@ -1442,3 +1444,161 @@ near-field check at night is still open. Dusk field test: dock in the dark with 
 near-field check outcomes (raw-heading trips) to decide whether that check needs the filter
 heading next. A darker night exposure preset is not built.
 
+
+## A3 coverage map, slice 1: mowed raster, honest % mowed, resume by the raster (2026-11-05, branch ws/cov1105, unit + sim; not field tested)
+
+Before this, "% mowed" was plan progress, nothing recorded what was actually cut, and resume
+used a plan cursor plus (since ws/fix1104) the mowed polylines of the plan. Stock resumes from
+position plus a mowed raster (`analysis/2026-10-21_stock_firmware_findings.md` "3. Resume after
+STUCK").
+
+**What is recorded.** `mower_mission/mowed_raster.py` keeps one `MowedRaster` per area:
+- 0.05 m boolean cells over the area's bounding box plus 0.5 m. The 0.22 m disc is about 4.4
+  cells, so its edge lands within 2.5 cm.
+- The mission (`fsm/coverage.py`) stamps the disc swept since the last tick, on every 10 Hz
+  tick, when all of these hold:
+  - the cutter REPORTS cutting (`MowerBaseDevStatus.is_cutting`, not the command);
+  - the localisation is trusted: `/localization/status` ok, or never received (no
+    localization_monitor, as the hold reads it). Degraded (RTK float, sigma over the limit),
+    lost and a stale status are not stamped;
+  - the blade point is known: base_link -> blade_link from `/tf_static` (the URDF
+    `blade_joint`, 0.23 m today; mission_node chains the static tree) and the width is
+    `cut_width_m`. Without the transform nothing is stamped and one WARN says so.
+- A blade jump of more than 1 m between two ticks is not swept.
+- Cost: 18 us per tick; the percentage is under 0.01 ms after the first call (the mask is
+  cached).
+
+**Persistence and clear rules.**
+- The raster is an `area_raster <idx> <key> ...` row of the resume cursor (zlib + base64; it
+  replaces the `area_mowed` polyline rows). It is saved with every cursor save and at least
+  every 30 s while cutting. Upstream readers ignore the row.
+- Key: area index (what resume.py uses) plus a CRC of the area's outer boundary. The map has no
+  persistent area id. An edited boundary, or an index that now names a different area (an
+  area deleted before it), therefore clears the raster with a WARN. Holes (accepted zones) do
+  not change the key: a new zone does not wipe what was cut.
+- Empty again on: a new full mow (a new cursor), `clear_coverage_resume`, each repeat / cross
+  run (a new area cursor), and mission complete.
+
+**Honest %.** `~/mow_progress` gets `mowed_area_percent` next to the unchanged `percent`. It is
+the cut share of the mowable polygon: outer minus the accepted obstacles and the mid-mow re-plan
+zones. Every area run logs `area N: X % of the mowable area cut (mowed raster)`. The GUI
+fields and their meaning are unchanged, and the GUI does not show the new value yet. The value
+stays a few points under the plan's 99.9 %: the blade disc cannot reach the strip along the
+boundary. On real_run5's 19.3 m2 lawn that is 3.6 points, about a 3.6 cm strip.
+
+**Resume by position.**
+- A plan pose counts as mowed when 75 % of its footprint cross-section is cut: the swath
+  width, sampled across the path at the blade point of base_link on that pose, with its yaw.
+  - Why 75 %: of the five 5 cm samples across a 0.18 m swath, one may be missing (a 5 cm
+    tracking offset, the quantised disc edge), two (half the swath) may not.
+- A sub-path at least 90 % mowed by length is done. The mowed lead-in (at least 0.5 m) of
+  the first sub-path left is the resume point. Both rules are kept from `_cursor_remap` and
+  the mid-mow re-plan.
+- Where the raster is used:
+  - **Same plan as the cursor:** it also skips the sub-paths the raster shows mowed (a failed
+    one, one a detour finished). It moves the resume point forward to the end of the mowed
+    lead-in when that lies ahead of the cursor. It never moves it back; an uncut gap is the
+    patch report's.
+  - **`_cursor_remap` (changed plan) and the mid-mow no-go re-plan:** both map the new plan
+    onto the raster instead of onto the plan polylines.
+  - Before `/tf_static` has given the blade offset, the raster is not read at all, so the
+    cursor decides.
+
+**Missed patches, report only.** `missed_patch_min_m2` (default 0 = off). At the end of each
+area run, the uncut parts of the mowable polygon that the blade fits into are found. An
+opening by half the blade width drops the boundary strip and the seams. Those of at least that
+size are logged as `uncut patch(es)` with size and centre, plus a `missed_patches` incident.
+Driving them is slice 2.
+
+**Removed for A6.** The raster replaces the polyline mechanism:
+- the `area_mowed` rows and `AreaCursor.mowed`;
+- `_cursor_mowed_update`, `mowed_pieces`, `simplify_polyline`, `_nogo_mowed`;
+- `nogo.mowed_progress` with its point grid;
+- the `nogo_progress_tol_m` parameter.
+
+`mission.yaml`: 367 keys before and after (`nogo_progress_tol_m` out, `missed_patch_min_m2` in).
+`cut_width_m`, "display only" before, now sizes the raster disc.
+
+**Limits of slice 1.**
+- map_server still paints its own `~/mow_progress` OccupancyGrid for the GUI map. That grid is
+  not loc-gated and not persisted.
+- Covered stretches in the middle of a sub-path are re-driven; only the lead-in and whole
+  sub-paths are skipped.
+- A cursor saved by an older build has no raster: a remap then logs the "could not be mapped"
+  error and starts the area over.
+
+**Tests.**
+- New: `test_mowed_raster.py` (20). It covers stamping, blade off, untrusted localisation, no
+  transform, %, file round trip and torn rows, the 30 s save, the clear rules (new mow, edited
+  boundary, repeat run), resume skip and lead-in, the no-go re-plan on the raster, the GUI
+  field and the patch report. They all fail on master, which has no raster.
+- Changed: the old polyline tests are removed; the harness drives the pose along the path (the
+  raster needs the track) and puts the blade point at base_link.
+- `scripts/sim_gate`: evaluate.py reports, without judging, the lawn's cut share from ground
+  truth (same raster, blade at the deck centre while the sim reports cutting), the mission's
+  raster value and plan % and, after a STOP -> START, the blade path in MOWING over ground cut
+  before the STOP.
+
+**Sim (real_run5, one run at a time, performance profile).**
+
+All runs: "desired rate of 60" appears in every `-x 3` launch.log, the controller loop held a
+20 Hz median and p10, and every bag was pruned. The yesterday baselines are from the tasking
+notes (code now on master). The master runs of 2026-11-05 use f8bbbc7 on the same host, the
+same day.
+
+| Gate | master (yesterday) | master f8bbbc7 (today) | branch | new failures |
+|---|---|---|---|---|
+| `-d -s 1 -x 1` | a 0.092, e 0.101, h 0.078 / 0.088 PASS, i 0.129 FAIL | a FAIL 0.128 m / 53 samples at (-0.52, 3.18), e 0.104, h 0.089 / 0.073 PASS, i FAIL 0.157 | run 1: a 0.094, e FAIL 0.175 (lap-0 corner pair (-1.24, 5.06)), h FAIL 0.108 / 0.192, i FAIL 0.229. Started right after the build, load1 4.05. Run 2: a FAIL 0.114 m / 57 at (-5.26, -0.90), e 0.111, h FAIL 0.088 / 0.114, i FAIL 0.141 | none consistent, see below |
+| `-l -x 3 -s 1` | PASS: a 0.066, e 0.096, i 0.076 | FAIL: a 0.057, e 0.097, h 0.081 / 0.056, i FAIL 0.108 | FAIL: a 0.091, e 0.120, h 0.087 / 0.067, i FAIL 0.112 | none (i level with master today) |
+
+The `-d` failures move between a, e and h from run to run on both codes. Master today failed
+a; the branch failed e+h in run 1 and a+h in run 2. Branch run 2's a excursion is at the west
+corner where `ws/dusk1104` (no mowing change) also failed a with 0.121 m. On a fresh mow the
+branch changes nothing in the motion path. It adds the stamping (18 us per tick), a cursor save
+every 30 s and log lines; the plan, the resume cursor use and every guard are master's. The e
+0.175 of run 1 is the one value outside the spread seen so far, and it did not repeat on the
+calm-host rerun.
+
+**Coverage (reported).** Ground truth uses the same raster, with the blade at the deck centre
+while the sim reports cutting:
+
+| Run | lawn cut, ground truth | mission raster | plan % |
+|---|---|---|---|
+| `-d` run 1 | 96.2 % | 96.2 % | |
+| `-d` run 2 | 96.0 % | 96.2 % | 99.8 % |
+| `-l -x 3` | 96.4 % | 96.9 % | 99.9 % |
+| resume scenario | 96.3 % | 96.6 % | 99.8 % |
+
+- The raster matches ground truth within 0.5 point (`-l` localisation drift: the EKF is not
+  the ground truth).
+- It reads 3.2-3.7 points under the plan %. That is the strip along the boundary the disc
+  cannot reach (see "Honest %").
+- Stated tolerance: raster vs ground truth <= 1 point; raster vs plan = plan minus the boundary
+  strip, 3-4 points on this 19 m2 lawn.
+
+**Resume scenario.** `--at 500:cmd:8 --at 530:cmd:1 -l -x 3 -s 1 -t 3600` on real_run5:
+- STOP mid sub-path 3, START 30 s later. The same plan came back and the log read `area 0:
+  resuming (3/11 sub-paths done, cursor (3, 471))`. MOWING_COMPLETE, docked, charging.
+- a 0.075, e 0.093, h 0.073 / 0.069 PASS; i FAIL 0.100, as master today.
+- In the first 12 s after the resume, 37 of 1042 blade samples lay on ground cut before the STOP
+  (under 0.1 m, the disc overlap at the stop point).
+- Share of the blade path in MOWING over ground cut more than 20 s earlier (row-end pivots and
+  infill sweep over the neighbouring swath):
+
+| Window | resume run | `-l -x 3 -s 1` run, no STOP |
+|---|---|---|
+| before +500 s | 14 % | 16 % |
+| after the resume / after +500 s | 20 % | 21 % |
+
+  The resume re-cut no more than an uninterrupted mow does.
+- This scenario resumes on the same plan, so it exercises the raster save and the same-plan
+  path. The changed-plan mapping (`_cursor_remap`) is covered by the unit tests only.
+
+**Slice 2.**
+- Drive the missed patches: plan the patch inside the area and reach it with the transit /
+  route.
+- Skip covered stretches in the middle of a sub-path (a jump like `_excluded_jump`).
+- GUI: show `mowed_area_percent`, and draw the mission's raster in place of map_server's
+  unpersisted, ungated paint (then retire that paint).
+- A resume scenario with a changed plan in the sim.
+- A field mow.

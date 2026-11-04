@@ -309,6 +309,7 @@ Criteria, judged from ground truth (`/sim/ground_truth`), not from the stack's o
 | h | MOWING cross-track to the sub-path actually sent (`~/mow_plan`; conditioned when path conditioning is on), median / p90 / p99 / max per segment type: line, arc, corner (raw plans: within 0.3 m of a drawn vertex >= 20 deg), pivoting | p99 <= 0.10 m on line, arc and corner |
 | j | slope worlds only (world `terrain:`): STUCK_NEEDS_HELP count and base_link samples > 0.10 m outside; roll max, slip windows and the mission's slip trips reported | 0 / 0 (n/a on flat worlds) |
 | k | RTK injection only (world `rtk:` or `--rtk-loss`): per loss window, the mission holds within 3 s of `/localization/status` leaving ok, the blade is off, it resumes after the fix is back, no sample > 0.10 m outside; a window the drift budget absorbs (status stays ok) passes without a hold | every window (n/a otherwise) |
+| coverage | (2026-11-05, A3) lawn cut share from ground truth (the mission's `MowedRaster`, blade disc at the deck centre while `/sim/status` reports cutting) next to the mission's last `mowed_area_percent` and plan %; after a STOP -> START, the blade path in MOWING over ground cut before the STOP | reported |
 
 It also lists how often each runtime corner rule of the design's section 3.3 fired (route
 corner splits and corner-reached rule, stub trim, cusp about-turn, progress watches, the
