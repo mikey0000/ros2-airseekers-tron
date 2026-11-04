@@ -3,7 +3,7 @@
 ROS-free helpers used by ``fsm/phases/nogo.py``:
 
 * :func:`zone_polygon` / :func:`zone_in_plan` - a zone as a coverage hole;
-* :func:`mowed_progress` - which sub-paths of a re-plan are already mowed (progress kept);
+* which sub-paths of a re-plan are already mowed: ``mowed_raster.MowedRaster.plan_progress``;
 * :func:`plan_pivot` - the pre-pivot sweep check and its fallbacks (a)-(d);
 * :func:`edge_detour` - an edge-lap stretch bent inward around a disc (B6, owner).
 
@@ -107,76 +107,6 @@ def path_hits_zone(paths, zone, pad: float = 0.0) -> str:
 # ---------------------------------------------------------------------------
 # progress kept across a re-plan
 # ---------------------------------------------------------------------------
-
-class _Grid:
-    """Points hashed into cells of ``tol`` for 'is any point within tol' queries."""
-
-    def __init__(self, pts, tol):
-        self.tol = float(tol)
-        self.cells = {}
-        for x, y in pts:
-            self.cells.setdefault((int(math.floor(x / tol)), int(math.floor(y / tol))),
-                                  []).append((x, y))
-
-    def near(self, x, y):
-        cx, cy = int(math.floor(x / self.tol)), int(math.floor(y / self.tol))
-        t2 = self.tol * self.tol
-        for i in (cx - 1, cx, cx + 1):
-            for j in (cy - 1, cy, cy + 1):
-                for (px, py) in self.cells.get((i, j), ()):
-                    if (px - x) ** 2 + (py - y) ** 2 <= t2:
-                        return True
-        return False
-
-
-def _densify(poly, step):
-    out = []
-    for a, b in zip(poly[:-1], poly[1:]):
-        L = math.hypot(b[0] - a[0], b[1] - a[1])
-        n = max(1, int(math.ceil(L / step)))
-        for k in range(n):
-            out.append((a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n))
-    if poly:
-        out.append((poly[-1][0], poly[-1][1]))
-    return out
-
-
-def mowed_progress(subpaths, mowed, tol: float, done_frac: float = 0.9,
-                   min_prefix_m: float = 0.5):
-    """Map mowed polylines (the old plan's done parts) onto a new plan's ``subpaths``.
-
-    A pose is mowed when it lies within ``tol`` of a mowed polyline (the swath around it).
-    Returns ``(done, prefix)``: the set of sub-path indices at least ``done_frac`` mowed
-    (by length), and {k: local index} of the mowed lead-in (>= ``min_prefix_m``) of the
-    others - where a resume of that sub-path starts."""
-    pts = []
-    for pl in mowed or []:
-        if len(pl) >= 2:
-            pts.extend(_densify([(q[0], q[1]) for q in pl], 0.5 * tol))
-        elif len(pl) == 1:
-            pts.append((pl[0][0], pl[0][1]))
-    done, prefix = set(), {}
-    if not pts:
-        return done, prefix
-    g = _Grid(pts, tol)
-    for k, sp in enumerate(subpaths):
-        if len(sp) < 2:
-            continue
-        cov = [g.near(q[0], q[1]) for q in sp]
-        seg = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(sp[:-1], sp[1:])]
-        total = sum(seg)
-        got = sum(s for s, c0, c1 in zip(seg, cov[:-1], cov[1:]) if c0 and c1)
-        if total <= 1e-6 or got >= done_frac * total:
-            done.add(k)
-            continue
-        i, run = 0, 0.0
-        while i + 1 < len(sp) and cov[i] and cov[i + 1]:
-            run += seg[i]
-            i += 1
-        if run >= min_prefix_m:
-            prefix[k] = i
-    return done, prefix
-
 
 # ---------------------------------------------------------------------------
 # pre-pivot sweep check (fallbacks a-d)

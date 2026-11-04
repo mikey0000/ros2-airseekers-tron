@@ -317,8 +317,10 @@ def _mowing_row2(**params):
     assert h.pending_action(f.ACT_FOLLOW)
     m = h.fsm.mission
     assert m.sub_i == 1
-    h.fsm.inputs.pose = (2.5, 2.0, math.pi)    # half of row 1 mowed
-    h.tick(n=3)
+    for k in range(21):                        # half of row 1 mowed
+        h.fsm.inputs.pose = (4.5 - 0.1 * k, 2.0, math.pi)
+        h.tick()
+    h.tick(n=2)
     assert m.progress_local == 20
     return h
 
@@ -383,14 +385,6 @@ def test_replan_failure_keeps_the_old_plan_and_resumes():
     m = h.fsm.mission
     assert len(m.subpaths) == 3 and m.sub_i == 1 and m.start_local == 20
     assert any('keeping the old plan' in t for t in logs(h))
-
-
-def test_mowed_progress_maps_done_rows_and_a_prefix():
-    mowed = [[(0.5, 1.0), (4.5, 1.0)], [(4.5, 2.0), (2.5, 2.0)]]
-    new = [line(0.5, 1.0, 4.5, 1.0, 41), line(4.5, 2.1, 0.5, 2.1, 41),
-           line(0.5, 3.0, 4.5, 3.0, 41)]
-    done, prefix = nogo.mowed_progress(new, mowed, tol=0.12)
-    assert done == {0} and prefix == {1: 20}
 
 
 # =====================================================================

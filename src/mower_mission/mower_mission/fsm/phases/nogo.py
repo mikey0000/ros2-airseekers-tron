@@ -5,7 +5,7 @@ docs/analysis/2026-10-23_obstacle_nogo_options.md).
 * Mid-mow re-plan: a pending / accepted zone of /obstacle_tracker/nogo_zones on the remaining
   path of the current area is added to the area's holes and the remaining coverage is
   re-planned (the planner's hard-obstacle rule: lap 0 bends inward around a zone near the
-  line); the mowed parts of the old plan are mapped onto the new one (progress kept);
+  line); the new plan is mapped onto the area's mowed raster (progress kept);
   rate-limited; a zone that expires later leaves the plan as it is until the next area.
 * Pre-pivot sweep check before every coverage pivot (corners, K-turn about-turns) and transit
   route corner: other direction, back-up, K-turn, pivot moved along the path, then (e) a
@@ -141,40 +141,10 @@ class NogoMixin:
         return self._now - m.nogo_last_replan >= float(p.nogo_replan_min_interval_s)
 
     # ---- mid-mow re-plan -------------------------------------------------
-    def _nogo_mowed(self):
-        """Polylines of the current plan already mowed: completed sub-paths and the current
-        one up to the robot, minus the stretches recorded as skipped / blocked."""
-        m = self.mission
-        ac = self.cursor.area(m.area_idx)
-        offs, _total = subpath_offsets(m.subpaths)
-        cut = [(a, b) for (a, b) in ac.skipped] + \
-            [(a, b) for (i, a, b) in m.blocked if i == m.area_idx]
-        out = []
-        for k, sp in enumerate(m.subpaths):
-            if k in ac.completed:
-                hi = len(sp) - 1
-            elif k == m.sub_i:
-                hi = m.progress_local if m.step == 'follow' else m.start_local
-            else:
-                continue
-            piece = []
-            for j in range(0, min(hi, len(sp) - 1) + 1):
-                a = offs[k] + j
-                if any(lo <= a < up for (lo, up) in cut):
-                    if len(piece) >= 2:
-                        out.append(piece)
-                    piece = []
-                    continue
-                piece.append(tuple(sp[j][:2]))
-            if len(piece) >= 2:
-                out.append(piece)
-        return out
-
     def _nogo_replan(self, zones, why):
         """Stop, add ``zones`` to the area's holes and re-plan the area (see _nogo_on_plan)."""
         m, p = self.mission, self.p
         idx = m.area_idx
-        mowed = self._nogo_mowed()
         if self._action is not None:
             self._fx.append(CancelActions('no-go re-plan'))
             self._action = None
@@ -188,7 +158,7 @@ class NogoMixin:
         m.nogo_extra.setdefault(idx, []).extend(polys)
         m.nogo_replans[idx] = m.nogo_replans.get(idx, 0) + 1
         m.nogo_last_replan = self._now
-        m.nogo_replan = {'mowed': mowed, 'sub': m.sub_i, 'why': why,
+        m.nogo_replan = {'sub': m.sub_i, 'why': why,
                          'progress': m.progress_local if m.step == 'follow' else m.start_local,
                          'phase': self.phase}
         m.step = 'nogo_replan'
@@ -199,9 +169,8 @@ class NogoMixin:
         txt = ', '.join('%s #%d (%.2f, %.2f) r %.2f %s' % (z.label or 'zone', z.id, z.x, z.y,
                                                            z.r, z.state) for z in zones)
         self._log('warn', 'no-go re-plan %d/%d of area %d (%s): %s -> re-planning the area with '
-                          'it as a hole (%d mowed piece(s) kept)'
-                  % (m.nogo_replans[idx], int(p.nogo_replan_max_per_area), idx, why, txt,
-                     len(mowed)))
+                          'it as a hole (the mowed raster keeps what was cut)'
+                  % (m.nogo_replans[idx], int(p.nogo_replan_max_per_area), idx, why, txt))
         self._incident('nogo_replan', txt)
         self._go(self.phase, 'no-go zone: re-planning area %d' % idx)
         self._start_plan(purpose='nogo_replan')
@@ -224,9 +193,7 @@ class NogoMixin:
         if p.path_conditioning:
             subpaths = self._condition_subpaths(subpaths, result.get(CONDITIONED_KEY))
         old_ac = self.cursor.area(m.area_idx)
-        spacing = self._swath_spacing(m.settings or {})
-        done, prefix = nogo.mowed_progress(subpaths, r['mowed'],
-                                           0.5 * spacing + float(p.nogo_progress_tol_m))
+        done, prefix = self._raster_progress(subpaths, old_ac.raster)
         for k, sp in enumerate(subpaths):
             if geo.plan_fingerprint([sp]) in old_ac.done_fps:
                 done.add(k)
@@ -243,6 +210,7 @@ class NogoMixin:
         offs, total = subpath_offsets(subpaths)
         new = AreaCursor(total, geo.plan_fingerprint(subpaths), -1, set(done))
         new.done_fps = {geo.plan_fingerprint([subpaths[k]]) for k in done}
+        new.raster = old_ac.raster
         m.resume_sub = None
         first = next((k for k in range(len(subpaths)) if k not in done), None)
         if first is not None and first in prefix:

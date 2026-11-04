@@ -170,6 +170,7 @@ class OutcomeMixin:
                       m.area_idx, len(ac.completed), len(m.subpaths), len(failed))
                   + ('' if not blocked else ', %s' % blocked_text(len(blocked))))
         self._tally_area(ac, failed)
+        self._area_cut_report()
         if failed or blocked:
             # not complete: keep it out of completed_areas, keep its run index, and
             # point the cursor at the first missing pose so START resumes there.

@@ -30,6 +30,7 @@ from mower_mission.fsm.guards.boundary import BoundaryGuardMixin
 from mower_mission.fsm.guards.spin_drift import SpinDriftGuardMixin
 from mower_mission.fsm.guards.parity import ParityGuardsMixin
 from mower_mission.fsm.phases.nogo import NogoMixin
+from mower_mission.fsm.coverage import CoverageMixin
 
 
 class MissionFSM(PreviewMixin,
@@ -52,7 +53,8 @@ class MissionFSM(PreviewMixin,
                  BoundaryGuardMixin,
                  SpinDriftGuardMixin,
                  ParityGuardsMixin,
-                 NogoMixin):
+                 NogoMixin,
+                 CoverageMixin):
     """See module docstring."""
 
     def __init__(self, params=None, cursor=None, now=0.0, alternate_counts=None):
@@ -138,6 +140,9 @@ class MissionFSM(PreviewMixin,
         self._tilt_hist = []                # [[t, x, y]] steep spots backed out of
         self._tilt_trail = []               # [(x, y)] recent driven track, oldest first
         self._tilt_capped = False           # caution speed cap sent to the controller
+        self._blade_last = None             # last blade point stamped into the mowed raster
+        self._raster_saved = (0, now)       # (raster.stamps, time) at the last cursor save
+        self._blade_tf_warned = False       # 'no blade_link transform' logged once
         self._camera_capped = False         # camera-blocked speed cap sent to the controller
         self._hb = None                     # hard-boundary retrace in progress (task 0.4 a)
         self._hb_count = 0                  # hard-boundary excursions of this mission
@@ -454,7 +459,8 @@ class MissionFSM(PreviewMixin,
         self._fx.append(CancelActions(reason))
 
     def _persist(self):
-        self._cursor_mowed_update()
+        raster = self._current_raster()
+        self._raster_saved = (raster.stamps if raster is not None else 0, self._now)
         self._fx.append(SaveResume(self.cursor.dumps()))
         self._fx.append(PublishResumeAvailable(self.cursor.available))
 
@@ -467,6 +473,7 @@ class MissionFSM(PreviewMixin,
                 and self.heading_ok():
             self._heading_was_aligned = True
         self._charge_limit_tick()
+        self._coverage_tick()
         if not self._guards():
             self._run_phase()
         return self._end()

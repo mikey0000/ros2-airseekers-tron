@@ -53,6 +53,9 @@ class Harness:
         i.battery_percent = 80.0
         i.fix_type = 3
         i.pose = (0.0, 0.0, 0.0)
+        # mowed raster blade point at base_link: the toy paths' poses carry yaw 0 whatever
+        # their direction (the real offset has its own tests, test_mowed_raster.py)
+        i.blade_offset = (0.0, 0.0)
         self.heading('cog')
         self.blade = False
         self.fx = []
@@ -957,7 +960,9 @@ def mow_first_subpath_then_stop(h):
     h.fsm.inputs.pose = (4, 1, 0)
     h.finish(f.ACT_NAV)
     h.tick()                                 # following sub-path 1
-    h.fsm.inputs.pose = (2.05, 1.0, 0.0)
+    for k in range(40):                      # drive (and cut) it to x 2.05
+        h.fsm.inputs.pose = (4.0 - 0.05 * k, 1.0, 0.0)
+        h.tick()
     h.cond_sps = list(h.fsm.mission.subpaths)   # conditioned (resampled) sub-paths
     m = h.mark()
     assert h.cmd(f.CMD_STOP)
@@ -1003,7 +1008,7 @@ def test_resume_mapped_by_position_when_plan_geometry_changes():
     mow restarted at sub-path 1. The old plan's mowed part is mapped onto the new one."""
     h = Harness()
     sps, _ = mow_first_subpath_then_stop(h)
-    assert ResumeCursor.loads(h.saved).areas[0].mowed      # mowed polylines stored
+    assert ResumeCursor.loads(h.saved).areas[0].raster.data.any()   # mowed raster stored
     h = Harness(cursor=ResumeCursor.loads(h.saved))        # also across a restart
     start_until_planning(h)
     mk = h.mark()

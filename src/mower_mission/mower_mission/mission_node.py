@@ -45,6 +45,7 @@ from rcl_interfaces.msg import Log
 from rcl_interfaces.srv import SetParameters
 from std_msgs.msg import Bool, Float32, Int16, String, UInt8
 from std_srvs.srv import Empty, SetBool, Trigger
+from tf2_msgs.msg import TFMessage
 
 from mower_interfaces.action import Dock, Undock
 from mower_interfaces.msg import MowerBaseDevStatus
@@ -58,6 +59,7 @@ from mowgli_interfaces.srv import (AddMowingArea, GetMowingArea, HighLevelContro
 from mower_mission import activity
 from mower_mission import mission_fsm as fsm_mod
 from mower_mission import mow_progress
+from mower_mission import mowed_raster
 from mower_mission import nogo
 from mower_mission import walls
 from mower_mission.external_rain import ExternalRain
@@ -385,6 +387,12 @@ class MissionNode(Node):
             sub(String, p['nogo_zones_topic'], self._on_nogo_zones, 1)
         if p['boundary_lines_topic']:
             sub(String, p['boundary_lines_topic'], self._on_boundary_lines, latched)
+        # the blade point of the mowed raster: base_link -> blade_link of the URDF
+        # (robot_state_publisher, latched once); every queued message is taken
+        self._tf_static = {}          # child frame -> (parent, x, y, yaw)
+        sub(TFMessage, '/tf_static', self._on_tf_static,
+            QoSProfile(depth=10, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                       reliability=QoSReliabilityPolicy.RELIABLE), deliver_all=True)
         sub(Bool, '/mower_docking/marker_in_view', self._on_marker_in_view, latched,
             parser=flat_parser(Bool))
         sub(PoseStamped, '/map_server_node/docking_pose', self._on_dock_pose, latched)
@@ -765,6 +773,22 @@ class MissionNode(Node):
                                % (len(lines), ', '.join('%s %s' % (ln.label(), ln.mode)
                                                         for ln in lines) or 'none',
                                   '' if blade is None else ', blade radius %.3f m' % blade))
+
+    def _on_tf_static(self, msg):
+        """/tf_static: base_link -> blade_link (x, y) for the mowed raster's blade point."""
+        for t in msg.transforms:
+            tr = t.transform
+            self._tf_static[t.child_frame_id] = (t.header.frame_id, tr.translation.x,
+                                                 tr.translation.y, _yaw_from_quat(tr.rotation))
+        off = mowed_raster.blade_offset_from(self._tf_static)
+        if off is None:
+            return
+        with self._lock:
+            changed = self.fsm.inputs.blade_offset != off
+            self.fsm.inputs.blade_offset = off
+        if changed:
+            self.get_logger().info('mowed raster blade point: base_link -> blade_link '
+                                   '(%.3f, %.3f) m' % off)
 
     def _on_obstacle_policy(self, msg):
         """{kind: none|dynamic|static, class, distance_m, bearing_deg}; the receipt time is

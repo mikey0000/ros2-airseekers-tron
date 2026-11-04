@@ -16,7 +16,11 @@ std_msgs/String JSON topics from it:
 * ``~/mow_progress``: ``{plan_id, area, state, sub_state, sub_path, sub_paths,
   pose_index, total_poses, mowed_segments: [[from, to], ...], current_segment,
   skipped: [[from, to], ...], blade_on, percent, mowed_m, remaining_m,
-  elapsed_s, eta_s, why: {...}}`` at 1 Hz.
+  elapsed_s, eta_s, why: {...}, mowed_area_percent}`` at 1 Hz. ``percent`` is plan progress
+  (driven length of the plan, unchanged); ``mowed_area_percent`` (2026-11-05, A3) is the cut
+  share of the area's mowable polygon from the mowed raster (fsm/coverage.py: what the blade
+  actually cut, with trusted localisation; the strip along the boundary the blade cannot
+  reach keeps it a little below 100), null without a raster.
 
 Only attributes are read; the FSM is never modified.
 """
@@ -67,7 +71,7 @@ def progress(fsm, plan_id, blade_on, elapsed_s, session_mowed_m, why=None):
         'total_poses': 0, 'mowed_segments': [], 'current_segment': None, 'skipped': [],
         'blade_on': bool(blade_on), 'percent': 0.0, 'mowed_m': 0.0, 'remaining_m': 0.0,
         'elapsed_s': round(float(elapsed_s), 1) if elapsed_s is not None else None,
-        'eta_s': None, 'why': why or {},
+        'eta_s': None, 'why': why or {}, 'mowed_area_percent': None,
     }
     try:
         st['sub_state'] = fsm.display_sub_state()
@@ -75,6 +79,11 @@ def progress(fsm, plan_id, blade_on, elapsed_s, session_mowed_m, why=None):
         st['sub_state'] = str(getattr(fsm, 'sub_state', ''))
     if m is None or m.area_idx is None or not m.subpaths:
         return st
+    try:
+        cut = fsm.mowed_area_percent()
+    except Exception:  # noqa: BLE001 - presentation only
+        cut = None
+    st['mowed_area_percent'] = round(cut, 1) if cut is not None else None
     offs, total = subpath_offsets(m.subpaths)
     ac = fsm.cursor.areas.get(m.area_idx)
     completed = set(ac.completed) if ac else set()

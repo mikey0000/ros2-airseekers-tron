@@ -95,7 +95,6 @@ behavior_tree_node:
     nogo_replan_min_interval_s: 60.0
     nogo_replan_max_per_area: 3
     nogo_replan_check_s: 1.0
-    nogo_progress_tol_m: 0.02         # + swath/2: a re-planned pose counts as mowed
     nogo_pivot_check: true            # pre-pivot sweep check (a)-(e)
     nogo_pivot_shifts_m: [0.3, 0.15, -0.15]
     nogo_pivot_max_maneuvers: 2
@@ -450,7 +449,9 @@ behavior_tree_node:
 
     # --- per-area mowing settings (map_server_node/get_area_settings) -----
     use_area_settings: true           # false: built-in defaults for every area
-    cut_width_m: 0.22                 # blade width (220 mm disc, owner 2026-10-20); coverage_server operation_width = this - swath_overlap_m
+    cut_width_m: 0.22                 # blade cut width (220 mm disc, owner 2026-10-20): the mowed raster's disc; coverage_server operation_width = this - swath_overlap_m
+    # A3 2026-11-05: end-of-area report of uncut patches (mowed raster) the blade fits into, >= this m2 (0 = off)
+    missed_patch_min_m2: 0.0
     cut_speed_max_mps: 0.5            # cap on an area's cut_speed_mps
     set_cut_speed: true
     set_cutter_height: true           # /cutter_control height (blade off) before planning an area

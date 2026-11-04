@@ -588,6 +588,9 @@ class Inputs:
     boundary_lines: Any = None
     # map_server's blade disc radius from the same message (blade lines); None = not sent
     boundary_blade_radius: Optional[float] = None
+    # base_link -> blade_link (x, y) from /tf_static (URDF blade_joint): the blade point the
+    # mowed raster stamps; None = not received (nothing is stamped)
+    blade_offset: Optional[tuple] = None
 
 
 @dataclass
@@ -1332,7 +1335,11 @@ class Params:
     dock_contact_grace_s: float = 10.0
     # --- per-area mowing settings ---
     use_area_settings: bool = True      # read /map_server_node/get_area_settings per area
-    cut_width_m: float = 0.22           # blade cut width (display only; spacing = area swath_width_m)
+    # blade cut width: the mowed raster's disc (mowed_raster.py); spacing = area swath_width_m
+    cut_width_m: float = 0.22
+    # 2026-11-05 A3: at the end of an area, report the uncut patches of the mowed raster the
+    # blade fits into of at least this many m2 (log + 'missed_patches' incident; 0 = off)
+    missed_patch_min_m2: float = 0.0
     cut_speed_max_mps: float = 0.5
     set_cut_speed: bool = True          # set_parameters on /controller_server per area
     set_cutter_height: bool = True      # /cutter_control height per area
@@ -1464,7 +1471,6 @@ class Params:
     nogo_replan_min_interval_s: float = 60.0
     nogo_replan_max_per_area: int = 3
     nogo_replan_check_s: float = 1.0         # on-path test rate
-    nogo_progress_tol_m: float = 0.02        # + swath/2: a re-plan pose that counts as mowed
     # pre-pivot sweep check (coverage pivots, K-turn about-turns, route corners)
     nogo_pivot_check: bool = True
     nogo_pivot_shifts_m: list = field(default_factory=lambda: [0.3, 0.15, -0.15])   # (d)
