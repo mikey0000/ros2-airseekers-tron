@@ -76,6 +76,11 @@ ros2 run mower_sim scenario navigate --x 8.0 --y 0.0
 # Docking approach: /mower_docking/dock from 1.2 m out (vision on the rendered marker).
 ros2 launch mower_bringup sim.launch.py world:=dock_approach mission:=false mission_stub:=true
 ros2 run mower_sim scenario dock
+
+# Night dock (2026-10-31): the same from a black scene with a blooming lit marker and per-frame
+# corner jitter (world key rear_camera: {dusk, bloom_px, corner_noise_px, seed}).
+ros2 launch mower_bringup sim.launch.py world:=dock_dusk mission:=false mission_stub:=true
+ros2 run mower_sim scenario dock
 ```
 
 `navigate` passes when all of the following hold:
@@ -131,7 +136,7 @@ The launch file is installed by mower_bringup next to `mower.launch.py`.
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `world` | `garden.yaml` | World YAML: a path, or a name under `share/mower_sim/worlds/` (`garden`, `transit_box`, `dock_approach`). |
+| `world` | `garden.yaml` | World YAML: a path, or a name under `share/mower_sim/worlds/` (`garden`, `transit_box`, `dock_approach`, `dock_dusk`). |
 | `localization` | `sim` | `sim`: the sim publishes ground-truth `odom -> base_link`, `/odometry/filtered` and an aligned `/heading_aligner/status` (deterministic). `ekf`: the real gps_gate, navsat_transform, heading_aligner and ekf_node (`launch/nav2.launch.py`) fuse the sim's `/odom`, `/imu/data` and `/fix`. |
 | `maps_dir` | `""` (fresh temp dir) | Where the world's lawn is written as `areas.dat` (area 0, plus `known: true` obstacles) and the dock as `dock_pose.yaml` (measured). gui_bridge's robot yaml and datum.env go there too; nothing is written into `config/gui`. |
 | `navigation`, `map_server`, `coverage`, `docking`, `mission`, `gui_bridge` | `true` | Each switches the real component on or off. |
