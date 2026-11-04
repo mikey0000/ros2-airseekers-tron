@@ -78,6 +78,7 @@ func MowgliNextRoutes(r *gin.RouterGroup, provider types.IRosProvider) {
 	MultiplexRoute(group, provider)
 	PublisherRoute(group, provider)
 	ObstacleSnapshotRoute(group)
+	RecordingQualityRoute(group)
 }
 
 // obstacleSnapshotsDir holds the per-obstacle annotated front-frame JPEGs

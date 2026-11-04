@@ -86,6 +86,8 @@ import type {AbsolutePose} from "../types/ros.ts";
 import {postTerrainAction, useTerrainSummary} from "../hooks/useTerrain.ts";
 import {TerrainCard} from "./map/components/TerrainCard.tsx";
 import {TERRAIN_STATUS_COLORS} from "../utils/terrain.ts";
+import {useRecordingQuality} from "../hooks/useRecordingQuality.ts";
+import {mapItemNames, recordingQualityFeatures} from "../utils/recordingQuality.ts";
 import {useImagery} from "../hooks/useImagery.ts";
 import {ImageryLayers} from "./map/components/ImageryLayers.tsx";
 import {ImageryPanel} from "./map/components/ImageryPanel.tsx";
@@ -583,6 +585,17 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         return {type: "FeatureCollection", features};
     }, [terrainSummary, terrainSel, map, offsetX, offsetY, datum]);
     const terrainHasData = !!terrainSummary && terrainSummary.areas.some((a) => (a.clusters?.length ?? 0) > 0 || a.slope);
+    // RTK quality of recorded boundary vertices (mower_mission recording sidecars):
+    // view mode marks the vertices recorded without RTK fixed, Edit Map colours all.
+    // Re-read when the set of map items changes or a recording completes.
+    const recordedNames = useMemo(() => mapItemNames(map), [map]);
+    const recordingQuality = useRecordingQuality(!compact,
+        `${[...recordedNames].sort().join("\n")}|${hlState ?? ""}`);
+    const recordingQualityCollection = useMemo<FeatureCollection>(() => {
+        if (datum[0] === 0) return {type: "FeatureCollection", features: []};
+        return recordingQualityFeatures(recordingQuality, recordedNames,
+            (x, y) => transpose(offsetX, offsetY, datum, y, x), editMap);
+    }, [recordingQuality, recordedNames, offsetX, offsetY, datum, editMap]);
 
     useEffect(() => {
         // Don't rebuild features from stream data while in edit mode —
@@ -1961,6 +1974,12 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         <Layer type={"symbol"} id={"terrain-cluster-label"} filter={['==', ['get', 'kind'], 'cluster']}
                             layout={{'text-field': ['get', 'label'], 'text-size': 10, 'text-allow-overlap': true}}
                             paint={{'text-color': '#000000'}}/>
+                    </Source>
+                    {/* Recorded vertices by RTK quality: green fixed, amber float, red worse. */}
+                    <Source type={"geojson"} id={"recording-quality"} data={recordingQualityCollection}>
+                        <Layer type={"circle"} id={"recording-quality-vertex"}
+                            paint={{'circle-radius': 5, 'circle-color': ['get', 'color'], 'circle-opacity': 0.95,
+                                'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1.5}}/>
                     </Source>
                     {/* Live mow progress on the plan + the robot's actual track (last 5 min). */}
                     <Source type={"geojson"} id={"mow-live"} data={liveCollection}>
