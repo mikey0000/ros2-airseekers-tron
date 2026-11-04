@@ -522,6 +522,23 @@ def test_edge_lap_costmap_only_obstacle_detours_tags_and_rejoins():
     assert any('rejoining the lap' in t for t in logs(h, mk))
 
 
+def test_edge_lap_costmap_obstacle_right_ahead_backs_up_then_detours():
+    """Sim 2026-11-04: the abort stops the robot at the branch, a detour from there aborted
+    in 1 s (every MPPI trajectory collides): back up first, bend the detour from there."""
+    h, mk = _abort_on_branch(2.0, -0.3, 0.5)       # cells 0.4 m ahead of the robot at 1.6
+    a = h.pending_action(f.ACT_BACKUP)
+    assert a.purpose == 'nogo_detour_backup'
+    assert any('back up' in t and 'then detour' in t for t in logs(h, mk))
+    h.fsm.inputs.pose = (1.1, 0.0, 0.0)            # backed up 0.5 m
+    h.finish(f.ACT_BACKUP)
+    a = h.pending_action(f.ACT_FOLLOW)
+    assert a.purpose == 'nogo_detour'
+    poses = h.goal(f.ACT_FOLLOW)['poses']
+    assert abs(poses[0][0] - 1.1) < 0.06            # bent from the lap pose by the robot
+    assert max(q[1] for q in poses) >= 0.5 + 0.235 + 0.1 - 0.02
+    assert not any('edge blocked: skip' in t for t in logs(h, mk))
+
+
 def test_edge_lap_costmap_obstacle_too_deep_for_a_detour_is_skipped():
     h, mk = _abort_on_branch(2.5, -0.3, 1.6)         # needs ~1.9 m > 1.5 m
     assert any('no inward detour fits' in t for t in logs(h, mk))

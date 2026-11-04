@@ -1479,6 +1479,10 @@ class Params:
     nogo_edge_costmap_corridor_m: float = 0.60  # cell to the lap ahead (body half width + 0.37)
     nogo_edge_costmap_max_offset_m: float = 1.50
     nogo_edge_costmap_ramp_m: float = 1.20
+    # the abort left the robot within this of the cells: back up this far first (body
+    # inside, _safe_backoff), then detour (0 = never)
+    nogo_edge_costmap_backup_near_m: float = 0.80
+    nogo_edge_costmap_backup_m: float = 0.50
     nogo_living_memory_s: float = 60.0       # static marks this recently under a living zone
     nogo_plan_grow_m: float = 0.25           # zone hole radius + this (nose 0.60 vs 0.40 keepout)
 

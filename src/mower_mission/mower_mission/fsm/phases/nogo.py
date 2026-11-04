@@ -455,6 +455,9 @@ class NogoMixin:
         if a.purpose == 'nogo_detour':
             self._nogo_detour_done(outcome)
             return
+        if a.purpose == 'nogo_detour_backup':
+            self._nogo_detour_backup_done(outcome)
+            return
         if m.nogo_seq is None:
             return
         if outcome != SUCCEEDED:
@@ -534,7 +537,7 @@ class NogoMixin:
                               state='costmap') for b in big]
         return [nogo.Zone(*xy(c), 0.071, label='costmap', state='costmap') for c in keep]
 
-    def _nogo_edge_detour(self, prog, why, proactive=False, costmap=False):
+    def _nogo_edge_detour(self, prog, why, proactive=False, costmap=False, backed=False):
         """Bend the edge lap ahead inward around a disc and follow that, blade on, then
         rejoin the lap after it. True = the detour follow was started. ``costmap`` (a
         collision abort): the lethal cells of the local costmap on the lap ahead count as
@@ -585,6 +588,8 @@ class NogoMixin:
         key = (m.area_idx, m.sub_i, end)
         if key in m.nogo_detoured:
             return False
+        if cm and not backed and self._nogo_detour_backup(prog, cm, why):
+            return True
         m.nogo_detoured.add(key)
         if self._action is not None:
             self._fx.append(CancelActions('edge detour'))
@@ -617,6 +622,60 @@ class NogoMixin:
             'progress_checker_id': self.p.follow_progress_checker_id},
             self.p.follow_timeout_s, purpose='nogo_detour')
         return True
+
+    def _nogo_detour_backup(self, prog, cm, why):
+        """A collision abort stops the robot right at the obstacle: every controller
+        trajectory of the detour collides there (sim 2026-11-04: the detour round the branch
+        aborted within 1 s, "Optimizer fail to compute path"). Within
+        nogo_edge_costmap_backup_near_m of the cells, back up (up to
+        nogo_edge_costmap_backup_m, _safe_backoff: body inside) first; the detour is then
+        bent from the lap pose nearest the backed-up robot. True = the back-up started."""
+        m, p, pose = self.mission, self.p, self.inputs.pose
+        want = float(p.nogo_edge_costmap_backup_m)
+        if want <= 0.0 or pose is None or len(pose) < 3:
+            return False
+        near = min(math.hypot(z.x - pose[0], z.y - pose[1]) for z in cm)
+        if near > float(p.nogo_edge_costmap_backup_near_m):
+            return False
+        back = self._safe_backoff(want)
+        if back < 0.1:
+            return False
+        if self._action is not None:
+            self._fx.append(CancelActions('edge detour back-up'))
+            self._action = None
+        m.nogo_detour = {'backup': True, 'from': prog, 'why': why}
+        m.step = 'nogo_detour'
+        self._log('warn', 'edge lap: %s: obstacle %.2f m from the robot: back up %.2f m, then '
+                          'detour' % (why, near, back))
+        if self.blade_on and not self._keep_blade_inside('edge detour back-up'):
+            self._blade_off('edge detour back-up')
+        speed = max(float(p.slow_maneuver_mps), 0.06)
+        self._start_action(ACT_BACKUP, {'distance_m': back, 'speed_mps': speed},
+                           back / speed + 15.0, purpose='nogo_detour_backup')
+        return True
+
+    def _nogo_detour_backup_done(self, outcome):
+        """The back-up before a costmap detour ended (any outcome): bend the detour from the
+        lap pose nearest the robot now (searched back from the abort pose), else skip."""
+        m = self.mission
+        d = m.nogo_detour if m is not None else None
+        if d is None or not d.get('backup') or self.phase not in ('MOWING', 'TRANSIT'):
+            return
+        m.nogo_detour = None
+        m.step = None
+        frm, why = int(d['from']), d['why']
+        sp, pose = m.subpaths[m.sub_i], self.inputs.pose
+        start = frm
+        if pose is not None:
+            lo = max(0, frm - 200)
+            start = min(range(lo, frm + 1), key=lambda k: math.hypot(sp[k][0] - pose[0],
+                                                                    sp[k][1] - pose[1]))
+        if outcome != SUCCEEDED:
+            self._log('warn', 'edge detour back-up %s: detour from here' % outcome)
+        m.progress_local = start
+        if self._nogo_edge_detour(start, why, costmap=True, backed=True):
+            return
+        self._edge_skip(frm, why)
 
     def _nogo_detour_done(self, outcome):
         m = self.mission

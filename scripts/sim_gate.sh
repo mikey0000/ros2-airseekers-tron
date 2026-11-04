@@ -319,7 +319,10 @@ act_one() {
     stuck:*)
       local xy="${what#stuck:}"
       local js="{\\\"kind\\\": \\\"stuck\\\", \\\"x\\\": ${xy%%:*}, \\\"y\\\": ${xy#*:}, \\\"detail\\\": \\\"sim_gate --at\\\"}"
-      cx "ros2 topic pub --once -w 1 /mission/incident std_msgs/msg/String \"{data: '$js'}\"" >/dev/null ;;
+      # -w 3: the bag recorder, obstacle_tracker and map_server; one publisher that only
+      # waited for the recorder lost the incident to the tracker (2026-11-04 run); three
+      # sends 0.5 s apart (the tracker files one event per 60 s at a spot)
+      cx "timeout 30 ros2 topic pub -w 3 --times 3 -r 2 /mission/incident std_msgs/msg/String \"{data: '$js'}\"" >/dev/null ;;
   esac
   echo "$(date +%T) sim +$at s: $what (state $(state))" >> "$OUT/actions.log"
   echo "  $(date +%T) --at $spec done"
