@@ -1539,6 +1539,8 @@ Driving them is slice 2.
   raster value and plan % and, after a STOP -> START, the blade path in MOWING over ground cut
   before the STOP.
 
+CI (`scripts/ci_test.sh`, 154fa66): colcon PASS (3846 cases, 0 failed), scripts PASS, replay PASS.
+
 **Sim (real_run5, one run at a time, performance profile).**
 
 All runs: "desired rate of 60" appears in every `-x 3` launch.log, the controller loop held a
