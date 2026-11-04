@@ -23,8 +23,11 @@ lawn_area: Area 6
 dock: {x: 0.236, y: -0.637, yaw: 1.773}
 start: {docked: true}
 obstacles:
-  - {name: branch, type: box, x: -28.7, y: -14.9, yaw: 1.047, size_x: 1.2, size_y: 0.08,
-     height: 0.15}
+  # 0.15 x 0.25 m (a branch with its twigs): the sim stereo (64 x 32 rays) saw an 8 x 15 cm
+  # box only when the nose was on it (2026-11-04 runs branch-scen2 / 3: MPPI stopped in
+  # contact, the robot wedged); the field stereo stopped the robot short of the branch
+  - {name: branch, type: box, x: -28.7, y: -14.9, yaw: 1.047, size_x: 1.2, size_y: 0.15,
+     height: 0.25}
 rtk:
   anchor: pivot
   pivot_min_s: 2.0
