@@ -253,7 +253,7 @@ describe("MowingSection profile gating", () => {
         active.id = AIRSEEKERS_TRON_PROFILE_ID;
         renderMowing();
         expect(screen.getByText("Mowing Speed")).toBeInTheDocument();
-        expect(screen.getByText("Mow Angle")).toBeInTheDocument();
+        expect(screen.getByText("Default mowing direction")).toBeInTheDocument();
         expect(screen.queryByText("Mowing Motor")).toBeNull();
         expect(screen.queryByText("Blade Load Slowdown")).toBeNull();
         expect(screen.queryByText("Headland Width")).toBeNull();

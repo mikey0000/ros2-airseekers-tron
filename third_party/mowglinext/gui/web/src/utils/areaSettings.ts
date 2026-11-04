@@ -192,15 +192,22 @@ export function parseStringMsgJson(raw: unknown): Record<string, unknown> | unde
     }
 }
 
-/** Normalise a compass angle to [0, 360). */
+/** Normalise an angle to [0, 360). */
 export function normaliseAngle(deg: number): number {
     const n = deg % 360;
-    return n < 0 ? n + 360 : n;
+    // + 0 turns -0 (atan2(-0, x)) into 0.
+    return n < 0 ? n + 360 : n + 0;
 }
 
-/** Angle (deg, 0 = up/north, clockwise) of a point relative to a centre. */
+/**
+ * Mow angle (deg) of a screen point relative to a centre, in the planner's
+ * convention: map frame, 0° = east (right), 90° = north (up), counter-clockwise.
+ * mow_angle_deg goes to the coverage planner unchanged (swath heading
+ * atan2(dy, dx) in the ENU map frame), so the picker must use the same frame.
+ * Screen y grows downwards.
+ */
 export function angleFromPoint(dx: number, dy: number): number {
-    return normaliseAngle(Math.round(Math.atan2(dx, -dy) * 180 / Math.PI));
+    return normaliseAngle(Math.round(Math.atan2(-dy, dx) * 180 / Math.PI));
 }
 
 /**

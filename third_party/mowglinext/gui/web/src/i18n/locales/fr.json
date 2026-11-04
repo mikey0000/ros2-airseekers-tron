@@ -1926,8 +1926,8 @@
       "description": "Chevauchement supplémentaire entre bandes adjacentes pour éviter de fines bandes non tondues."
     },
     "mow_angle_deg": {
-      "label": "Angle de tonte",
-      "description": "Direction fixe des bandes en degrés (0–179°), ou Auto pour laisser le planificateur minimiser le nombre de bandes."
+      "label": "Direction de tonte par défaut",
+      "description": "Direction des bandes pour les zones dont la direction de tonte est sur Auto : 0° = est, 90° = nord (sens antihoraire), 0–179°. Auto (négatif) laisse le planificateur choisir (le moins de bandes, ou le bord le plus long sur les grandes zones). La direction propre d’une zone l’emporte toujours."
     },
     "swath_angle": {
       "label": "Angle des bandes",
@@ -2704,8 +2704,8 @@
     "minTurningRadiusTooltip": "F2C Robot::setMinTurningRadius — borne le rayon des arcs CC-Dubins entre les bandes. La couverture utilise des arcs CONTINUS, donc il doit être assez large pour que le MPPI SUIVE le demi-tour : trop petit (~0,05 m) crée un quasi-rebroussement sur lequel le contrôleur accroche ; ~0,12 m donne un demi-tour en Ω doux qui tient dans la bande de tournière. Relié à coverage_server.min_turning_radius.",
     "crossHatch": "Tonte croisée",
     "crossHatchTooltip": "Alterner les bandes de chaque zone de 90° lorsque cette zone est à nouveau tondue, par rapport à Auto ou à l’angle fixe. Les pauses, recharges et redémarrages conservent l’orientation. Les passages de bordure restent inchangés. Redémarrer ROS2 après modification.",
-    "mowAngleDeg": "Angle de tonte",
-    "mowAngleDegTooltip": "Direction des bandes de tonte. Activez Auto pour laisser le planificateur choisir l'angle qui minimise le nombre de bandes, ou fixez un angle de 0 à 179°.",
+    "mowAngleDeg": "Direction de tonte par défaut",
+    "mowAngleDegTooltip": "Direction des bandes pour les zones dont la direction de tonte est sur Auto : 0° = est, 90° = nord (sens antihoraire). Auto laisse le planificateur choisir (le moins de bandes, ou le bord le plus long sur les grandes zones). La direction propre d’une zone l’emporte toujours.",
     "mowAngleAuto": "Auto",
     "mowAngleFixed": "Fixe",
     "mowAngle": "Angle de tonte",
@@ -4126,8 +4126,8 @@
         "description": "Vitesse utilisée pour quitter la base."
       },
       "mow_angle_deg": {
-        "label": "Angle de tonte",
-        "description": "Direction des bandes. Une valeur négative laisse le planificateur choisir l'angle avec le moins de bandes."
+        "label": "Direction de tonte par défaut",
+        "description": "Direction des bandes pour les zones dont la direction de tonte est sur Auto : 0° = est, 90° = nord (sens antihoraire). Une valeur négative laisse le planificateur choisir (le moins de bandes, ou le bord le plus long sur les grandes zones). La direction propre d’une zone l’emporte toujours."
       },
       "transit_gap_m": {
         "label": "Écart de transit",
@@ -4262,7 +4262,7 @@
       "contour_only": "Bordures seules"
     },
     "mowAngle": "Direction de tonte",
-    "mowAngleHint": "Direction des bandes, 0° = nord. Auto suit le bord le plus long.",
+    "mowAngleHint": "Direction des bandes sur la carte : 0° = est, 90° = nord (sens antihoraire). Auto : l’angle selon la pente ci-dessous s’il existe, sinon la direction de tonte par défaut (Réglages > Tonte) si elle est fixe, sinon le planificateur choisit (le moins de bandes, ou le bord le plus long sur les grandes zones).",
     "auto": "Auto",
     "alternateOffset": "Changement d'angle par tonte",
     "alternateOffsetHint": "Chaque nouvelle tonte tourne les bandes de cet angle.",

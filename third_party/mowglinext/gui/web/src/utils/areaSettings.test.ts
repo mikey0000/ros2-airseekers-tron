@@ -34,11 +34,12 @@ describe("areaSettings", () => {
         expect(parseStringMsgJson(undefined)).toBeUndefined();
     });
 
-    it("maps pointer offsets to compass angles", () => {
-        expect(angleFromPoint(0, -1)).toBe(0);
-        expect(angleFromPoint(1, 0)).toBe(90);
-        expect(angleFromPoint(0, 1)).toBe(180);
-        expect(angleFromPoint(-1, 0)).toBe(270);
+    it("maps pointer offsets to planner angles (0° east, counter-clockwise)", () => {
+        // Planner convention (map frame): 0° = east, 90° = north, counter-clockwise.
+        expect(angleFromPoint(1, 0)).toBe(0);
+        expect(angleFromPoint(0, -1)).toBe(90);
+        expect(angleFromPoint(-1, 0)).toBe(180);
+        expect(angleFromPoint(0, 1)).toBe(270);
         expect(normaliseAngle(-30)).toBe(330);
     });
 });

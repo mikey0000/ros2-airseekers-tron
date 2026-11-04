@@ -8,9 +8,13 @@ const C = SIZE / 2;
 const R = 52;
 
 /**
- * Compass-style picker for the swath direction (0° = north, clockwise). The
- * line is drawn through the centre because a swath at θ and θ+180 is the same
- * set of stripes. Click or drag to set; arrow keys nudge by 5°.
+ * Picker for the swath direction on a north-up compass rose. The value is the
+ * planner's mow_angle_deg: map frame, 0° = east, 90° = north, counter-clockwise
+ * (utils/areaSettings.ts angleFromPoint). It used to read 0° as north,
+ * clockwise, while the planner took the same number as east, counter-clockwise,
+ * so the stripes ran in a different direction from the one drawn. The line is
+ * drawn through the centre because a swath at θ and θ+180 is the same set of
+ * stripes. Click or drag to set; Up / Right turn it counter-clockwise by 5°.
  */
 export const AnglePicker: React.FC<{
     value: number;
@@ -32,8 +36,8 @@ export const AnglePicker: React.FC<{
     };
 
     const rad = (value * Math.PI) / 180;
-    const x = Math.sin(rad) * R;
-    const y = -Math.cos(rad) * R;
+    const x = Math.cos(rad) * R;
+    const y = -Math.sin(rad) * R;
 
     return (
         <svg
