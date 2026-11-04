@@ -19,6 +19,8 @@ declare::
       float_std_m: 0.5         # Ornstein-Uhlenbeck per axis (std, correlation time)
       float_tau_s: 20.0
       seed: 1
+      pivot_min_s: 0.4         # anchor pivot: the rotation has lasted this long
+      ekf_sigma_m: 0.0         # /odometry/filtered_map xy sigma while not FIXED (0 = off)
       multipath:               # optional: a "house" polygon biases the fix near it
         polygon: [[x, y], ...]
         range_m: 3.0           # bias fades from bias_m at the wall to 0 at range_m
@@ -86,6 +88,14 @@ class RtkParams:
     float_tau_s: float = 20.0
     seed: int = 1
     multipath: Optional[Multipath] = None
+    # anchor 'pivot': the rotation must last this long first (a short pivot ends before a
+    # hold could reach it)
+    pivot_min_s: float = 0.4
+    # /odometry/filtered_map xy sigma while not FIXED (0 = the odom covariance as before).
+    # Field 2026-11-04: ekf_map sigma 0.17 m under RTK float -> the localization monitor's
+    # loc_sigma_ok_m 0.15 check degraded at once, also standing / pivoting (no travel
+    # for the drift budget)
+    ekf_sigma_m: float = 0.0
 
     def active(self) -> bool:
         return bool(self.events) or self.multipath is not None
@@ -124,7 +134,8 @@ def rtk_from_dict(doc: Optional[dict]) -> Optional[RtkParams]:
                        float(m.get('float_within_m', 1.0)))
     p = RtkParams(events=ev, anchor=anchor, multipath=mp, seed=int(doc.get('seed', 1)),
                   **{k: float(doc[k]) for k in ('float_min_m', 'float_max_m', 'float_std_m',
-                                                'float_tau_s') if k in doc})
+                                                'float_tau_s', 'pivot_min_s',
+                                                'ekf_sigma_m') if k in doc})
     return p if p.active() else None
 
 
@@ -147,7 +158,7 @@ class RtkModel:
             if cutting and not docked and abs(v) < PIVOT_V and abs(w) > PIVOT_W:
                 if self._rot_since is None:
                     self._rot_since = t
-                elif t - self._rot_since >= PIVOT_MIN_S:
+                elif t - self._rot_since >= max(PIVOT_MIN_S, self.p.pivot_min_s):
                     self.anchor_t = t
             else:
                 self._rot_since = None

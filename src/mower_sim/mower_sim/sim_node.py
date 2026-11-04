@@ -667,6 +667,10 @@ class SimNode(Node):
         (m.pose.pose.orientation.x, m.pose.pose.orientation.y, m.pose.pose.orientation.z,
          m.pose.pose.orientation.w) = _quat(myaw)
         m.pose.covariance = odom.pose.covariance
+        if self.rtk is not None and self.rtk_mode != 'fixed' and self.rtk.p.ekf_sigma_m > 0.0:
+            cov = list(odom.pose.covariance)
+            cov[0] = cov[7] = float(self.rtk.p.ekf_sigma_m) ** 2   # ekf_map under float / dropout
+            m.pose.covariance = cov
         m.twist.twist = odom.twist.twist
         self.pub_filtered_map.publish(m)
 

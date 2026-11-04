@@ -5,9 +5,11 @@
 #         lap (the boundary runs ~150 deg there), 0.06 m outside to 0.6 m inside the line.
 #         Stereo only (no detection class): it reaches the mission only as local costmap
 #         lethal cells, as the field branch did. Expect: detour inward, map tag, rejoin.
-#   (ii)  RTK FLOAT 12 s from 0.4 s into the first in-place pivot with the blade on (rtk
-#         anchor 'pivot'): the localization hold interrupts a coverage pivot. Expect the
-#         rest of the pivot after the resume, no BOUNDARY OUT.
+#   (ii)  RTK FLOAT 12 s from 2 s into the first in-place pivot with the blade on that lasts
+#         that long (rtk anchor 'pivot', pivot_min_s), ekf_map sigma 0.17 m meanwhile (as
+#         the field's 23:42 / 23:53 holds: "ekf_map sigma 0.17 m > 0.15 m (rtk float)"; the
+#         drift budget alone never trips without travel): the localization hold
+#         interrupts a coverage pivot. Expect the rest of the pivot after the resume.
 #   (iii) sim_gate.sh --at: two stuck incidents at (-28.0, -9.0) make obstacle_tracker
 #         propose a pending no-go zone, then STOP and START. Expect the resume at the same
 #         sub-path with the plan unchanged.
@@ -25,6 +27,8 @@ obstacles:
      height: 0.15}
 rtk:
   anchor: pivot
+  pivot_min_s: 2.0
+  ekf_sigma_m: 0.17
   events:
     - {t0: 0.0, dur: 12.0, kind: float}
 battery: {voltage: 25.0, percentage: 0.9}

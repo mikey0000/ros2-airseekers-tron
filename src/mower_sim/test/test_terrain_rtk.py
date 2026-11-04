@@ -179,3 +179,17 @@ def test_rtk_events_anchor_on_the_first_bladed_in_place_pivot():
     assert m.anchor_t is None and m.event_mode(3.2) == FIXED
     m.notify(3.5, False, True, 0.0, 0.5)           # held 0.5 s >= PIVOT_MIN_S
     assert m.anchor_t == 3.5 and m.event_mode(4.0) == FLOAT and m.event_mode(9.0) == FIXED
+
+
+def test_rtk_pivot_anchor_min_duration_and_ekf_sigma_param():
+    p = rtk_from_dict({'anchor': 'pivot', 'pivot_min_s': 2.0, 'ekf_sigma_m': 0.17,
+                       'events': [{'t0': 0.0, 'dur': 5, 'kind': 'float'}]})
+    assert p.ekf_sigma_m == 0.17 and p.pivot_min_s == 2.0
+    m = RtkModel(p)
+    for t in (0.0, 0.5, 1.0, 1.5):              # a 1.5 s pivot: too short
+        m.notify(t, False, True, 0.0, 0.5)
+    m.notify(1.6, False, True, 0.2, 0.0)
+    assert m.anchor_t is None
+    for t in (3.0, 4.0, 5.0):                   # a long one: anchored 2 s in
+        m.notify(t, False, True, 0.0, 0.5)
+    assert m.anchor_t == 5.0
