@@ -286,7 +286,8 @@ Paths below are under `third_party/mowglinext/gui/`.
   `/ros2_ws/maps/record_quality`; `web/src/utils/recordingQuality.ts` turns them into vertex
   circles (green RTK fixed, amber float, red worse) for items whose name is still in the map,
   only the non-fixed ones outside Edit Map.
-* **Charger moved.** Topic key `dockMoved` (`/mower_docking/dock_moved`, latched JSON);
+* **Charger moved.** Topic key `dockMoved` (`/mower_docking/dock_moved`, latched JSON; also in
+  `launch/mower.launch.py` FOXGLOVE_GUI_TOPICS, the third list a new GUI topic needs);
   `VisionDockCard` warns until the stored dock pose is within `warn_m` of where the robot docked
   (`utils/dockMoved.ts`).
 * **Logs history.** `pkg/api/rosout.go`: `RosoutRoutes` pins the `/rosout` subscription at
