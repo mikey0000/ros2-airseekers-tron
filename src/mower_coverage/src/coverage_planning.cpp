@@ -1079,6 +1079,16 @@ constexpr double kLayoutHoleKeepoutM = 0.40;  // edge layout (soft): base_link t
 constexpr double kLayoutMinRowM = 1.2;        // edge layout: shortest row driven
 constexpr double kLayoutMinFillLenM = 1.0;    // round 3-4: shorter fills between pivots overshot
 constexpr double kLayoutMinFillEfficiency = 0.35;
+// Edge layout pocket spurs (2026-11-05, the owner's "small V"): a pocket inside the inner lap
+// that no row and no fill pass of kLayoutMinFillLenM reaches (a narrow lobe, a corner the
+// laps round off) gets in-and-out passes instead: forward along a line of the row region
+// into the pocket, pivot about at its end (base_link row_end_inset in, the same sweep as a
+// row end), back out along the same line. Only a pocket the blade fits into (its opening by
+// half a swath) of at least kLayoutSpurMinPocketM2 gets one; a spur is at least
+// kLayoutSpurMinLenM long and adds kLayoutMinFillEfficiency of its strip.
+constexpr double kLayoutSpurMinLenM = 0.5;
+constexpr double kLayoutSpurMinPocketM2 = 0.03;
+constexpr double kSpurTurnBackM = 0.02;  // out leg starts this far back from the spur end
 constexpr int kBufQuadSegs = 8;
 // Rectangles of neighbouring swaths share an edge exactly; widen each side by
 // this so float noise does not leave zero-area slivers between them.
@@ -1338,9 +1348,12 @@ std::vector<Seg> clipLine(const Point2D& a, const Point2D& b, const OGRGeometry*
 // Best single fill pass for the uncovered polygon `gap`: candidate centerlines
 // along the gap's long axis (and the swath axis / its normal), at lateral
 // offsets that keep the footprint over the gap, clipped to `centre_region`
-// (where a centerline may run without the blade leaving the target).
+// (where a centerline may run without the blade leaving the target). Only candidates at
+// least min_len long that cover at least min_efficiency of their own strip with new area
+// compete (edge layout: kLayoutMinFillLenM / kLayoutMinFillEfficiency; 0 = any).
 bool bestFillPass(const OGRGeometry* gap, double hw, double swath_angle,
-                  const OGRGeometry* centre_region, Seg* best_seg, double* best_gain) {
+                  const OGRGeometry* centre_region, double min_len, double min_efficiency,
+                  Seg* best_seg, double* best_gain) {
   std::vector<double> angles;
   for (const OGRPolygon* p : polygonsOf(gap)) {
     angles.push_back(longAxisAngle(p));
@@ -1373,10 +1386,12 @@ bool bestFillPass(const OGRGeometry* gap, double hw, double swath_angle,
       const Point2D a{t0 * c - n * s, t0 * s + n * c};
       const Point2D b{t1 * c - n * s, t1 * s + n * c};
       for (const Seg& piece : clipLine(a, b, centre_region)) {
-        if (dist(piece.first, piece.second) < kMinFillLenM) continue;
+        const double len = dist(piece.first, piece.second);
+        if (len < std::max(kMinFillLenM, min_len)) continue;
         GeomPtr rect(segRect(piece.first, piece.second, hw));
         GeomPtr hit(rect->Intersection(gap));
         const double gain = geomArea(hit.get());
+        if (gain < min_efficiency * len * 2.0 * hw) continue;
         if (gain > *best_gain) {
           *best_gain = gain;
           *best_seg = piece;
@@ -1386,6 +1401,19 @@ bool bestFillPass(const OGRGeometry* gap, double hw, double swath_angle,
   }
   return *best_gain > 0.0;
 }
+
+// Area of the part of `g` a disc of radius r fits into (morphological opening).
+double openedArea(const OGRGeometry* g, double r) {
+  GeomPtr in(g->Buffer(-r, kBufQuadSegs));
+  if (!in || in->IsEmpty()) return 0.0;
+  GeomPtr out(in->Buffer(r, kBufQuadSegs));
+  return geomArea(out.get());
+}
+
+struct FillPass {
+  Seg seg;
+  bool spur = false;  // in-and-out: seg runs mouth -> end, driven in and back out
+};
 
 void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
               CoveragePlan* plan, const OGRGeometry* centre = nullptr) {
@@ -1397,26 +1425,39 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
   GeomPtr unc = evaluate(target, covered.get(), min_gap, plan);
   plan->coverage_fraction_before_fill = plan->coverage_fraction;
   if (!centre_region || geomArea(centre_region.get()) <= 0.0) return;
+  const bool layout = centre != nullptr;
+  GeomPtr line(target->Boundary());
+  size_t spurs = 0;
   for (int it = 0; it < kFillIterations && plan->gap_count > 0; ++it) {
-    std::vector<Seg> fills;
+    std::vector<FillPass> fills;
     for (const OGRPolygon* gp : polygonsOf(unc.get())) {
       if (gp->get_Area() < min_gap) continue;
       GeomPtr rest(gp->clone());
       for (int k = 0; k < kMaxPassesPerGap && geomArea(rest.get()) >= min_gap; ++k) {
         Seg seg;
         double gain = 0.0;
-        if (!bestFillPass(rest.get(), hw, plan->swath_angle_rad, centre_region.get(), &seg,
-                          &gain) ||
-            gain < 0.1 * min_gap) {
+        // edge layout: the best pass among those long and efficient enough (picking the
+        // best by gain first and then rejecting it gave up on pockets a shorter or
+        // differently aimed pass fills: owner_far's west lobe, 2026-11-05)
+        FillPass fp;
+        if (bestFillPass(rest.get(), hw, plan->swath_angle_rad, centre_region.get(),
+                         layout ? kLayoutMinFillLenM : 0.0,
+                         layout ? kLayoutMinFillEfficiency : 0.0, &seg, &gain) &&
+            gain >= 0.1 * min_gap) {
+          fp.seg = seg;
+        } else if (layout && openedArea(rest.get(), hw) >= kLayoutSpurMinPocketM2 &&
+                   bestFillPass(rest.get(), hw, plan->swath_angle_rad, centre_region.get(),
+                                kLayoutSpurMinLenM, kLayoutMinFillEfficiency, &seg, &gain) &&
+                   gain >= 0.1 * min_gap) {
+          // spur: its end is the end nearer the line (the pocket's dead end)
+          OGRPoint a(seg.first.first, seg.first.second), b(seg.second.first, seg.second.second);
+          if (a.Distance(line.get()) < b.Distance(line.get())) std::swap(seg.first, seg.second);
+          fp.seg = seg;
+          fp.spur = true;
+        } else {
           break;
         }
-        if (centre != nullptr) {
-          const double len = dist(seg.first, seg.second);
-          if (len < kLayoutMinFillLenM || gain < kLayoutMinFillEfficiency * len * op_width) {
-            break;
-          }
-        }
-        fills.push_back(seg);
+        fills.push_back(fp);
         GeomPtr rect(segRect(seg.first, seg.second, hw));
         rest.reset(rest->Difference(rect.get()));
       }
@@ -1424,23 +1465,13 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
     if (fills.empty()) break;
     // Append nearest-neighbour from the current last swath end, each pass
     // started at its nearer end.
-    Point2D cur = plan->swaths.empty() ? (plan->rings.empty() ? fills.front().first
+    Point2D cur = plan->swaths.empty() ? (plan->rings.empty() ? fills.front().seg.first
                                                               : plan->rings.back().back())
                                        : plan->swaths.back().second;
     std::vector<bool> used(fills.size(), false);
     auto* mp = new OGRMultiPolygon();
     addPolys(mp, covered.release());
-    for (size_t step = 0; step < fills.size(); ++step) {
-      size_t pick = 0;
-      double pd = std::numeric_limits<double>::max();
-      for (size_t i = 0; i < fills.size(); ++i) {
-        if (used[i]) continue;
-        const double d = std::min(dist(cur, fills[i].first), dist(cur, fills[i].second));
-        if (d < pd) { pd = d; pick = i; }
-      }
-      used[pick] = true;
-      Seg s = fills[pick];
-      if (dist(cur, s.second) < dist(cur, s.first)) std::swap(s.first, s.second);
+    auto append = [&](const Seg& s) {
       if (!plan->swaths.empty() && dist(plan->swaths.back().second, s.first) <= kTransitGapM) {
         addPolys(mp, polylineBuffer({plan->swaths.back().second, s.first}, hw));
       }
@@ -1448,6 +1479,35 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
       if (!plan->turns.empty()) plan->turns.push_back(SwathTurn{});
       addPolys(mp, segRect(s.first, s.second, hw));
       ++plan->fill_swaths;
+    };
+    for (size_t step = 0; step < fills.size(); ++step) {
+      size_t pick = 0;
+      double pd = std::numeric_limits<double>::max();
+      for (size_t i = 0; i < fills.size(); ++i) {
+        if (used[i]) continue;
+        const Seg& f = fills[i].seg;
+        // a spur is entered at its mouth only
+        const double d = fills[i].spur ? dist(cur, f.first)
+                                       : std::min(dist(cur, f.first), dist(cur, f.second));
+        if (d < pd) { pd = d; pick = i; }
+      }
+      used[pick] = true;
+      Seg s = fills[pick].seg;
+      if (fills[pick].spur) {
+        // in to the end, pivot about there, back out to the mouth (the out leg starts
+        // kSpurTurnBackM back so the planner path keeps two poses per swath)
+        const double len = dist(s.first, s.second);
+        const double f = kSpurTurnBackM / std::max(len, 1e-9);
+        append(s);
+        append({{s.second.first + f * (s.first.first - s.second.first),
+                 s.second.second + f * (s.first.second - s.second.second)},
+                s.first});
+        ++spurs;
+        cur = s.first;
+        continue;
+      }
+      if (dist(cur, s.second) < dist(cur, s.first)) std::swap(s.first, s.second);
+      append(s);
       cur = s.second;
     }
     covered = unionAll(mp);
@@ -1463,8 +1523,9 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
   }
   if (plan->fill_swaths > 0) {
     char buf[160];
-    std::snprintf(buf, sizeof(buf), "gap fill: %zu pass(es), coverage %.4f -> %.4f",
-                  plan->fill_swaths, plan->coverage_fraction_before_fill,
+    std::snprintf(buf, sizeof(buf),
+                  "gap fill: %zu pass(es) (%zu pocket spur(s)), coverage %.4f -> %.4f",
+                  plan->fill_swaths, spurs, plan->coverage_fraction_before_fill,
                   plan->coverage_fraction);
     plan->drops.push_back(buf);
   }

@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -2247,4 +2249,167 @@ TEST(CoverageRowLink, SnakePlanReplacesTransits) {
   // auto with turn_mode auto (edge band enabled) links the same way snake does
   const auto autob = rowLinkPlan(RowLinkMode::kAuto, TurnMode::kAuto);
   EXPECT_GT(autob.snake_links, 0u);
+}
+
+// ---------------------------------------------------------------------------
+// Edge layout pocket spurs (2026-11-05, field report: "the third perimeter mow isn't great on
+// that corner ... a small V to cover the gap"). A pocket inside the inner lap that no row
+// (>= 1.2 m) and no fill pass (>= 1.0 m) reaches gets in-and-out passes along a line of the
+// row region: forward to its end, pivot about there (base_link row_end_inset in, the sweep
+// of a row end), back out. The gaps are the planner's own model (base_link-centred
+// op_width strips); "blade-fit" is the part of a gap a swath-wide disc fits into (its
+// opening by half a swath, as the mission's missed-patch report).
+// ---------------------------------------------------------------------------
+namespace {
+
+std::unique_ptr<OGRGeometry> ringPolygon(const std::vector<Point2D>& ring) {
+  auto poly = std::make_unique<OGRPolygon>();
+  auto* r = new OGRLinearRing();
+  for (const auto& p : ring) r->addPoint(p.first, p.second);
+  r->closeRings();
+  poly->addRingDirectly(r);
+  if (!poly->IsValid()) return std::unique_ptr<OGRGeometry>(poly->Buffer(0.0));
+  return poly;
+}
+
+// largest blade-fit piece of the plan's gaps
+double maxBladeFitGap(const CoveragePlan& plan, double hw) {
+  double best = 0.0;
+  for (const auto& g : plan.gaps) {
+    auto poly = ringPolygon(g);
+    std::unique_ptr<OGRGeometry> in(poly->Buffer(-hw, 8));
+    if (!in || in->IsEmpty()) continue;
+    std::unique_ptr<OGRGeometry> open(in->Buffer(hw, 8));
+    if (auto* sf = dynamic_cast<const OGRSurface*>(open.get())) best = std::max(best, sf->get_Area());
+    else if (auto* ms = dynamic_cast<const OGRMultiSurface*>(open.get())) best = std::max(best, ms->get_Area());
+  }
+  return best;
+}
+
+struct Spur {
+  Point2D mouth, end;
+};
+
+// in leg (mouth -> end) directly followed by its out leg (just short of end -> mouth)
+std::vector<Spur> spursOf(const CoveragePlan& plan) {
+  std::vector<Spur> out;
+  for (size_t i = 1; i < plan.swaths.size(); ++i) {
+    const auto& a = plan.swaths[i - 1];
+    const auto& b = plan.swaths[i];
+    if (std::hypot(a.second.first - b.first.first, a.second.second - b.first.second) < 0.03 &&
+        std::hypot(a.first.first - b.second.first, a.first.second - b.second.second) < 1e-6) {
+      out.push_back({a.first, a.second});
+    }
+  }
+  return out;
+}
+
+double distToOutline(const Point2D& p, const std::vector<Point2D>& poly) {
+  double d = std::numeric_limits<double>::max();
+  for (size_t i = 0; i < poly.size(); ++i) {
+    d = std::min(d, pointSegDist(p, poly[i], poly[(i + 1) % poly.size()]));
+  }
+  return d;
+}
+
+// how far the body outline (base_link p, heading yaw) reaches outside the recorded line
+double bodyOutside(const Point2D& p, double yaw, const std::vector<Point2D>& poly) {
+  const double c = std::cos(yaw), s = std::sin(yaw);
+  double worst = 0.0;
+  for (const auto& [bx, by] : std::vector<Point2D>{{kBodyFront, kBodyHalf}, {kBodyFront, -kBodyHalf},
+                                                    {-kBodyRear, kBodyHalf}, {-kBodyRear, -kBodyHalf},
+                                                    {kBodyFront, 0.0}}) {
+    const Point2D q{p.first + bx * c - by * s, p.second + bx * s + by * c};
+    if (!pointInPolygon(q, poly)) worst = std::max(worst, distToOutline(q, poly));
+  }
+  return worst;
+}
+
+CoveragePlan planSoft(const std::vector<Point2D>& area, double angle_deg) {
+  mower_coverage::RouteOptions route;
+  EXPECT_TRUE(mower_coverage::parseRouteOrder("racetrack", &route.order));
+  route.min_turn_radius = 0.5;
+  route.min_drivable_turn_radius = 0.40;
+  route.fill_gaps = true;
+  route.min_gap_area_m2 = 0.01;
+  route.target_inset = 0.05;
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &route));
+  return mower_coverage::planCoverage(
+      field(area), 0.18, 0.20, 2, 0.0, angle_deg >= 0.0 ? angle_deg * M_PI / 180.0 : -1.0,
+      0.15, mower_coverage::PathMode::kZigzag, true, route);
+}
+
+// Every spur: its end (the pivot about) at least the row-end inset inside the line, the body
+// at the end of the in leg and through the whole about-turn (either way round, 5 deg steps)
+// at most the soft planning limit (0.26, path_conditioning_body_limit_soft_m) out; the side
+// limit 0.35 of the mission's soft body boundary then holds too.
+void expectSpursKeepTheBodyIn(const CoveragePlan& plan, const std::vector<Point2D>& area,
+                              const std::string& what) {
+  for (const Spur& sp : spursOf(plan)) {
+    EXPECT_TRUE(pointInPolygon(sp.end, area)) << what;
+    EXPECT_GE(distToOutline(sp.end, area), 0.45 - 0.01) << what;
+    EXPECT_GE(distToOutline(sp.mouth, area), 0.45 - 0.01) << what;
+    const double yaw = std::atan2(sp.end.second - sp.mouth.second, sp.end.first - sp.mouth.first);
+    double worst = 0.0;
+    for (int k = -36; k <= 36; ++k) {
+      worst = std::max(worst, bodyOutside(sp.end, yaw + k * 5.0 * M_PI / 180.0, area));
+    }
+    EXPECT_LE(worst, 0.26) << what << ": spur end (" << sp.end.first << ", " << sp.end.second
+                           << ") about-turn sweeps the body " << worst << " m out";
+    for (double t = 0.0; t <= 1.0; t += 0.05) {
+      const Point2D q{sp.mouth.first + t * (sp.end.first - sp.mouth.first),
+                      sp.mouth.second + t * (sp.end.second - sp.mouth.second)};
+      EXPECT_LE(bodyOutside(q, yaw, area), 0.26) << what;
+    }
+  }
+}
+
+// owner_far Area 6 (mower_sim/worlds/owner_far_areas.dat area_5) and heart (area_2), the
+// outlines as the mission sends them (geometry.clean_area_ring 0.05 / 0.10)
+const std::vector<Point2D> kOwnerFarArea6 = {
+    {-28.7605, -15.2584}, {-29.3873, -14.8787}, {-30.6457, -13.8618}, {-31.1302, -13.2322},
+    {-31.6595, -11.7178}, {-32.3820, -7.9913}, {-32.6190, -7.6782}, {-32.8154, -7.5605},
+    {-33.4688, -7.4741}, {-33.7168, -7.3247}, {-33.8989, -7.0109}, {-33.9020, -6.5157},
+    {-33.8181, -6.2476}, {-33.3360, -5.8581}, {-31.2334, -5.5510}, {-28.2968, -4.4836},
+    {-27.7254, -4.1040}, {-27.2757, -3.4924}, {-27.2737, -2.7078}, {-27.1200, -2.2825},
+    {-26.5858, -2.0640}, {-25.9764, -2.0497}, {-25.7660, -2.1683}, {-25.2324, -2.9286},
+    {-22.9151, -10.2418}, {-22.4132, -12.3982}, {-22.4910, -12.6720}, {-22.7261, -12.9187},
+    {-23.5095, -13.2393}, {-24.2669, -13.7000}, {-24.7724, -14.4185}, {-25.2308, -14.8359},
+    {-26.2406, -15.1237}, {-26.9889, -15.5726}, {-27.4885, -15.7474}, {-27.8459, -15.6639}};
+const std::vector<Point2D> kOwnerFarHeart = {
+    {-16.2705, -10.0596}, {-15.7677, -9.8307}, {-15.4589, -9.4958}, {-14.6424, -8.1163},
+    {-14.3377, -7.2126}, {-14.9635, -6.7449}, {-16.4929, -5.9724}, {-16.9337, -5.8576},
+    {-17.5774, -5.8837}, {-18.2301, -6.1566}, {-18.3580, -6.2756}, {-18.6008, -6.8354},
+    {-18.5878, -7.1572}, {-18.3368, -7.7349}, {-18.2179, -7.8629}, {-17.5611, -8.1586},
+    {-17.5391, -8.2336}, {-17.9319, -8.8374}, {-17.9718, -9.2562}, {-17.8618, -9.6310},
+    {-17.4829, -10.0898}, {-16.9451, -10.2576}, {-16.3234, -10.1565}};
+
+}  // namespace
+
+// A 1.8 m lobe off the west side, rows across the field (90 deg): the rows reach into the
+// lobe but leave pockets beside the inner lap that no fill pass of 1.0 m fits. Master
+// (b4437d0): largest blade-fit gap 0.197 m2, 7 fill passes. Spurs: none left.
+TEST(EdgeLayoutSpurs, LobePocketsGetSpurs) {
+  const std::vector<Point2D> area = {{0, 0}, {8, 0}, {8, 6}, {0, 6},
+                                     {0, 4.0}, {-1.8, 3.6}, {-1.8, 2.4}, {0, 2.0}};
+  const CoveragePlan plan = planSoft(area, 90.0);
+  EXPECT_GT(spursOf(plan).size(), 0u);
+  EXPECT_LT(maxBladeFitGap(plan, 0.09), 0.03);
+  expectSpursKeepTheBodyIn(plan, area, "lobe");
+}
+
+// The owner's west lobe (field 2026-11-05: uncut 0.275 m2 triangle in "further backyard
+// lawn", sim gate ground truth 0.633 m2 on owner_far): rows are dropped there (< 1.2 m) and
+// no fill pass of 1.0 m fits. Master (b4437d0): plan gaps 1.447 m2, largest blade-fit 0.812 m2;
+// heart 0.487 / 0.158 m2.
+TEST(EdgeLayoutSpurs, OwnerFarPocketsShrink) {
+  const CoveragePlan a6 = planSoft(kOwnerFarArea6, -1.0);
+  EXPECT_GT(spursOf(a6).size(), 0u);
+  EXPECT_LT(a6.gap_area_m2, 1.0);
+  EXPECT_LT(maxBladeFitGap(a6, 0.09), 0.15);
+  expectSpursKeepTheBodyIn(a6, kOwnerFarArea6, "owner_far Area 6");
+  const CoveragePlan heart = planSoft(kOwnerFarHeart, -1.0);
+  EXPECT_LT(heart.gap_area_m2, 0.2);
+  EXPECT_LT(maxBladeFitGap(heart, 0.09), 0.03);
+  expectSpursKeepTheBodyIn(heart, kOwnerFarHeart, "owner_far heart");
 }
