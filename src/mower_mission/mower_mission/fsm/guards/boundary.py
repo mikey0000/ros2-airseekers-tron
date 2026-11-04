@@ -772,7 +772,7 @@ class BoundaryGuardMixin:
             self._log('warn', 'boundary: the pivot toward the transit still nears the limit '
                               'after %d resume straights: transit anyway' % k['resume_in'])
             return False
-        v = min(abs(float(p.hard_boundary_back_speed_mps)), 0.10)
+        v = abs(float(p.slow_maneuver_mps))
         dist = float(p.boundary_recover_resume_in_m)
         motions = {'forward': (v, 0.0, dist / v), 'reverse': (-v, 0.0, dist / v)}
         rows = bbody.plan_recovery(pose, self._region(), motions,

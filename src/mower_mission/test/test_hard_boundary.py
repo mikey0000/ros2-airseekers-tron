@@ -421,3 +421,22 @@ def test_outside_reading_after_re_entry_restarts_the_extra():
     drive_east(h, 1.95)
     run_retrace_with(h, out_of)
     assert h.name == 'TRANSIT' and h.fsm.inputs.pose[0] <= 1.70 + 1e-6
+
+
+def test_resume_in_straight_uses_slow_maneuver_speed():
+    """fa723cd retired hard_boundary_back_speed_mps for slow_maneuver_mps but missed this
+    read: after a boundary recovery the resume-straight planner raised AttributeError in the
+    tick (field 2026-11-04 23:30, sim 2026-11-04/05)."""
+    from test_mission_fsm import Harness, line, plan, start_until_planning, square
+    from mower_mission import mission_fsm as f
+    h = Harness()
+    h.areas = [square(0, 0, 6)]
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(1.0, 1.0, 5.0, 1.0, 41)]))
+    pose = (3.0, 0.05, 0.0)                     # just inside the south line
+    h.fsm.inputs.pose = pose
+    h.fsm._hb = {'resume_in': 0, 'mode': None, 'phase': 'MOWING'}
+    h.fsm._hb_resume_in_next(pose)              # raised AttributeError on the old code
+    mv = h.fsm._hb.get('mv')
+    if mv is not None:
+        assert abs(abs(mv['v']) - h.fsm.p.slow_maneuver_mps) < 1e-9
