@@ -381,17 +381,21 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
         return None
     if max(need) > max_offset_m:
         return None
-    if ramp_per_m > 0.0:
-        ramp_m = max(ramp_m, ramp_per_m * max(need))
+    # the return (after a disc) may be longer than the way in: the detour starts at the
+    # robot (i0), so a long entry ramp would put its first pose far beside the robot (sim
+    # 2026-11-05: both detours with a symmetric 2.9 m ramp aborted at once)
+    ramp_out = max(ramp_m, ramp_per_m * max(need)) if ramp_per_m > 0.0 else ramp_m
     # ramp: offset(s) = max over k of need[k] * cosine window around cum[k]
     off = [0.0] * len(seg)
     for k in range(len(seg)):
         for j in range(len(seg)):
             if need[j] <= 0.0:
                 continue
-            ds = abs(cum[k] - cum[j])
-            if ds <= ramp_m:
-                off[k] = max(off[k], need[j] * 0.5 * (1.0 + math.cos(math.pi * ds / ramp_m)))
+            ds = cum[k] - cum[j]
+            r = ramp_out if ds > 0.0 else ramp_m
+            ds = abs(ds)
+            if ds <= r:
+                off[k] = max(off[k], need[j] * 0.5 * (1.0 + math.cos(math.pi * ds / r)))
     last = max(k for k in range(len(seg)) if off[k] > 1e-3)
     end = min(len(seg) - 1, last + 1)
     if end_offset_m > 0.0:

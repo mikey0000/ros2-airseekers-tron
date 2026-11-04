@@ -705,8 +705,12 @@ def test_deep_costmap_detour_rejoins_the_lap_at_a_shallow_angle():
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     poses = h.goal(f.ACT_FOLLOW)['poses']
     assert max(q[1] for q in poses) >= 0.9 + 0.071 + 0.235 + 0.10 - 0.03
+    # the way in keeps the plain 1.2 m ramp (~0.4 m beside the robot here); a symmetric
+    # long ramp started ~1.2 m beside it (sim 2026-11-05: both such detours aborted)
+    assert abs(poses[0][1]) < 0.6, poses[0]
+    pk = max(range(len(poses)), key=lambda k: poses[k][1])
     steep = max(abs(math.atan2(b[1] - a[1], b[0] - a[0]))
-                for a, b in zip(poses[:-1], poses[1:]) if b[0] - a[0] > 1e-6)
+                for a, b in zip(poses[pk:-1], poses[pk + 1:]) if b[0] - a[0] > 1e-6)
     assert math.degrees(steep) <= 32.0, math.degrees(steep)
     # ends boundary_recover_margin_m inside the lap, then merges tangentially (sim
     # 2026-11-05: a rejoin straight onto the line swung the rear 0.35 m out)
