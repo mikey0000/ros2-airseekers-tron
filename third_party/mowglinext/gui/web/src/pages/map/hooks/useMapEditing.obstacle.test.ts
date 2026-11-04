@@ -21,8 +21,8 @@ function drawn(coords: number[][], id = 'draw-1'): Feature<Polygon> {
     return {type: 'Feature', id, properties: {}, geometry: {type: 'Polygon', coordinates: [coords]}};
 }
 
-function setup(initial: Record<string, MowingFeature>) {
-    const draw = {delete: vi.fn(), getMode: () => 'simple_select', getSelectedIds: () => [], trash: vi.fn()};
+function setup(initial: Record<string, MowingFeature>, drawStore: Record<string, Feature> = {}) {
+    const draw = {delete: vi.fn(), get: (id: string) => drawStore[id], getMode: () => 'simple_select', getSelectedIds: () => [], trash: vi.fn()};
     const notification = {info: vi.fn(), warning: vi.fn(), error: vi.fn(), success: vi.fn()};
     const hook = renderHook(() => {
         const [features, setFeatures] = useState<Record<string, MowingFeature>>(initial);
@@ -50,6 +50,36 @@ describe('adding a manual obstacle', () => {
         expect(obs[0].getMowingArea().id).toBe(area.id);
         expect(obs[0].getInfo().source).toBe(0);
         expect(hook.result.current.editing.modalOpen).toBe(false);
+    });
+
+    it('keeps the name typed in the new-zone panel (F12)', () => {
+        const area = lawn();
+        const {hook} = setup({[area.id]: area});
+        act(() => hook.result.current.editing.onCreate({features: [drawn(ring(0, 0, 0.0001))]}));
+        act(() => hook.result.current.editing.setNewAreaType('obstacle'));
+        act(() => hook.result.current.editing.setNewAreaName('  Sandpit '));
+        act(() => hook.result.current.editing.handleSaveNewArea());
+        expect(obstacles(hook.result.current.features)[0].getInfo().name).toBe('Sandpit');
+    });
+
+    it('saves the polygon as reshaped while the panel was open', () => {
+        const area = lawn();
+        const reshaped = drawn(ring(0, 0, 0.0002));
+        const {hook} = setup({[area.id]: area}, {'draw-1': reshaped});
+        act(() => hook.result.current.editing.onCreate({features: [drawn(ring(0, 0, 0.0001))]}));
+        act(() => hook.result.current.editing.setNewAreaType('obstacle'));
+        act(() => hook.result.current.editing.handleSaveNewArea());
+        expect(obstacles(hook.result.current.features)[0].geometry).toEqual(reshaped.geometry);
+    });
+
+    it('names a drawn navigation area too', () => {
+        const {hook} = setup({});
+        act(() => hook.result.current.editing.onCreate({features: [drawn(ring(0, 0, 0.0001))]}));
+        act(() => hook.result.current.editing.setNewAreaType('navigation'));
+        act(() => hook.result.current.editing.setNewAreaName('Gate'));
+        act(() => hook.result.current.editing.handleSaveNewArea());
+        const navs = Object.values(hook.result.current.features).filter((f): f is NavigationFeature => f instanceof NavigationFeature);
+        expect(navs.map((f) => f.getName())).toEqual(['Gate']);
     });
 
     it('uses the LATEST features, not the ones captured when the type was picked (stale closure)', () => {

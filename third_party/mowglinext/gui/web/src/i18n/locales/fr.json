@@ -1702,7 +1702,10 @@
     "areaTypeNavigation": "Zone de navigation",
     "areaTypeObstacle": "Zone interdite",
     "areaNameOptional": "Nom de la zone (facultatif)",
-    "areaNamePlaceholder": "ex. Pelouse devant"
+    "areaNamePlaceholder": "ex. Pelouse devant",
+    "nameOptional": "Nom (facultatif)",
+    "navigationNamePlaceholder": "ex. Portillon",
+    "noGoNamePlaceholder": "ex. Bac à sable"
   },
   "mapImportOpenMower": {
     "title": "Importer une carte OpenMower",
@@ -4469,7 +4472,12 @@
     "extendToDockHint": "Le chemin s'arrête au point d'approche de la station (0,8 m devant le chargeur). Activez pour prolonger la bande jusqu'au chargeur.",
     "notConnected": "Non relié : une extrémité ne touche ni une zone ni la station, le robot ne peut donc pas utiliser ce chemin. Placez l'extrémité sur le bord d'une zone (aimantation à 0,5 m).",
     "editHint": "Faites glisser les sommets de la ligne sur la carte pour la modifier (cliquez d'abord sur la ligne si les sommets sont masqués). Les chemins servent uniquement au déplacement : jamais tondus. Enregistrez ensuite la carte.",
-    "dockPathName": "Chemin station"
+    "dockPathName": "Chemin station",
+    "sheetTitle": "Chemin",
+    "sheetHint": "Passage seulement : le robot l’emprunte entre les zones et la base, sans jamais le tondre.",
+    "lengthLabel": "Longueur",
+    "metres": "{{value}} m",
+    "widthShort": "Largeur"
   },
   "drivePip": {
     "camera": "Caméra",

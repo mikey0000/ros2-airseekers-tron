@@ -30,14 +30,19 @@ describe('NewAreaModal', () => {
         expect(screen.getByPlaceholderText(en.mapNewArea.areaNamePlaceholder)).toBeInTheDocument();
     });
 
-    it('hides name input for navigation type', () => {
-        render(<NewAreaModal {...defaultProps} areaType="navigation" />);
-        expect(screen.queryByPlaceholderText(en.mapNewArea.areaNamePlaceholder)).not.toBeInTheDocument();
+    it('keeps the name input for navigation and no-go zones (F12)', () => {
+        const {rerender} = render(<NewAreaModal {...defaultProps} areaType="navigation" />);
+        expect(screen.getByPlaceholderText(en.mapNewArea.navigationNamePlaceholder)).toBeInTheDocument();
+        rerender(<NewAreaModal {...defaultProps} areaType="obstacle" />);
+        expect(screen.getByPlaceholderText(en.mapNewArea.noGoNamePlaceholder)).toBeInTheDocument();
     });
 
-    it('hides name input for obstacle type', () => {
-        render(<NewAreaModal {...defaultProps} areaType="obstacle" />);
-        expect(screen.queryByPlaceholderText(en.mapNewArea.areaNamePlaceholder)).not.toBeInTheDocument();
+    it('is a corner panel, or a bottom sheet on phones, not a centred modal', () => {
+        const {rerender} = render(<NewAreaModal {...defaultProps} />);
+        expect(screen.getByRole('dialog')).toHaveAttribute('data-layout', 'panel');
+        expect(document.querySelector('.ant-modal-mask')).toBeNull();
+        rerender(<NewAreaModal {...defaultProps} mobile />);
+        expect(screen.getByRole('dialog')).toHaveAttribute('data-layout', 'sheet');
     });
 
     it('calls onSave when Add area clicked', async () => {

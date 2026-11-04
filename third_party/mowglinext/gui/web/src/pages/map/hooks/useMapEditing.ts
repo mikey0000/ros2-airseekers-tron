@@ -404,7 +404,7 @@ export function useMapEditing({
         setModalOpen(false);
     }
 
-    function addObstacle(new_feature: Feature<Polygon> | undefined = undefined) {
+    function addObstacle(new_feature: Feature<Polygon> | undefined = undefined, name = "") {
         const f = (new_feature ?? currentFeature) as Feature<Polygon> | undefined;
         if (f == undefined || f.geometry?.type !== "Polygon") return;
         const ring = f.geometry.coordinates[0] ?? [];
@@ -428,7 +428,7 @@ export function useMapEditing({
                 const area = findObstacleParent(ring, currFeatures);
                 if (!area) return null;
                 const obstacle = new ObstacleFeature(id, area);
-                obstacle.setInfo({source: OBSTACLE_SOURCE_USER});
+                obstacle.setInfo({source: OBSTACLE_SOURCE_USER, name: name.trim()});
                 return obstacle;
             },
             f
@@ -436,12 +436,13 @@ export function useMapEditing({
     }
 
     function addNavigationArea(
-        new_feature: Feature<Polygon> | undefined = undefined
+        new_feature: Feature<Polygon> | undefined = undefined,
+        name = ""
     ) {
         addArea<NavigationFeature>(
             "navigation",
             "area",
-            (id) => new NavigationFeature(id),
+            (id) => new NavigationFeature(id).setName(name.trim()),
             new_feature
         );
     }
@@ -1096,6 +1097,12 @@ export function useMapEditing({
     // Modal handlers
     // -----------------------------------------------------------------------
     const handleSaveNewArea = useCallback(() => {
+        // The new-item panel does not block the map (F12), so the drawn
+        // polygon may have been reshaped since it was created: take the draw
+        // store's current copy when it has one.
+        const reshaped = currentFeature?.id != null
+            ? drawRef.current?.get(String(currentFeature.id)) : undefined;
+        const drawnFeature = (reshaped?.geometry?.type === "Polygon" ? reshaped : currentFeature) as Feature<Polygon> | undefined;
         switch (newAreaType) {
             case "workarea":
                 setFeatures((currFeatures) => {
@@ -1105,12 +1112,10 @@ export function useMapEditing({
                         mowingAreas.length + 1
                     );
                     if (
-                        currentFeature &&
-                        currentFeature.geometry.type === "Polygon"
+                        drawnFeature &&
+                        drawnFeature.geometry.type === "Polygon"
                     ) {
-                        nfeat.setGeometry(
-                            (currentFeature as Feature<Polygon>).geometry
-                        );
+                        nfeat.setGeometry(drawnFeature.geometry);
                     }
                     if (newAreaName.trim()) {
                         nfeat.setName(newAreaName.trim());
@@ -1121,10 +1126,10 @@ export function useMapEditing({
                 setModalOpen(false);
                 break;
             case "navigation":
-                addNavigationArea();
+                addNavigationArea(drawnFeature, newAreaName);
                 break;
             case "obstacle":
-                addObstacle();
+                addObstacle(drawnFeature, newAreaName);
                 break;
         }
     // addNavigationArea / addObstacle capture state via closure — intentional

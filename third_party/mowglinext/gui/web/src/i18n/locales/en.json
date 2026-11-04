@@ -1706,7 +1706,10 @@
     "areaTypeNavigation": "Navigation Area",
     "areaTypeObstacle": "No-go zone",
     "areaNameOptional": "Area name (optional)",
-    "areaNamePlaceholder": "e.g. Front lawn"
+    "areaNamePlaceholder": "e.g. Front lawn",
+    "nameOptional": "Name (optional)",
+    "navigationNamePlaceholder": "e.g. Side gate",
+    "noGoNamePlaceholder": "e.g. Sandpit"
   },
   "mapImportOpenMower": {
     "title": "Import OpenMower map",
@@ -4469,7 +4472,12 @@
     "extendToDockHint": "The path ends at the dock approach point (0.8 m in front of the charger). Turn on to run the band onto the charger too.",
     "notConnected": "Not connected: an end does not touch an area or the dock, so the robot cannot use this path to get anywhere. Move the end onto an area edge (it snaps within 0.5 m).",
     "editHint": "Drag the line's vertices on the map to reshape it (click the line first if the vertices are hidden). Paths are drive-only: never mowed. Save the map afterwards.",
-    "dockPathName": "Dock path"
+    "dockPathName": "Dock path",
+    "sheetTitle": "Path",
+    "sheetHint": "Drive-only: the robot drives along it between areas and the dock, and never mows it.",
+    "lengthLabel": "Length",
+    "metres": "{{value}} m",
+    "widthShort": "Width"
   },
   "drivePip": {
     "camera": "Camera",

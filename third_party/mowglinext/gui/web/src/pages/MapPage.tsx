@@ -11,7 +11,6 @@ import {MapArea, Map as MapType} from "../types/ros.ts";
 import type {AreaChannel, BoundaryLineMode, MapWithBoundaryLines, MapWithChannels} from "../types/map.ts";
 import DrawControl from "../components/DrawControl.tsx";
 import Map, {Layer, Popup, Source} from 'react-map-gl/mapbox';
-import turfCentroid from "@turf/centroid";
 import type {Map as MapboxMap} from 'mapbox-gl';
 import type {Feature} from 'geojson';
 import {FeatureCollection, Position} from "geojson";
@@ -61,6 +60,8 @@ import {useBoundaryLineTool} from "./map/hooks/useBoundaryLineTool.ts";
 import {BoundaryLineDrawPanel} from "./map/components/BoundaryLineDrawPanel.tsx";
 import {BoundaryLineSheet} from "./map/components/BoundaryLineSheet.tsx";
 import {NoGoZoneSheet} from "./map/components/NoGoZoneSheet.tsx";
+import {PathSheet} from "./map/components/PathSheet.tsx";
+import {navigationLabelPoint, pathLengthM} from "./map/utils/pathLabel.ts";
 import {MapImageMarker} from "./map/components/MapImageMarker.tsx";
 import {markerCorners, selectDockMarker} from "../utils/mapMarker.ts";
 import {useRobotProfile} from "../hooks/useRobotProfile.ts";
@@ -709,18 +710,29 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         return {type: "FeatureCollection", features};
     }, [liveStretches, track, offsetX, offsetY, datum]);
 
-    // Labels for navigation areas / paths, kept out of labelsCollection so
-    // they never show up as mowable areas (mowingAreas is derived from it).
+    // Labels for navigation areas / paths and no-go zones, kept out of
+    // labelsCollection so they never show up as mowable areas (mowingAreas is
+    // derived from it). No-go zones are labelled with their name, or "No-go
+    // zone N" (F12: they came back unlabelled after the add).
     const navLabelsCollection = useMemo<FeatureCollection>(() => {
         const navs = Object.values(features).filter((f): f is NavigationFeature => f instanceof NavigationFeature);
+        const noGos = Object.values(features).filter((f): f is ObstacleFeature => f instanceof ObstacleFeature);
         return {
             type: "FeatureCollection",
-            features: navs.flatMap((f, i) => {
+            features: [...noGos.flatMap((f, i): Feature[] => {
+                const at = navigationLabelPoint(f.geometry, null);
+                if (!at) return [];
+                return [{type: "Feature", properties: {title: f.getInfo().name || t('mapAreasList.obstacleArea', {index: i + 1})},
+                    geometry: {type: "Point", coordinates: at}}];
+            }), ...navs.flatMap((f, i): Feature[] => {
                 if (!f.geometry?.coordinates?.[0]?.length) return [];
-                const c = turfCentroid(f);
-                c.properties = {title: f.getName() || t('mapAreasList.navigationArea', {index: i + 1})};
-                return [c];
-            }),
+                // Middle of the centreline / a point on the polygon, not the
+                // centroid (F14: off a bent corridor, often on its neighbour).
+                const at = navigationLabelPoint(f.geometry, f.getChannel()?.points ?? null);
+                if (!at) return [];
+                return [{type: "Feature", properties: {title: f.getName() || t('mapAreasList.navigationArea', {index: i + 1})},
+                    geometry: {type: "Point", coordinates: at}}];
+            })],
         };
     }, [features, t]);
 
@@ -1010,9 +1022,6 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // "Mow settings" panel, and Start opens the Start sheet.
     const areaSettings = useAreaSettingsSupport();
     const [settingsArea, setSettingsArea] = useState<{index: number | "defaults"; name?: string; areaName?: string} | null>(null);
-    // Navigation area / path selected in view mode: the settings panel opens
-    // disabled with a hint, since drive-only areas are never mowed.
-    const [settingsNavName, setSettingsNavName] = useState<string | null>(null);
     const [startSheet, setStartSheet] = useState<{open: boolean; selection: StartSelection; mode?: "resume" | "fresh"}>({open: false, selection: "all"});
     const resumeAvailable = useCoverageResumeAvailable();
     // STUCK_NEEDS_HELP: Resume only after Reset, same as the fault banner.
@@ -1026,9 +1035,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // highlight. null = nothing selected.
     const [selectedMapItem, setSelectedMapItem] = useState<MapItem | null>(null);
     const openAreaSettingsForFeature = useCallback((f: MowingFeature | undefined) => {
+        // A path / navigation area opens the path sheet (F14), never a mow sheet.
         if (f instanceof NavigationFeature) {
-            const navIdx = Object.values(features).filter((x) => x instanceof NavigationFeature).indexOf(f) + 1;
-            setSettingsNavName(f.getName() || t('mapAreasList.navigationArea', {index: navIdx}));
+            setSettingsArea(null);
             setSelectedMapItem({kind: "nav", id: f.id});
             return true;
         }
@@ -1047,7 +1056,6 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         // A no-go zone row opens the no-go sheet, never its area's mow sheet.
         if (features[id] instanceof ObstacleFeature) {
             setSettingsArea(null);
-            setSettingsNavName(null);
             setSelectedMapItem({kind: "nogo", id});
             return;
         }
@@ -1064,6 +1072,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const selectedNoGo = selectedMapItem?.kind === "nogo" && selectedFeature instanceof ObstacleFeature
         ? selectedFeature : null;
     const selectedBoundary = selectedMapItem?.kind === "boundary" && selectedFeature instanceof BoundaryLineFeature
+        ? selectedFeature : null;
+    const selectedNav = selectedMapItem?.kind === "nav" && selectedFeature instanceof NavigationFeature
         ? selectedFeature : null;
     const closeMapItemSheet = useCallback(() => setSelectedMapItem(null), []);
     const selectedGeometry = selectedFeature?.geometry;
@@ -1114,6 +1124,34 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // "Edit vertices": open the editor and put that zone in direct_select once
     // DrawControl has switched to edit mode.
     const [pendingVertexEdit, setPendingVertexEdit] = useState<string | null>(null);
+    const pathSheet = useMemo(() => {
+        if (!selectedNav) return null;
+        const navIdx = Object.values(features).filter((x) => x instanceof NavigationFeature).indexOf(selectedNav) + 1;
+        const ch = selectedNav.getChannel();
+        return {
+            title: selectedNav.getName() || t('mapAreasList.navigationArea', {index: navIdx}),
+            widthM: ch ? ch.widthM : null,
+            lengthM: ch ? pathLengthM(ch.points, offsetX, offsetY, datum) : null,
+            editable: selectedNav.isPath(),
+        };
+    }, [selectedNav, features, t, offsetX, offsetY, datum]);
+    // Edit path from the sheet: open the editor, then the path panel on it.
+    const [pendingPathEditId, setPendingPathEditId] = useState<string | null>(null);
+    const editSelectedPath = () => {
+        if (!selectedNav) return;
+        setPendingPathEditId(selectedNav.id as string);
+        setSelectedMapItem(null);
+        if (!editMap) handleEditMap();
+    };
+    useEffect(() => {
+        if (!editMap || !pendingPathEditId) return;
+        const f = features[pendingPathEditId];
+        const timer = setTimeout(() => {
+            if (f instanceof NavigationFeature && f.isPath()) editPath(f);
+            setPendingPathEditId(null);
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [editMap, pendingPathEditId, features, editPath]);
     const editSelectedNoGoVertices = () => {
         if (!selectedNoGo) return;
         const id = selectedNoGo.id;
@@ -1260,9 +1298,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         }
         // Most specific item first (mapHitTest): a no-go zone never opens its
         // containing mowing area's sheet.
-        if (hit?.kind === "boundary" || hit?.kind === "nogo") {
+        if (hit?.kind === "boundary" || hit?.kind === "nogo" || hit?.kind === "nav") {
             setSettingsArea(null);
-            setSettingsNavName(null);
             setSelectedMapItem(hit);
             return;
         }
@@ -1648,6 +1685,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 onAreaNameChange={setNewAreaName}
                 onSave={handleSaveNewArea}
                 onCancel={deleteFeature}
+                mobile={isMobile}
             />
             <PathModal
                 open={pathTool.editing}
@@ -1690,6 +1728,16 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         setSelectedMapItem(null);
                         openAreaSettingsForFeature(noGoSheet.parent);
                     } : undefined}
+                />
+            )}
+            {pathSheet && (
+                <PathSheet
+                    open
+                    title={pathSheet.title}
+                    widthM={pathSheet.widthM}
+                    lengthM={pathSheet.lengthM}
+                    onClose={closeMapItemSheet}
+                    onEdit={pathSheet.editable ? editSelectedPath : undefined}
                 />
             )}
             {selectedBoundary && (
@@ -1850,7 +1898,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         {/* Persistent tracked-obstacle polygons + id labels + hover/select highlight */}
                         {renderDynObstacleLayers(true)}
                     </Source>
-                    {/* Navigation area / path names (dimmer than mowing-area labels). */}
+                    {/* Navigation area / path and no-go zone names (dimmer than mowing-area labels). */}
                     <Source type={"geojson"} id={"nav-labels"} data={navLabelsCollection}>
                         <Layer type={"symbol"} id={"nav-label"} layout={{
                             "text-field": ['get', 'title'],
@@ -2325,12 +2373,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 <>
                     <AreaSettingsDrawer
                         target={settingsArea?.index ?? null}
-                        title={settingsNavName ?? settingsArea?.name}
+                        title={settingsArea?.name}
                         areaName={settingsArea?.areaName}
-                        disabledHint={settingsNavName !== null ? t('mapPath.notMowedHint') : undefined}
                         onClose={() => {
                             setSettingsArea(null);
-                            setSettingsNavName(null);
                             setSelectedMapItem((sel) => sel?.kind === "area" || sel?.kind === "nav" ? null : sel);
                         }}
                     />
