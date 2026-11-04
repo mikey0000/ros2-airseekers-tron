@@ -1478,7 +1478,11 @@ class Params:
     # costmap's lethal cells inside the area (+ margin) within this corridor of the lap ahead
     # are the obstacle (2026-11-04). No re-plan exists for them, so the inward offset may be
     # larger than for a zone (the alternative is the skip), with a longer ramp.
-    nogo_edge_costmap: bool = True
+    # OFF by default (2026-11-05): built and unit-tested, but on the area-3 sim scenario
+    # (branch in a corner) the detour worked in 2 of 4 runs and once took base_link 0.16 m
+    # out; needs a mid-edge scenario plus seeds before it is enabled. Off: mission_node
+    # takes no costmap at all and an edge-lap collision abort skips as before.
+    nogo_edge_costmap: bool = False
     nogo_edge_costmap_max_age_s: float = 3.0
     nogo_edge_costmap_corridor_m: float = 0.60  # cell to the lap ahead (body half width + 0.37)
     nogo_edge_costmap_max_offset_m: float = 1.50

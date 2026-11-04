@@ -345,7 +345,10 @@ class MissionNode(Node):
             sub(Odometry, p['wheel_odom_topic'], self._on_wheel_odom, 1, parser=parse_odometry)
         self._lc = None               # local costmap: dict(w, h, res, ox, oy, data ndarray)
         self._odom_frame_pose = None  # (x, y, yaw) of base_link in the odom frame
-        if p['local_costmap_topic'] and p['odom_frame_pose_topic']:
+        # only with the costmap edge detour on (nogo_edge_costmap, off by default): off,
+        # no costmap is subscribed, sampled or converted at all
+        if p['local_costmap_topic'] and p['odom_frame_pose_topic'] and \
+                bool(self.fsm.p.nogo_edge_costmap):
             from map_msgs.msg import OccupancyGridUpdate
             from nav_msgs.msg import OccupancyGrid
             sub(Odometry, p['odom_frame_pose_topic'], self._on_odom_frame, 1,

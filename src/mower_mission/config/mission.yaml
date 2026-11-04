@@ -105,7 +105,7 @@ behavior_tree_node:
     nogo_edge_max_offset_m: 0.60      # larger needed: no detour (re-plan / skip)
     # collision abort on an edge lap, no zone / detection: the local costmap's lethal cells
     # on the lap ahead are the obstacle (2026-11-04 branch); detour inward, else skip
-    nogo_edge_costmap: true
+    nogo_edge_costmap: false          # off until a mid-edge scenario + seeds pass (2026-11-05)
     nogo_edge_costmap_max_age_s: 3.0
     nogo_edge_costmap_corridor_m: 0.60
     nogo_edge_costmap_max_offset_m: 1.50

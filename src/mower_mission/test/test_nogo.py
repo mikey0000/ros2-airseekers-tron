@@ -448,8 +448,8 @@ def test_cov_gate_e_pending_zone_in_the_sweep_skips_the_leg_no_replan(monkeypatc
 # =====================================================================
 # edge laps (B6): detour inward around it, rejoin, no stop-wait
 # =====================================================================
-def _edge_h():
-    h = Harness()
+def _edge_h(**params):
+    h = Harness(**params)
     start_until_planning(h)
     h.fsm.inputs.pose = (0.0, 0.0, 0.0)
     lap = line(0.0, 0.0, 5.0, 0.0, 51)         # lap 0 on the south line
@@ -490,8 +490,8 @@ def _branch(h, x, y0, y1, age=0.0):
     h.fsm.inputs.costmap_lethal_stamp = h.t - age
 
 
-def _abort_on_branch(x, y0, y1, age=0.0):
-    h = _edge_h()
+def _abort_on_branch(x, y0, y1, age=0.0, costmap=True):
+    h = _edge_h(nogo_edge_costmap=costmap)       # off by default (2026-11-05)
     h.fsm.inputs.pose = (1.6, 0.0, 0.0)
     h.tick(n=2)
     _branch(h, x, y0, y1, age)
@@ -665,7 +665,7 @@ def test_edge_lap_abort_on_a_dense_costmap_blob_is_bounded():
     """A wide blob of lethal cells (hedge, bed) on the lap: the disc set is merged (<= 0.2 m
     discs past 300 cells) and the abort is handled in well under a tick budget."""
     import time
-    h = _edge_h()
+    h = _edge_h(nogo_edge_costmap=True)
     h.fsm.inputs.pose = (1.6, 0.0, 0.0)
     h.tick(n=2)
     h.fsm.inputs.costmap_lethal = [(2.2 + 0.05 * i, -0.2 + 0.05 * j)
@@ -689,7 +689,7 @@ def test_deep_costmap_detour_rejoins_the_lap_at_a_shallow_angle():
     """Sim 2026-11-04 (branch-scen5 501-503 s): a 1.31 m detour over a 1.2 m ramp came back
     onto lap 0 at ~60 deg and the robot overshot 0.14 m outside the line. The costmap
     detour's ramp scales with its offset (nogo_edge_costmap_ramp_per_m)."""
-    h = Harness()
+    h = Harness(nogo_edge_costmap=True)
     h.areas = [square(0, 0, 12)]
     start_until_planning(h)
     h.fsm.inputs.pose = (0.0, 0.0, 0.0)
@@ -746,7 +746,7 @@ def test_costmap_lethal_points_maps_odom_cells_into_the_map_frame():
 def test_costmap_detour_back_up_follows_a_curved_lap_back():
     """Sim 2026-11-05 (branch-scen8 446-448 s): a straight reverse on lap 0 where the line
     curves took base_link 0.14 m outside; the back-up retraces the lap it just drove."""
-    h = Harness()
+    h = Harness(nogo_edge_costmap=True)
     h.areas = [square(-6, -6, 12)]
     start_until_planning(h)
     R = 4.0                                         # lap: arc of radius 4 about (0, 4)
@@ -771,3 +771,15 @@ def test_costmap_detour_back_up_follows_a_curved_lap_back():
     assert h.fsm.mission.step == 'nogo_detour' and h.fsm._action is None, logs(h, mk)
     cmd = h.since(mk, f.DriveCmd)[-1]
     assert cmd.linear < 0.0 and abs(cmd.angular) > 0.01   # reversing along the arc
+
+
+def test_costmap_edge_detour_off_by_default_skips_like_master():
+    """2026-11-05: shipped off. A costmap-only obstacle on an edge lap: the collision abort
+    skips the stretch (master behaviour), no back-up, no detour, no costmap read."""
+    h, mk = _abort_on_branch(2.0, -0.3, 0.5, costmap=False)
+    assert h.fsm.p.nogo_edge_costmap is False
+    assert Harness().fsm.p.nogo_edge_costmap is False       # the shipped default
+    txt = logs(h, mk)
+    assert any('edge blocked: skip' in t for t in txt), txt
+    assert not any('costmap cells' in t or 'back up' in t for t in txt)
+    assert h.fsm.mission.nogo_edge_detours == 0
