@@ -17,6 +17,11 @@ Evidence and limits: docs/analysis/2026-10-22_wheel_scale_and_motor_current.md (
 Feed :meth:`on_motor` with each NEW drive-motor frame and :meth:`on_motion` with the commanded
 linear speed and the measured ground speed (RTK / EKF) at any rate; :meth:`update` returns an
 event dict when the rule fires (once per ``holdoff_s``).
+
+Not wired into any node (2026-11-04): the rule only uses |left| + |right| and the mean |rpm|,
+so the B10 left/right label question does not affect it, but it has no field run yet.
+:func:`replay` runs it over recorded series; ``scripts/drive_load_events.py`` does that for a
+mow bag, a log-only check with no effect on the robot.
 """
 
 from collections import deque
@@ -76,3 +81,24 @@ class DriveLoadDetector:
             kind = 'spin'
         return {'kind': kind, 'load_a': round(load, 1), 'cmd_mps': round(vc, 3),
                 'ground_mps': round(vg, 3), 'left_a': la, 'right_a': ra}
+
+
+def replay(motion, frames, detector=None):
+    """Run a detector over recorded series, in time order.
+
+    ``motion``: (t, v_cmd, ground_speed) rows; ``frames``: (t, left_a, right_a, left_rpm,
+    right_rpm) rows, one per NEW motor frame. Returns [(t, event)] for every firing.
+    """
+    det = detector if detector is not None else DriveLoadDetector()
+    rows = [(r[0], 0, r) for r in motion] + [(r[0], 1, r) for r in frames]
+    rows.sort(key=lambda x: (x[0], x[1]))
+    out = []
+    for t, kind, r in rows:
+        if kind == 0:
+            det.on_motion(t, r[1], r[2])
+            continue
+        det.on_motor(t, r[1], r[2], left_rpm=r[3], right_rpm=r[4])
+        ev = det.update(t)
+        if ev:
+            out.append((t, ev))
+    return out

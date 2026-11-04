@@ -1,6 +1,6 @@
 """DriveLoadDetector (pure logic) against traces shaped like the 2026-10-21c field data."""
 
-from mower_control.motor_load import DriveLoadDetector
+from mower_control.motor_load import DriveLoadDetector, replay
 
 
 def _drive(det, t0, seconds, v_cmd, ground, frames, rpm=(0.0, 0.0)):
@@ -52,3 +52,20 @@ def test_confirm_frames():
     assert not ev
     ev = _drive(det, 3.0, 3.0, 0.15, 0.0, [(12.0, 12.0), (12.0, 12.0)])
     assert len(ev) == 1
+
+
+def test_replay_matches_live_feeding():
+    """replay() over recorded rows fires where the live feed does (0637 wheel spin shape)."""
+    motion = [(k * 0.1, -0.12, 0.10 if k < 20 else 0.01) for k in range(50)]
+    frames = [(0.0, 1.1, 2.5, 0.0, 0.0), (1.0, 21.1, 2.3, 0.0, 0.0), (2.0, 19.6, 9.4, 18.0, 2.0),
+              (3.0, 15.5, 15.1, 18.0, 2.0), (4.0, 12.2, 10.4, 18.0, 2.0)]
+    ev = replay(motion, frames)
+    assert len(ev) == 1
+    t, e = ev[0]
+    assert 2.0 <= t <= 4.0 and e['kind'] == 'spin' and e['load_a'] > 20.0
+    # same rows, swapped left/right: the rule only uses the sum, so the B10 label
+    # question does not change the result
+    swapped = [(f[0], f[2], f[1], f[4], f[3]) for f in frames]
+    assert [(round(t2, 3), e2['kind'], e2['load_a']) for t2, e2 in replay(motion, swapped)] == \
+        [(round(t, 3), e['kind'], e['load_a'])]
+
