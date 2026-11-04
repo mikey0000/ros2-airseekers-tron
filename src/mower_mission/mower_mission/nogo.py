@@ -319,7 +319,7 @@ def plan_pivot(x: float, y: float, yaw: float, delta: float, discs: Sequence,
 
 def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width: float = 0.235,
                 clearance: float = 0.10, lookahead_m: float = 3.0, ramp_m: float = 0.8,
-                max_offset_m: float = 1.2, ramp_per_m: float = 0.0):
+                max_offset_m: float = 1.2, ramp_per_m: float = 0.0, end_offset_m: float = 0.0):
     """Bend the edge lap ``poses`` from local ``i0`` inward around the ``discs`` within
     ``lookahead_m``: each pose beside a disc moves toward the area interior until the body
     side clears the disc by ``clearance``, ramped in and out (cosine) over ``ramp_m``.
@@ -328,7 +328,9 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
     beside the stretch or the needed offset exceeds ``max_offset_m``. ``ramp_per_m`` > 0:
     the ramp is at least that many metres per metre of the largest offset (a deep detour
     returns to the lap at a shallow angle; sim 2026-11-04: a 1.31 m offset over a 1.2 m
-    ramp rejoined steeply and the robot overshot 0.14 m outside the line)."""
+    ramp rejoined steeply and the robot overshot 0.14 m outside the line). ``end_offset_m``
+    > 0: the detour ends where the return ramp is down to that inward offset (the caller
+    merges onto the lap from there tangentially, as the boundary rejoin does)."""
     if i0 >= len(poses) - 1 or not discs:
         return None
     cum = [0.0]
@@ -392,6 +394,12 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
                 off[k] = max(off[k], need[j] * 0.5 * (1.0 + math.cos(math.pi * ds / ramp_m)))
     last = max(k for k in range(len(seg)) if off[k] > 1e-3)
     end = min(len(seg) - 1, last + 1)
+    if end_offset_m > 0.0:
+        pk = max(range(len(seg)), key=lambda k: off[k])
+        e = next((k for k in range(pk + 1, len(seg)) if off[k] <= end_offset_m), None)
+        if e is not None:
+            end = e
+            off[e] = min(end_offset_m, max(off[pk], 0.0))
     out = []
     for k in range(end + 1):
         q = seg[k]

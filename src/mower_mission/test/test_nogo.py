@@ -708,7 +708,16 @@ def test_deep_costmap_detour_rejoins_the_lap_at_a_shallow_angle():
     steep = max(abs(math.atan2(b[1] - a[1], b[0] - a[0]))
                 for a, b in zip(poses[:-1], poses[1:]) if b[0] - a[0] > 1e-6)
     assert math.degrees(steep) <= 32.0, math.degrees(steep)
-    assert abs(poses[-1][1]) < 0.02                 # ends on the lap
+    # ends boundary_recover_margin_m inside the lap, then merges tangentially (sim
+    # 2026-11-05: a rejoin straight onto the line swung the rear 0.35 m out)
+    assert abs(poses[-1][1] - h.fsm.p.boundary_recover_margin_m) < 0.02
+    h.fsm.inputs.pose = (poses[-1][0], poses[-1][1], 0.0)
+    mk = h.mark()
+    h.finish(f.ACT_FOLLOW, arrive=False)
+    assert any('merging from 0.10 m inside' in t for t in logs(h, mk))
+    assert not [e for e in h.since(mk, f.StartAction) if e.name == f.ACT_SPIN]   # no pivot
+    nxt = h.goal(f.ACT_FOLLOW)['poses']
+    assert abs(nxt[0][1] - 0.10) < 0.02 and abs(nxt[-1][1]) < 1e-6   # merges onto the lap
 
 
 def test_costmap_lethal_points_maps_odom_cells_into_the_map_frame():

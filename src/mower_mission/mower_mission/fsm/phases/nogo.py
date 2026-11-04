@@ -575,8 +575,11 @@ class NogoMixin:
         # costmap: the shallowest return that keeps the body inside (a long ramp near a
         # corner can reach out); then the plain ramp. Zones: one try as before.
         per = float(p.nogo_edge_costmap_ramp_per_m) if cm else 0.0
-        tries = [{'ramp_per_m': r} for r in (per, per * 2.0 / 3.0) if r > 0.0] + \
-            [{'ramp_per_m': 0.0}]
+        # costmap: end 0.10 m (boundary_recover_margin_m) inside the lap, merge from there
+        end_off = max(0.0, float(p.boundary_recover_margin_m)) if cm else 0.0
+        tries = [{'ramp_per_m': r, 'end_offset_m': end_off}
+                 for r in (per, per * 2.0 / 3.0) if r > 0.0] + \
+            [{'ramp_per_m': 0.0, 'end_offset_m': end_off}]
         res, ex = None, None
         for extra in tries:
             res = bend(extra)
@@ -609,7 +612,8 @@ class NogoMixin:
             self._fx.append(CancelActions('edge detour'))
             self._action = None
         pose = self.inputs.pose
-        m.nogo_detour = {'from': prog, 'end': end, 'why': why}
+        m.nogo_detour = {'from': prog, 'end': end, 'why': why,
+                         'join': float(p.boundary_recover_margin_m) if cm else 0.0}
         m.nogo_edge_detours += 1
         m.step = 'nogo_detour'
         self._log('warn', 'edge lap: %s: detour inward around it on the lap (poses %d -> %d, '
@@ -718,9 +722,19 @@ class NogoMixin:
         if d is None or self.phase not in ('MOWING', 'TRANSIT'):
             return
         if outcome == SUCCEEDED:
-            self._log('info', 'edge detour done: rejoining the lap at pose %d' % d['end'])
             m.start_local = min(d['end'], self._seg_last())
             m.step = None
+            off = float(d.get('join') or 0.0)
+            sgn = self._hb_inward_side(m.subpaths[m.sub_i], m.start_local, off) if off > 0.0 \
+                else 0
+            if sgn:
+                # the detour ended ``off`` inside the lap: merge tangentially (the boundary
+                # rejoin's join), no rejoin pivot (sim 2026-11-05: a rejoin straight onto the
+                # line swung the rear 0.35 m out)
+                m.join = (m.sub_i, m.start_local, sgn, off)
+                m.pivot_done = (m.area_idx, m.sub_i, m.start_local)
+            self._log('info', 'edge detour done: rejoining the lap at pose %d%s'
+                      % (d['end'], ', merging from %.2f m inside' % off if sgn else ''))
             self._dispatch()
             return
         self._log('warn', 'edge detour %s: skipping the stretch' % outcome)
