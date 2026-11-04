@@ -93,7 +93,7 @@ def test_coverage_report_ground_truth_cut_and_recut_after_a_resume():
     def st(t):
         import bisect
         return states[max(0, bisect.bisect_right(T, t) - 1)][1]
-    progress = [[10.0, 'MOWING', 0, 1, True, 80.0, 25.0, 0]]
+    progress = [[10.0, "MOWING", 0, 1, True, 80.0, 25.0, 0], [11.0, "IDLE", -1, 0, False, 0.0, None, -1]]
     cov = E.coverage_report(gt, status, progress, st, lawn, 0.0)
     assert cov['mission_percent'] == 25.0 and cov['plan_percent'] == 80.0
     assert 16.0 < cov['gt_percent'] < 21.0       # ~3.5 x 0.22 of 4 m2 (4 cell rows at 5 cm)

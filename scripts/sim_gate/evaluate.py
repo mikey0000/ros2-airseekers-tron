@@ -464,11 +464,11 @@ def coverage_report(gt, status, progress, hl_state, lawn, t0):
             if 0 <= w < before.shape[0] and 0 <= c < before.shape[1] and before[w, c]:
                 recut += d
         last = (bx, by)
+    # the last sample with an area (afterwards the mission is over and both read empty)
     rep = [p for p in progress if len(p) > 6 and p[6] is not None]
-    plan = [p for p in progress if len(p) > 5 and p[5] is not None]
     out = {'gt_percent': round(ras.percent(lawn) or 0.0, 1),
            'mission_percent': rep[-1][6] if rep else None,
-           'plan_percent': plan[-1][5] if plan else None}
+           'plan_percent': rep[-1][5] if rep else None}
     if stop_t is not None and resume_t is not None:
         out.update({'stop_t': round(stop_t - t0, 1), 'resume_t': round(resume_t - t0, 1),
                     'mowed_after_resume_m': round(total, 1), 'recut_after_resume_m':
