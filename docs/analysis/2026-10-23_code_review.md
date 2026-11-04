@@ -69,7 +69,12 @@ The stack is **safe by accumulation, not safe by design**. Every field incident 
 9. Remove `/dig_stall`.
 10. One boundary reactor; a stale `outside_m` means stop.
 11. Remove velocity_smoother from the lane.
-12. Move nav_lane_watchdog into the supervisor, or delete it; set `marker_size` to the measured 0.055.
+12. Move nav_lane_watchdog into the supervisor, or delete it. (Struck 2026-11-04: "set
+    `marker_size` to the measured 0.055". The stock value 0.04 is kept on purpose so that the
+    stock marker-frame thresholds carry over unchanged; see the comment in
+    `mower_docking/config/docking.yaml`.)
+
+**Status 2026-11-04:** 9 is done. 10, 11 and 12 (watchdog) are open and wait for owner approval.
 
 **Do first:** 0.1, 0.3, 0.4, 1.6, 2.9.
 

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""DDS isolation guard for everything in mower_sim (B6, docs/REVIEW_2026-10-13.md).
+"""DDS isolation guard for everything in mower_sim (B6, docs/archive/REVIEW_2026-10-13.md).
 
 The sim publishes a full fake driver layer (/odom, /imu/data, /fix, /estop,
 /mower_base/status, TF odom->base_link, /odometry/filtered, latched

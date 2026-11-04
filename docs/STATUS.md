@@ -1,7 +1,50 @@
 # Airseekers Tron ROS 2 port: status
 
-Last updated 2026-10-05. Read this first. The point-in-time audits that fed it are in
-`docs/audit_2026-10-05/` (stack audit, MowgliNext reuse study, vendor mission-layer reconstruction).
+Read this first. The "Current state" section below was last updated 2026-11-04 (master 41e61e3).
+Everything after it is a dated log, newest work at the end. Each log section's title records how
+far that feature was verified when it was written, and the title is not changed later: "not yet
+run on the mower" means "not confirmed at the time". The current verification state is in the open
+work audit (`docs/analysis/2026-11-04_open_work_audit.md`). The point-in-time audits that fed the
+first version are in `docs/audit_2026-10-05/`.
+
+## Current state (2026-11-04)
+
+**Deployed:** master 41e61e3, synced 2026-11-03 18:25 NZDT and running for the 2026-11-04 mow.
+**Field:** full-area mows complete, with edge laps (soft layout, option (c)), no-go zones,
+mid-mow re-plan, obstacle detours on labelled detections, docking by day, and resume after STOP.
+
+**Where the work is tracked:**
+
+| What | Where |
+|---|---|
+| Open work, tidy-up, stock comparison, next two weeks | `analysis/2026-11-04_open_work_audit.md` |
+| Owner decisions A1-A6 and queue B1-B13 (with status) | `analysis/2026-10-21_independent_review.md` |
+| Stock firmware behaviour and lessons | `analysis/2026-10-21_stock_firmware_findings.md` |
+| Sim gate, criteria, baselines | `simulation.md` |
+| Field mow evidence | `analysis/` (one doc per field problem), `wheel_smoothness_field_tests.md` (lapsed after 2026-10-23, B4) |
+
+**Field problems open on 2026-11-04** (fixes on `ws/fix1104`, sim gate running;
+`analysis/2026-11-04_branch_pivot_resume.md` once merged):
+1. An obstacle seen only by stereo depth on an edge lap (a branch) was skipped, not detoured.
+2. An RTK-float hold during a coverage pivot resumed without finishing the pivot, so the mower
+   drove out past the row end.
+3. A START after STUCK_NEEDS_HELP re-planned with an unreviewed pending zone, discarded the
+   resume cursor and restarted the mow.
+
+**Other known issues (details and evidence in the audit):**
+- Straight-line weave: p90 about 1.9-2.0 cm, unchanged by GNSS smoothing (A/B failed 2026-11-01,
+  `analysis/2026-10-29_localisation_wander.md` section 7). Further work is controller-side.
+- Lap 0 runs about 1 cm over its soft limit at some convex bends; sim criterion (i) fails on master.
+- Night and dusk docking: the SEARCH heading is seeded from a marker solution that flips.
+- The hard-boundary check does nothing when `outside_m` is stale (code review stage 2, item 10).
+- Side-slope pivots on the west edge creep 0.15-0.30 m; slope-aware planning (A5) is open.
+- No coverage map (A3): "% mowed" comes from plan progress and resume is a plan cursor.
+- `mission.yaml` has 359 keys against 238 when the A6 guard freeze was agreed.
+- Deploy has no rollback or health check (B8).
+
+**Superseded below:** the 2026-10-05 "What exists", "Roadmap" and "Open risks" sections describe
+the first bring-up. The roadmap phases are replaced by the queue in the independent review, and
+the open risks by the audit.
 
 ## Goal
 
@@ -693,6 +736,10 @@ default ignore list (bag_recorder already restarts and logs real child exits). A
 the 15 s stop timeout is now logged as a possibly partial last split.
 
 ## Open risks
+
+Historical (2026-10-09). The current list is in `analysis/2026-11-04_open_work_audit.md`.
+Still open from this list: grass segmentation and obstacle reroute are unconfirmed on the mower,
+and GPLv3. The JY61P yaw item is handled by `heading_aligner` (COG), and the datum is set per site.
 
 - Grass segmentation (2026-10-09, not yet run on the mower, `nongrass:=false` by default): seg_ros now runs on the front stereo right colour eye, `nongrass_projector` projects its mask onto the ground and map_server_node keeps a confirmed non-grass memory that feeds a SOFT global-costmap layer (`nongrass_layer`). The model was trained on the OA cameras: class quality on the front eye, NPU sharing with det_ros on core 1 and the shadow false-positive rate need a live check (`docs/grass_segmentation.md`).
 

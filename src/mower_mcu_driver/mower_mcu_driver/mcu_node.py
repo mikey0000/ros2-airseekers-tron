@@ -89,15 +89,19 @@ Known gaps -- tracked as TODOs, do not treat this driver as safety-complete yet
 * **Heartbeat period unknown.** ``Heartbeat`` is a wall-clock stamp and the MCU most likely
   stops the motors when it stops arriving, but neither the period nor the timeout were
   recovered from the binary.  We default to 100 ms (the BLE link uses 100 ms too) purely as a
-  starting point -- characterise this on hardware with the wheels off the ground first.
+  starting point -- characterise this on hardware with the wheels off the ground first
+  (``docs/MCU_HEARTBEAT_BENCH_TEST.md``, not run as of 2026-11-04).  The supervisor watches the
+  driver's own liveness through ``/mcu/driver_heartbeat`` (review H4, 2026-11-03).
 * **E-stop passthrough TODO.** The MCU enforces estop / lift / bumper cut-offs itself; the
   host side surface is the ``/clear_estop`` service (``std_srvs/Empty``) plus whatever frame
   the vendor uses to forward an app/ROS stop.  No host->MCU estop frame has been identified
   in the protocol, so nothing is wired up here yet.  ``std_srvs`` is therefore not a
   dependency of this package -- add it together with the passthrough.
 * Odometry is open-loop integration of ``SpeedData`` (no wheel encoder feedback beyond what
-  the MCU reports in ``SpeedData``), so it drifts.  ``/reset_odom`` and ``/tf`` broadcasting
-  are not implemented yet.
+  the MCU reports in ``SpeedData``), so it drifts.  The MCU's measured speed reads about 6 %
+  low on turf; ``odom_linear_scale`` (1.06 in bringup) corrects it, checked per mow with
+  ``scripts/wheel_cal.py``.  ``/reset_odom`` and ``/tf`` broadcasting are not implemented
+  (ekf_odom owns ``odom -> base_link``).
 
 Offline test
 ------------

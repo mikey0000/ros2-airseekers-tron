@@ -61,7 +61,8 @@ The planner checks each plan for patches its stripes would miss and adds fill pa
 | Obstacle detection and stop/avoid policy | Running in the field (grass false stops fixed); avoidance still being tuned |
 | Scheduling (web app), rain pause, notifications (Telegram, Pushover, ntfy, webhook) | Built in; not yet tested on the mower |
 
-The current plan and work queue are in [docs/ROADMAP_2026-10.md](docs/ROADMAP_2026-10.md) and
+The current state is at the top of [docs/STATUS.md](docs/STATUS.md); open work is in
+[docs/analysis/2026-11-04_open_work_audit.md](docs/analysis/2026-11-04_open_work_audit.md) and the work queue in
 [docs/analysis/2026-10-21_independent_review.md](docs/analysis/2026-10-21_independent_review.md);
 field runs are logged in [docs/wheel_smoothness_field_tests.md](docs/wheel_smoothness_field_tests.md).
 [docs/STATUS.md](docs/STATUS.md) is the older (2026-10-05) baseline report.
@@ -161,7 +162,7 @@ arguments.
 | See how crashes and failures are handled | [docs/crash_recovery.md](docs/crash_recovery.md) |
 | Run the simulator and the sim gate | [docs/simulation.md](docs/simulation.md) |
 | Hack on the code (architecture, packages, launch arguments, tests) | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
-| See what's planned | [docs/ROADMAP_2026-10.md](docs/ROADMAP_2026-10.md), [work queue](docs/analysis/2026-10-21_independent_review.md) |
+| See what's planned | [open work](docs/analysis/2026-11-04_open_work_audit.md), [work queue](docs/analysis/2026-10-21_independent_review.md) |
 
 ## Based on MowgliNext
 

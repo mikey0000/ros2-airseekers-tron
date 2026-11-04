@@ -40,7 +40,7 @@ Slew-rate limiter with a command watchdog. Subscribes `/cmd_vel_raw`
 topic `mower_mcu_driver` subscribes to (it also accepts `TwistStamped` on
 `/cmd_vel_stamped`). The whole command chain is unstamped `Twist`; Jazzy's
 twist_mux 4.5.0 must be pinned `use_stamped: false` (see
-`docs/JAZZY_MIGRATION_CHECKLIST_2026-10-09.md` §5).
+`docs/archive/JAZZY_MIGRATION_CHECKLIST_2026-10-09.md` §5).
 
 | Parameter | Default | Description |
 |---|---|---|

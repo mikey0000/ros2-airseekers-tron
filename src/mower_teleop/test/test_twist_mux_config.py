@@ -10,7 +10,7 @@ endpoints never connect).
 
 2026-10-10: without the pin, starting a mow put +0.15 m/s on ``/cmd_vel_docking``
 for ~16 s while ``/cmd_vel`` / ``/mcu/commanded_speed`` stayed 0.0, and undock
-failed ``DRIVE_TIMEOUT``. See docs/JAZZY_MIGRATION_CHECKLIST_2026-10-09.md.
+failed ``DRIVE_TIMEOUT``. See docs/archive/JAZZY_MIGRATION_CHECKLIST_2026-10-09.md.
 """
 
 import os

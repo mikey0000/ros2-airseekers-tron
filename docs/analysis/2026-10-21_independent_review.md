@@ -6,6 +6,10 @@ This is a read-only review of master at ec8be43, done while `ws/edge-layout2`, `
 
 ## Verdict
 
+The numbers in this section are as of 2026-10-21. By 2026-11-04 the FSM is split into
+`mower_mission/fsm/` (about 10.8k lines), the RPP configs are deleted, and `mission.yaml` has
+359 keys (see `2026-11-04_open_work_audit.md` section 2.5).
+
 The campaign is converging, but on a narrow front.
 
 **Fixed against measured failures:**
@@ -52,7 +56,9 @@ The campaign is converging, but on a narrow front.
 
 ## Stock vs ours
 
-See the table in `2026-10-21_stock_firmware_findings.md`. The gaps to stock:
+The findings doc has no single comparison table. The per-topic stock behaviour is in
+`2026-10-21_stock_firmware_findings.md`, and the comparison table is section 4 of
+`2026-11-04_open_work_audit.md`. The gaps to stock as of 2026-10-21:
 - K-turns;
 - slope turn mode;
 - labelled-class obstacle policy and edge-lap AI off;
@@ -85,6 +91,26 @@ See the table in `2026-10-21_stock_firmware_findings.md`. The gaps to stock:
 | B11 | (2026-10-22 follow-up 4) Wire `DriveLoadDetector` (slip_detector feeds it, `/stuck_event` reason `drive_load`), log-only for 2 mows first | 2 field mows logged, no false events |
 | B12 | (2026-10-22 follow-up 2, owner) Blade-off / blade-on calibration drive (procedure in `2026-10-22_wheel_scale_and_motor_current.md`) to settle the yaw trim (~+0.007 rad/s, `cmd_vel_slew` `angular_trim_radps`) | `wheel_cal.py` on both halves |
 | B13 | (2026-10-29 localisation wander, `2026-10-29_localisation_wander.md`) Weave: (1) MPPI heading damping / control point ahead of the rotation centre, (2) GNSS smoothing in ekf_map (x/y process noise), (3) realistic sim localisation (fix latency ~0.1 s, effective antenna lever 0.072, no 2.5 cm jumps). Owner 2026-10-29: do (2) and (3) now, (1) after (3). (2) and (3) done on `ws/loc1029` (2 off by default, field A/B pending). (1) done on `ws/damp1029`: coverage MPPI `PathAlignAheadCritic`, control point 0.25 m ahead (section 6): field-model `-d` a 0.079 (was 0.13-0.16), e / h pass, weave band -45 %, i still fails as on every baseline; field check pending. | (3) sim reproduces field weave by the field mechanism; (2) field A/B; (1) sim + field |
+
+### Queue status (2026-11-04)
+
+"Merged" means the code is on master; "field" says whether a mow has confirmed it.
+
+| # | Status | Evidence / next step |
+|---|---|---|
+| B1 | Partial | Per-area `swath_width_m` with a disc-derived default (`mower_map/area_settings.py`); `cutter_size` is parsed but not used as the default |
+| B2 | Merged, seen in the field | `hard_boundary_spot_max: 2` within `hard_boundary_spot_m: 1.0` (`mission.yaml:478-479`) raised STUCK_NEEDS_HELP twice on 2026-11-04. Stock never escalates on boundary-outs; it counts contacts per place instead (findings doc, 2026-11-04 section 4) |
+| B3 | Merged | The body check uses the mission's own area snapshot (`fsm/common.py:1104,1135`) |
+| B4 | Open | Field log last entry 2026-10-23 |
+| B5 | Merged | Incident replay tests in `mower_mission/test/replay/`; CI workflow exists but has not run remotely (73 commits unpushed on 2026-11-04) |
+| B6 | Merged, field-unconfirmed | Detours for zones and static marks work in the field; costmap-only obstacles are on `ws/fix1104` |
+| B7 | Merged, field-unconfirmed | Own-pass zstd with verify; needs a deploy with the `image` step, then 3 mows with 0 corrupt chunks |
+| B8 | Open | `deploy_to_mower.sh` writes only `DEPLOYED_REV` |
+| B9 | Merged, field-confirmed | `odom_linear_scale` 1.06 in bringup; ground / fused odom 1.004-1.013 on 2026-10-31 and 2026-11-04 |
+| B10 | Open | Owner wheels-up check |
+| B11 | Open | `motor_load.py` is not wired; waits for B10 |
+| B12 | Open | `angular_trim_radps` is 0.0; field suggestions +0.004 to +0.010 rad/s vary by area |
+| B13 | (1) merged, field -3 to -9 % p90; (2) failed the 2026-11-01 A/B; (3) merged | `2026-10-29_localisation_wander.md` sections 6 and 7 |
 
 ## Risks flagged in in-progress work
 

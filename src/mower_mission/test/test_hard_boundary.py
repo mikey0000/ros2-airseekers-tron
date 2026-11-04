@@ -1,6 +1,6 @@
 """Task 0.4 (a): the boundary is a hard rule in every autonomous driving phase (2026-10-14
 run 3: seven transit excursions up to 0.85 m outside the areas / paths;
-docs/wheel_smoothness_field_tests.md, docs/ROADMAP_2026-10.md)."""
+docs/wheel_smoothness_field_tests.md, docs/archive/ROADMAP_2026-10.md)."""
 
 import math
 import os

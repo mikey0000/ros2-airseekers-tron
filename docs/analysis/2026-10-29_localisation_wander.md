@@ -353,6 +353,8 @@ With those, robot_localization reproduces the emulation:
 
 ### 5.3 Field A/B procedure (owner)
 
+Run on 2026-10-31 / 2026-11-01. It failed; the result is in section 7.
+
 1. **Before the A/B: deploy this branch as is.** That includes B9 (`odom_linear_scale`
    1.06) and keeps `gnss_smoothing` off.
 2. **Mow A (off).** Do one normal full mow of Area 1 with the blade on and RTK fixed.
@@ -362,8 +364,10 @@ With those, robot_localization reproduces the emulation:
    - "weave: RTK lateral about the swath line" p50 / p90 (10-28: 0.84 / 2.09 cm);
    - "map pose - RTK, in-line rms" (10-28: 0.56 cm).
 4. **Mow B (on).** Start the stack with `gnss_smoothing:=true` (`mower.launch.py`
-   argument, e.g. `scripts/run_stack.sh gnss_smoothing:=true` or the service's launch
-   arguments). Mow the same area on the same day, with similar turf and the blade on.
+   argument): on the mower, `docker/docker-compose.gnss-smoothing.yml` added as a third
+   `-f` file to the usual `up -d --force-recreate mower_jazzy` passes it to
+   `stack_entry.sh`; `scripts/run_stack.sh gnss_smoothing:=true` does the same in the
+   foreground. Mow the same area on the same day, with similar turf and the blade on.
    - Watch the first undock and the dock return closely.
    - Stop the A/B if the docking misses, or if the GUI pose visibly lags in turns.
 5. **Run `wheel_cal.py` on mow B and compare.**
@@ -496,3 +500,42 @@ What the runs show:
 5. **Revert:** in `nav2_params.yaml`, put `PathAlignCritic` back in the
    `FollowCoveragePathMPPI` critics list and rename its block. Alternatively, set
    `control_point_x: 0.0`, which is equivalent.
+
+## 7. Field results (2026-10-31 to 2026-11-04)
+
+### 7.1 B13-1 (control point 0.25 m) and B9 in the field
+
+Same metric as section 1: RTK lateral about the fitted swath line (`scripts/wheel_cal.py`).
+
+| Mow | Straights | Weave p50 / p90 (cm) | Ground / fused odom speed |
+|---|---|---|---|
+| 2026-10-28, before B13-1 | - | 0.84 / 2.09 | (raw ground / MCU 1.066) |
+| 2026-10-31 area 4 (mow A of the A/B) | 53 / 310 m | 0.78 / 1.98 | 1.0065 |
+| 2026-10-31 area 3, smoothing off | 40 / 237 m | 0.81 / 2.02 | 1.0037 |
+| 2026-11-04 area 3 (`--min-len 1.5`) | 45 / 108 m | 0.72 / 1.91 | 1.013 |
+
+- The sim predicted about -45 % weave-band rms for B13-1 (section 6). The field gain is -3 to
+  -9 % at p90. The control point helped the boundary margin in the sim more than it helped the
+  weave on the lawn.
+- B9 passes: the fused odom speed is within about 1 % of ground on every mow.
+
+### 7.2 B13-2 GNSS smoothing A/B: failed
+
+Mow B, 2026-11-01, area 3, 32 straights / 155 m, `gnss_smoothing:=true` through
+`docker/docker-compose.gnss-smoothing.yml`. Mow A for comparison is the area 3 smoothing-off row
+above.
+
+| | Off | On |
+|---|---|---|
+| Weave p50 / p90 (cm) | 0.81 / 2.02 | 0.78 / 2.01 |
+| Band-pass antenna weave p50 / p90 (cm) | 1.14 / 2.86 | 1.28 / 3.68 |
+| Map pose - RTK, in-line (cm) | 0.60 | 0.73 |
+| Ground / fused odom speed | 1.004 | 1.011 |
+| Boundary-outs while mowing | 0 | 1 (rear corner) |
+
+- The 6 s oscillation became a 16-21 s drift of the same amplitude. The success bar (p90 down
+  at least 30 %, no new boundary events) was missed.
+- **Conclusion:** the residual weave is the path controller holding the line loosely, not EKF
+  lag. Do not retry EKF smoothing. Further weave work is controller-side.
+- **Revert:** start `mower_jazzy` without the third compose file. The `gnss_smoothing` switch and
+  `ekf_map_gnss_smoothing.yaml` can be removed once the override is gone from the mower.
