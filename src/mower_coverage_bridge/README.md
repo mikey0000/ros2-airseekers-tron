@@ -133,7 +133,8 @@ to [0, 180)) appears in `message`.
 | `headland_rings` | `-1` | per-area perimeter laps, forwarded as `headland_rings`: -1 = use `headland_passes`, 0 = none, > 0 = exactly (validated -1..20) |
 | `path_mode` | `zigzag` | `zigzag` / `cross` / `alternate` (all sent as `zigzag`: cross and alternate are several mission-level zigzag plans), `spiral`, `contour_only`; anything else is refused |
 | `mow_angle_deg` | `-1.0` | used only when the goal's `mow_angle_deg` is < 0 (the goal wins) |
-| `edge_laps` | `3` | edge layout (`edge_layout` soft / hard): number of edge laps, set per area by the mission (area setting `edge_laps`), forwarded as PlanCoverage `edge_laps`; the rows move with them. Soft: laps at 0 / 0.15 / … (base_link from the line), rows (sides, ends, turns) 0.15 × `edge_laps` in: 3 = stock (rows from 0.45), 1 = rows from 0.15, 0 = rows from the line. Hard: laps at 0.45 / 0.63 / … plus the band-closing lap, rows from 0.45 + 0.18 × `edge_laps` + 0.11 (ends never under 0.745); 0 is taken as 1 (rows start >= 0.745 in, a lapless band would stay uncut). Ignored by the legacy layout (`headland_rings`). Validated 0..10 |
+| (none: `/tf_static`) | | base_link -> blade_link x (URDF `blade_joint`, 0.23), forwarded with every request as PlanCoverage `blade_offset_m`; -1 until the transform is seen (the planner then plans the soft row ends for base_link, as before 2026-11-05) |
+| `edge_laps` | `3` | edge layout (`edge_layout` soft / hard): number of edge laps, set per area by the mission (area setting `edge_laps`), forwarded as PlanCoverage `edge_laps`; the rows move with them. Soft: laps at 0 / 0.15 / … (base_link from the line), row sides 0.15 × `edge_laps` in, row ends and turns blade-referenced (the blade point 0.15 × `edge_laps` in, base_link the blade offset, 0.23, further): 3 = stock (sides 0.45, base_link at a square-on row end 0.68), 1 = sides 0.15 / ends 0.38, 0 = sides from the line / ends 0.23 (the blade point on the line). Hard: laps at 0.45 / 0.63 / … plus the band-closing lap, rows from 0.45 + 0.18 × `edge_laps` + 0.11 (ends never under 0.745); 0 is taken as 1 (rows start >= 0.745 in, a lapless band would stay uncut). Ignored by the legacy layout (`headland_rings`). Validated 0..10 |
 | `edge_first` | `true` | `false`: the planner lays out the swaths first, then the rings innermost first; the splitter is told so (`swaths_first`) |
 
 The last four are the per-area mowing settings. `behavior_tree_node` (mower_mission) sets
@@ -179,11 +180,19 @@ keep the old behaviour for a client that leaves them alone: `int32 headland_ring
 `PlanCoverage.edge_layout` (from the area's `edge_mode`; all areas soft for now):
 
 * **soft (stock):** laps at 0 / 0.15 / 0.30 from the line (base_link = rear axle on lap 0),
-  rows from 0.45. **hard:** the whole body inside plus 0.10.
+  rows from 0.45 laterally. Row ends and turns (2026-11-05) are planned for the blade point,
+  as stock plans them for `cutter_link`: the blade (0.23 ahead of base_link) stops 0.45 in,
+  so base_link stops 0.68 in where a row meets the line square-on (nose 0.08 inside, the
+  pivot sweeps the front corners 0.04 inside) and 0.45 + 0.23 cos(angle) where it meets it
+  at an angle. The coverage check sweeps the blade's path. Cost: where rows meet the line
+  about 60 deg off its normal, the rows leaving that end leave scallops 0.40-0.50 from the
+  line (`docs/analysis/2026-10-21_stock_firmware_findings.md`, decision 2026-11-05).
+  **hard:** the whole body inside plus 0.10, base_link-referenced.
 * **`edge_laps`** (per-area setting, default 3 = stock; GUI binding pending, keep the name):
   the number of edge laps; soft laps at 0, 0.15, ... and rows from 0.15 x `edge_laps` (1 lap:
-  rows from 0.15; 0: rows from the line, first row centre 0.09 in). Hard: the same from its
-  0.45 start; 0 is treated as 1.
+  rows from 0.15; 0: rows from the line, first row centre 0.09 in), the blade point at the
+  row ends the same distance in (base_link 0.23 further). Hard: the same from its 0.45
+  start; 0 is treated as 1.
 * All outer laps run the same direction (clockwise). Lap 0 keeps the polygon's sharp
   vertices (F2C `Cells::buffer` mitres; the round-1 r 0.7 rounding never rounded). Lap
   starts / hand-offs sit >= 0.6 m from a vertex, so a ring-to-ring step is -90 / 0.15 / +90
