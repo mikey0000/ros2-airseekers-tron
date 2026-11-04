@@ -16,7 +16,7 @@ docs/analysis/2026-10-23_obstacle_nogo_options.md).
 from mower_mission import nogo
 from mower_mission.fsm.common import (ACT_BACKUP, ACT_DRIVE, ACT_FOLLOW, ACT_PLAN, ACT_SPIN,
     AreaCursor, CancelActions, DriveCmd, PublishPlan, SUCCEEDED, CONDITIONED_KEY, geo, math,
-    _seg_dist, subpath_offsets, walls)  # noqa: F401
+    _seg_dist, costmap_lethal_points, subpath_offsets, walls)  # noqa: F401
 
 
 class NogoMixin:
@@ -488,9 +488,12 @@ class NogoMixin:
         connected to them (the whole obstacle: a branch reaching further in). A costmap-only
         obstacle (stereo depth, no detection class) on an edge lap (field 2026-11-04)."""
         m, p, i = self.mission, self.p, self.inputs
-        pts = i.costmap_lethal
-        if not p.nogo_edge_costmap or not pts or i.costmap_lethal_stamp is None or \
+        if not p.nogo_edge_costmap or i.costmap_lethal_stamp is None or \
                 self._now - i.costmap_lethal_stamp > float(p.nogo_edge_costmap_max_age_s):
+            return []
+        pts = i.costmap_lethal if i.costmap_lethal is not None else \
+            costmap_lethal_points(i.costmap_grid)
+        if not pts:
             return []
         from mower_mission import body_boundary as bb
         sp = m.subpaths[m.sub_i]

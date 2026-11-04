@@ -709,3 +709,22 @@ def test_deep_costmap_detour_rejoins_the_lap_at_a_shallow_angle():
                 for a, b in zip(poses[:-1], poses[1:]) if b[0] - a[0] > 1e-6)
     assert math.degrees(steep) <= 32.0, math.degrees(steep)
     assert abs(poses[-1][1]) < 0.02                 # ends on the lap
+
+
+def test_costmap_lethal_points_maps_odom_cells_into_the_map_frame():
+    """mission_node hands the grid + map <- odom; the cells are extracted on demand."""
+    import numpy as np
+    from mower_mission.fsm.common import costmap_lethal_points
+    data = np.zeros((3, 4), dtype=np.int8)
+    data[1, 2] = 100                                 # lethal: odom (1.0+2.5*0.5, 2.0+1.5*0.5)
+    data[0, 0] = 99                                  # inscribed: not lethal
+    lc = {'w': 4, 'h': 3, 'res': 0.5, 'ox': 1.0, 'oy': 2.0, 'data': data}
+    a = math.pi / 2                                  # map <- odom: +90 deg, then (10, 20)
+    pts = costmap_lethal_points((lc, (math.cos(a), math.sin(a), 10.0, 20.0)))
+    assert len(pts) == 1
+    ox, oy = 2.25, 2.75
+    assert abs(pts[0][0] - (10.0 - oy)) < 1e-9 and abs(pts[0][1] - (20.0 + ox)) < 1e-9
+    big = {'w': 100, 'h': 100, 'res': 0.05, 'ox': 0.0, 'oy': 0.0,
+           'data': np.full((100, 100), 100, dtype=np.int8)}
+    assert len(costmap_lethal_points((big, (1.0, 0.0, 0.0, 0.0)), cap=500)) == 500
+    assert costmap_lethal_points(None) == []

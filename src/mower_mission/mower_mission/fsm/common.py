@@ -560,6 +560,10 @@ class Inputs:
     # after a collision abort (field 2026-11-04: a branch across edge lap 0, skipped 5 times)
     costmap_lethal: Optional[list] = None
     costmap_lethal_stamp: Optional[float] = None
+    # (grid dict {w, h, res, ox, oy, data int8 ndarray}, (cos, sin, tx, ty) map <- odom):
+    # what mission_node keeps; the cells are extracted only when needed
+    # (costmap_lethal_points); costmap_lethal, when set, takes precedence (tests)
+    costmap_grid: Any = None
     # /tilt/status (mower_control tilt_monitor, latched JSON): band ok|caution|limit|critical|
     # unknown, filtered roll / pitch (deg, REP-103), axis that set the band, receipt time
     tilt_band: str = 'unknown'
@@ -1653,6 +1657,22 @@ def blocked_text(n):
     """Sub_state for stretches the end-of-area pass could not mow (vendor IotNotice
     900027 'obstacle cannot be bypassed')."""
     return '%d stretch%s blocked by obstacles' % (n, '' if n == 1 else 'es')
+
+
+def costmap_lethal_points(grid, cap=4000):
+    """[(x, y)] map-frame centres of the LETHAL (OccupancyGrid 100) cells of ``grid`` (the
+    inputs.costmap_grid pair), at most ``cap`` (evenly thinned)."""
+    if grid is None:
+        return []
+    import numpy as np
+    lc, (c, s, tx, ty) = grid
+    rows, cols = np.nonzero(lc['data'] == 100)
+    if len(rows) > cap:
+        k = np.linspace(0, len(rows) - 1, cap).astype(int)
+        rows, cols = rows[k], cols[k]
+    ox = lc['ox'] + (cols + 0.5) * lc['res']
+    oy = lc['oy'] + (rows + 0.5) * lc['res']
+    return list(zip((tx + c * ox - s * oy).tolist(), (ty + s * ox + c * oy).tolist()))
 
 
 def accepted_area(area):

@@ -350,12 +350,14 @@ class MissionNode(Node):
             from nav_msgs.msg import OccupancyGrid
             sub(Odometry, p['odom_frame_pose_topic'], self._on_odom_frame, 1,
                 parser=parse_odometry)
-            # event subscriptions (every update patch is applied in order)
-            self._pump.subscribe(OccupancyGrid, p['local_costmap_topic'], self._on_costmap,
-                                 latched)
+            # sampled like every other input (no pump thread: the 2026-11-05 A/B showed the
+            # event thread costs the plain mow), polled on the tick; the update patches are
+            # all applied in order (deliver_all). Only the grid is kept here: the lethal
+            # cells are extracted when the FSM asks (an edge-lap collision abort).
+            sub(OccupancyGrid, p['local_costmap_topic'], self._on_costmap, latched)
             if p['local_costmap_updates_topic']:
-                self._pump.subscribe(OccupancyGridUpdate, p['local_costmap_updates_topic'],
-                                     self._on_costmap_update, 10)
+                sub(OccupancyGridUpdate, p['local_costmap_updates_topic'],
+                    self._on_costmap_update, 10, deliver_all=True)
         sub(Bool, p['boundary_violation_topic'], self._on_boundary, 1, parser=flat_parser(Bool))
         # stuck guard (mower_control slip_detector): latched /stuck
         sub(Bool, '/stuck', self._on_stuck, latched, parser=flat_parser(Bool))
@@ -836,7 +838,7 @@ class MissionNode(Node):
         self._lc = {'w': w, 'h': h, 'res': float(info.resolution),
                     'ox': float(info.origin.position.x), 'oy': float(info.origin.position.y),
                     'data': np.array(msg.data, dtype=np.int8).reshape(h, w)}
-        self._costmap_lethal()
+        self._costmap_input()
 
     def _on_costmap_update(self, msg):
         import numpy as np
@@ -848,30 +850,21 @@ class MissionNode(Node):
                 x0 + w > lc['w'] or y0 + h > lc['h']:
             return
         lc['data'][y0:y0 + h, x0:x0 + w] = np.array(msg.data, dtype=np.int8).reshape(h, w)
-        self._costmap_lethal()
+        self._costmap_input()
 
-    def _costmap_lethal(self):
-        """Lethal cells (OccupancyGrid 100 = LETHAL_OBSTACLE) of the odom-frame local costmap
-        in the map frame (map <- odom from the map and odom EKF poses) for the FSM."""
-        import numpy as np
+    def _costmap_input(self):
+        """Hand the FSM the odom-frame grid and map <- odom at receipt (from the map and odom
+        EKF poses); fsm.common.costmap_lethal_points extracts the lethal cells on demand."""
         lc, ob = self._lc, self._odom_frame_pose
         with self._lock:
             mb = self.fsm.inputs.pose
-        if lc is None or ob is None or mb is None:
-            return
-        rows, cols = np.nonzero(lc['data'] == 100)
-        if len(rows) > 4000:
-            k = np.linspace(0, len(rows) - 1, 4000).astype(int)
-            rows, cols = rows[k], cols[k]
-        ox = lc['ox'] + (cols + 0.5) * lc['res']
-        oy = lc['oy'] + (rows + 0.5) * lc['res']
-        a = float(mb[2]) - float(ob[2])                 # map <- odom
-        c, sn = math.cos(a), math.sin(a)
-        tx = float(mb[0]) - (c * ob[0] - sn * ob[1])
-        ty = float(mb[1]) - (sn * ob[0] + c * ob[1])
-        pts = list(zip((tx + c * ox - sn * oy).tolist(), (ty + sn * ox + c * oy).tolist()))
-        with self._lock:
-            self.fsm.inputs.costmap_lethal = pts
+            if lc is None or ob is None or mb is None:
+                return
+            a = float(mb[2]) - float(ob[2])                 # map <- odom
+            c, sn = math.cos(a), math.sin(a)
+            tx = float(mb[0]) - (c * ob[0] - sn * ob[1])
+            ty = float(mb[1]) - (sn * ob[0] + c * ob[1])
+            self.fsm.inputs.costmap_grid = (lc, (c, sn, tx, ty))
             self.fsm.inputs.costmap_lethal_stamp = self._clk.now()
 
     def _on_wheel_odom(self, msg):
