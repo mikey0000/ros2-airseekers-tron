@@ -75,11 +75,13 @@ class CoverageMixin:
 
     def _raster_progress(self, subpaths, raster):
         """(done, prefix) of ``subpaths`` on ``raster`` (MowedRaster.plan_progress, footprint
-        = the area's swath width at the blade point); empty without a raster."""
-        if raster is None or not raster.data.any():
+        = the area's swath width at the blade point); empty without a raster or before the
+        blade offset is known (a base_link reading would put the resume 0.23 m ahead)."""
+        off = self.inputs.blade_offset
+        if raster is None or off is None or not raster.data.any():
             return set(), {}
         half = 0.5 * self._swath_spacing(self.mission.settings or {})
-        return raster.plan_progress(subpaths, half, self.inputs.blade_offset or (0.0, 0.0))
+        return raster.plan_progress(subpaths, half, off)
 
     def _raster_resume(self, ac, subpaths):
         """Same plan as the cursor: the sub-paths the raster shows mowed are done as well, and
