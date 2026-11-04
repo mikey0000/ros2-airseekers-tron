@@ -20,6 +20,8 @@
   <depend>rcl_interfaces</depend>
   <depend>mower_interfaces</depend>
   <depend>mowgli_interfaces</depend>
+  <depend>tf2_msgs</depend>
+  <exec_depend>mower_common</exec_depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

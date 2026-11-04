@@ -59,12 +59,12 @@ from mowgli_interfaces.srv import (AddMowingArea, GetMowingArea, HighLevelContro
 from mower_mission import activity
 from mower_mission import mission_fsm as fsm_mod
 from mower_mission import mow_progress
-from mower_mission import mowed_raster
 from mower_mission import nogo
 from mower_mission import walls
 from mower_mission.external_rain import ExternalRain
 from mower_mission.resume import ResumeCursor
 from mower_mission.quiet_action import QuietActionClient
+from mower_common import frames
 from mower_common.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, flat_parser,
                                     parse_odometry)
 
@@ -776,11 +776,8 @@ class MissionNode(Node):
 
     def _on_tf_static(self, msg):
         """/tf_static: base_link -> blade_link (x, y) for the mowed raster's blade point."""
-        for t in msg.transforms:
-            tr = t.transform
-            self._tf_static[t.child_frame_id] = (t.header.frame_id, tr.translation.x,
-                                                 tr.translation.y, _yaw_from_quat(tr.rotation))
-        off = mowed_raster.blade_offset_from(self._tf_static)
+        self._tf_static.update(frames.static_entry(t) for t in msg.transforms)
+        off = frames.blade_offset_from(self._tf_static)
         if off is None:
             return
         with self._lock:

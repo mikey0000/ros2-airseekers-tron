@@ -26,12 +26,22 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from std_msgs.msg import String
+from tf2_msgs.msg import TFMessage
 
+from mower_common import frames
 from mower_coverage_bridge import splitter
 
 
 def _poly_points(poly):
     return [(float(p.x), float(p.y)) for p in poly.points]
+
+
+def planner_blade_offset(static):
+    """PlanCoverage ``blade_offset_m``: base_link -> blade_link x from the /tf_static tree
+    {child: (parent, x, y, yaw)}, or -1.0 (unknown: the planner keeps base_link-referenced
+    row ends) until the chain is known."""
+    off = frames.blade_offset_from(static)
+    return -1.0 if off is None else float(off[0])
 
 
 def _copy_polygon(poly):
@@ -93,6 +103,13 @@ class CoverageServer(Node):
         # the rows move with them (soft: rows 0.15 x edge_laps in, 0 = rows from the line; hard: >= 1)
         p('edge_laps', 3)
         self.add_on_set_parameters_callback(self._on_set_parameters)
+        # base_link -> blade_link (URDF blade_joint) from /tf_static: the soft layout plans its
+        # row ends for the blade point (forwarded as PlanCoverage blade_offset_m)
+        self._tf_static = {}
+        self._blade_offset_m = -1.0
+        self.create_subscription(
+            TFMessage, '/tf_static', self._on_tf_static,
+            QoSProfile(depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         # Coverage verification of the last plan (the action result has no
         # field for it): latched JSON {coverage_fraction, gap_count,
         # gap_area_m2, gaps: [[[x, y], ...], ...]}.
@@ -113,6 +130,14 @@ class CoverageServer(Node):
             'coverage_server ready: action %s -> service %s (transit_gap_m=%.2f)' % (
                 self._str('action_name'), self._str('service_name'),
                 self._float('transit_gap_m')))
+
+    def _on_tf_static(self, msg):
+        self._tf_static.update(frames.static_entry(t) for t in msg.transforms)
+        off = planner_blade_offset(self._tf_static)
+        if off != self._blade_offset_m:
+            self._blade_offset_m = off
+            self.get_logger().info('blade point for the row ends: base_link -> blade_link '
+                                   '%.3f m' % off)
 
     # ---- parameter helpers (read live so `ros2 param set` applies per plan) ----
     def _str(self, name):
@@ -227,6 +252,7 @@ class CoverageServer(Node):
         req.boundary_inset_m = self._float('boundary_inset_m')
         req.edge_layout = self._str('edge_layout')
         req.edge_laps = self._int('edge_laps')
+        req.blade_offset_m = self._blade_offset_m
 
         done = threading.Event()
         future = self._client.call_async(req)

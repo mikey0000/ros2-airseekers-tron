@@ -51,22 +51,6 @@ def blade_point(x, y, yaw, offset):
     return x + c * bx - s * by, y + s * bx + c * by
 
 
-def blade_offset_from(static, base='base_link', blade='blade_link'):
-    """(x, y) of ``blade`` in ``base`` from static transforms {child: (parent, x, y, yaw)}
-    (the /tf_static tree, planar), chained through intermediate frames; None when the chain
-    does not reach ``base``."""
-    x, y, frame, seen = 0.0, 0.0, blade, set()
-    while frame != base:
-        if frame in seen or frame not in static:
-            return None
-        seen.add(frame)
-        parent, tx, ty, tyaw = static[frame]
-        c, s = math.cos(tyaw), math.sin(tyaw)
-        x, y = tx + c * x - s * y, ty + s * x + c * y
-        frame = parent
-    return x, y
-
-
 class MowedRaster:
     """Boolean grid of cut cells (row = y, column = x), origin at the lower-left corner."""
 

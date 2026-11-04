@@ -87,14 +87,6 @@ def test_raster_round_trips_through_the_resume_cursor_file():
     assert bad.areas[1].raster is None and bad.areas[1].completed == {0}
 
 
-def test_blade_offset_from_the_static_tree_chains_frames():
-    st = {'blade_link': ('base_link', 0.23, 0.0, 0.0)}
-    assert mr.blade_offset_from(st) == pytest.approx((0.23, 0.0))
-    st = {'blade_link': ('deck', 0.1, 0.0, 0.0), 'deck': ('base_link', 0.2, 0.05, math.pi / 2)}
-    assert mr.blade_offset_from(st) == pytest.approx((0.2, 0.15))
-    assert mr.blade_offset_from({'blade_link': ('odom', 0, 0, 0)}) is None
-
-
 def test_plan_progress_uses_the_blade_point_of_each_pose():
     """base_link 0.23 m behind the blade: a pose is mowed where the BLADE was at it."""
     r = mr.MowedRaster.for_area(SQUARE)
