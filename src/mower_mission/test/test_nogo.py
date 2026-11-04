@@ -526,11 +526,19 @@ def test_edge_lap_costmap_obstacle_right_ahead_backs_up_then_detours():
     """Sim 2026-11-04: the abort stops the robot at the branch, a detour from there aborted
     in 1 s (every MPPI trajectory collides): back up first, bend the detour from there."""
     h, mk = _abort_on_branch(2.0, -0.3, 0.5)       # cells 0.4 m ahead of the robot at 1.6
-    a = h.pending_action(f.ACT_BACKUP)
-    assert a.purpose == 'nogo_detour_backup'
+    # not Nav2 BackUp (its footprint check refuses with the nose on the cells): DriveCmd
+    assert h.fsm._action is None and h.fsm.mission.step == 'nogo_detour'
     assert any('back up' in t and 'then detour' in t for t in logs(h, mk))
+    cmds = [e for e in h.since(mk, f.DriveCmd)]
+    assert cmds and cmds[-1].linear < 0.0 and cmds[-1].angular == 0.0
+    x = 1.6
+    for _ in range(4):                             # reversing: still going
+        x -= 0.1
+        h.fsm.inputs.pose = (x, 0.0, 0.0)
+        h.tick()
+        assert h.fsm._action is None and h.since(mk, f.DriveCmd)[-1].linear < 0.0
     h.fsm.inputs.pose = (1.1, 0.0, 0.0)            # backed up 0.5 m
-    h.finish(f.ACT_BACKUP)
+    h.tick()
     a = h.pending_action(f.ACT_FOLLOW)
     assert a.purpose == 'nogo_detour'
     poses = h.goal(f.ACT_FOLLOW)['poses']

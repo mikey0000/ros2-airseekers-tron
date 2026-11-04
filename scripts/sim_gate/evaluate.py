@@ -226,7 +226,10 @@ def rtk_handling(windows, loc, bt, cutting, outside_over, hold_s=3.0, resume_tai
                    and m.startswith('localization ok again')), None)
         blade = None
         if th is not None:
-            after = [c for t, c in cutting if th <= t <= th + hold_s]
+            # from 0.3 s after the hold: /sim/status (10 Hz) still reports the cutter the
+            # sample after the blade-off command (branch-scen4 2026-11-04: one true sample
+            # 30 ms after the hold, off from 0.1 s on, judged "blade not off")
+            after = [c for t, c in cutting if th + 0.3 <= t <= th + hold_s]
             blade = not any(after) if after else None
         exc = [t for t in outside_over if ta <= t <= (tr if tr is not None else horizon) + 10.0]
         e = {'from': round(ta, 1), 'to': round(tb, 1), 'kind': mode,

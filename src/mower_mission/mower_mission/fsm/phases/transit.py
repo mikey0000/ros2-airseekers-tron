@@ -846,7 +846,7 @@ class TransitMixin:
         if a.purpose == 'heading_cal':
             self._hcal_result(outcome)
             return
-        if a.purpose in ('nogo_step', 'nogo_detour', 'nogo_detour_backup'):   # option C / edge detour
+        if a.purpose in ('nogo_step', 'nogo_detour'):    # option C maneuvers / edge detour
             self._nogo_action_done(a, outcome)
             return
         if a.purpose == 'dock_route':
