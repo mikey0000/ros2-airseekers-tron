@@ -17,8 +17,8 @@ describe("selectDockMoved", () => {
     });
 
     it("defaults warn_m to the docking default", () => {
-        const {warn_m: _ignored, ...rest} = moved;
-        expect(selectDockMoved(msg(rest))?.warn_m).toBe(0.5);
+        const noWarn = {moved: true, distance_m: 0.8, docked: [1.5, 2], stored: [0.7, 2]};
+        expect(selectDockMoved(msg(noWarn))?.warn_m).toBe(0.5);
     });
 });
 

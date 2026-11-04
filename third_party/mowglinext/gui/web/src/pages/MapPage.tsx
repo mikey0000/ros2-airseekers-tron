@@ -1139,7 +1139,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const [pendingPathEditId, setPendingPathEditId] = useState<string | null>(null);
     const editSelectedPath = () => {
         if (!selectedNav) return;
-        setPendingPathEditId(selectedNav.id as string);
+        setPendingPathEditId(selectedNav.id);
         setSelectedMapItem(null);
         if (!editMap) handleEditMap();
     };
