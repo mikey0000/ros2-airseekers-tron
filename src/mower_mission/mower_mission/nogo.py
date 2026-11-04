@@ -319,20 +319,24 @@ def plan_pivot(x: float, y: float, yaw: float, delta: float, discs: Sequence,
 
 def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width: float = 0.235,
                 clearance: float = 0.10, lookahead_m: float = 3.0, ramp_m: float = 0.8,
-                max_offset_m: float = 1.2):
+                max_offset_m: float = 1.2, ramp_per_m: float = 0.0):
     """Bend the edge lap ``poses`` from local ``i0`` inward around the ``discs`` within
     ``lookahead_m``: each pose beside a disc moves toward the area interior until the body
     side clears the disc by ``clearance``, ramped in and out (cosine) over ``ramp_m``.
     ``inside(x, y) -> bool`` tells the interior side. Returns ``(detour, end)``: the bent
     poses from i0 to local ``end`` (where the lap is rejoined), or None when no disc is
-    beside the stretch or the needed offset exceeds ``max_offset_m``."""
+    beside the stretch or the needed offset exceeds ``max_offset_m``. ``ramp_per_m`` > 0:
+    the ramp is at least that many metres per metre of the largest offset (a deep detour
+    returns to the lap at a shallow angle; sim 2026-11-04: a 1.31 m offset over a 1.2 m
+    ramp rejoined steeply and the robot overshot 0.14 m outside the line)."""
     if i0 >= len(poses) - 1 or not discs:
         return None
     cum = [0.0]
     for a, b in zip(poses[i0:-1], poses[i0 + 1:]):
         cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+    ramp_cap = max(ramp_m, ramp_per_m * max_offset_m)
     n = 0
-    while n < len(cum) and cum[n] <= lookahead_m + ramp_m + 1.0:
+    while n < len(cum) and cum[n] <= lookahead_m + ramp_cap + 1.0:
         n += 1
     seg = [tuple(q) for q in poses[i0:i0 + n]]
     if len(seg) < 3:
@@ -375,6 +379,8 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
         return None
     if max(need) > max_offset_m:
         return None
+    if ramp_per_m > 0.0:
+        ramp_m = max(ramp_m, ramp_per_m * max(need))
     # ramp: offset(s) = max over k of need[k] * cosine window around cum[k]
     off = [0.0] * len(seg)
     for k in range(len(seg)):

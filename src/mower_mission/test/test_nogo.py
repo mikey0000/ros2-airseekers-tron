@@ -683,3 +683,29 @@ def test_edge_lap_abort_on_a_dense_costmap_blob_is_bounded():
     assert time.monotonic() - t0 < 1.0
     assert any('edge blocked: skip' in t or 'no inward detour fits' in t
                for t in logs(h, mk))     # 1.8 m deep: no detour fits, skipped
+
+
+def test_deep_costmap_detour_rejoins_the_lap_at_a_shallow_angle():
+    """Sim 2026-11-04 (branch-scen5 501-503 s): a 1.31 m detour over a 1.2 m ramp came back
+    onto lap 0 at ~60 deg and the robot overshot 0.14 m outside the line. The costmap
+    detour's ramp scales with its offset (nogo_edge_costmap_ramp_per_m)."""
+    h = Harness()
+    h.areas = [square(0, 0, 12)]
+    start_until_planning(h)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0.0, 0.0, 12.0, 0.0, 121),
+                                            line(11.5, 2.0, 0.5, 2.0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    assert h.pending_action(f.ACT_FOLLOW) and h.fsm._edge_lap(0)
+    h.fsm.inputs.pose = (1.6, 0.0, 0.0)
+    h.tick(n=2)
+    _branch(h, 3.0, -0.3, 0.9)                     # deep: ~1.3 m inward offset, far ahead
+    h.fsm.inputs.collision_stamp = h.t
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    poses = h.goal(f.ACT_FOLLOW)['poses']
+    assert max(q[1] for q in poses) >= 0.9 + 0.071 + 0.235 + 0.10 - 0.03
+    steep = max(abs(math.atan2(b[1] - a[1], b[0] - a[0]))
+                for a, b in zip(poses[:-1], poses[1:]) if b[0] - a[0] > 1e-6)
+    assert math.degrees(steep) <= 32.0, math.degrees(steep)
+    assert abs(poses[-1][1]) < 0.02                 # ends on the lap

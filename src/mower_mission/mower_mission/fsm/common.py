@@ -1479,6 +1479,9 @@ class Params:
     nogo_edge_costmap_corridor_m: float = 0.60  # cell to the lap ahead (body half width + 0.37)
     nogo_edge_costmap_max_offset_m: float = 1.50
     nogo_edge_costmap_ramp_m: float = 1.20
+    # ramp >= this x the largest offset: the return onto the lap stays shallow (a 1.31 m
+    # offset over 1.2 m overshot 0.14 m outside on the rejoin, sim 2026-11-04)
+    nogo_edge_costmap_ramp_per_m: float = 3.0   # cosine ramp: max slope pi/(2 x 3) ~ 28 deg
     # the abort left the robot within this of the cells: back up this far first (body
     # inside, _safe_backoff), then detour (0 = never)
     nogo_edge_costmap_backup_near_m: float = 0.80

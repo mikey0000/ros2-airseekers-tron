@@ -562,11 +562,26 @@ class NogoMixin:
                                       float(p.nogo_edge_costmap_max_offset_m)),
                   'ramp_m': float(p.nogo_edge_costmap_ramp_m)}
             why = '%s (%d costmap cells)' % (why, len(cm))
-        res = nogo.edge_detour(sp, prog, discs + cm, inside,
-                               half_width=float(p.robot_width_m) / 2.0,
-                               clearance=float(p.nogo_edge_clearance_m),
-                               lookahead_m=float(p.nogo_edge_lookahead_m),
-                               **dict({'max_offset_m': float(p.nogo_edge_max_offset_m)}, **kw))
+        def bend(extra):
+            return nogo.edge_detour(sp, prog, discs + cm, inside,
+                                    half_width=float(p.robot_width_m) / 2.0,
+                                    clearance=float(p.nogo_edge_clearance_m),
+                                    lookahead_m=float(p.nogo_edge_lookahead_m),
+                                    **dict({'max_offset_m': float(p.nogo_edge_max_offset_m)},
+                                           **dict(kw, **extra)))
+        # costmap: the shallowest return that keeps the body inside (a long ramp near a
+        # corner can reach out); then the plain ramp. Zones: one try as before.
+        per = float(p.nogo_edge_costmap_ramp_per_m) if cm else 0.0
+        tries = [{'ramp_per_m': r} for r in (per, per * 2.0 / 3.0) if r > 0.0] + \
+            [{'ramp_per_m': 0.0}]
+        res, ex = None, None
+        for extra in tries:
+            res = bend(extra)
+            if res is None:
+                break                          # the offset does not fit: no ramp helps
+            ex = self._nogo_body(res[0])
+            if ex is None or ex <= 0.0:
+                break
         dt = _time.monotonic() - t0
         if dt > 0.2:
             self._log('warn', 'edge lap detour geometry took %.2f s (%d discs, %d costmap)'
@@ -577,7 +592,6 @@ class NogoMixin:
                                   'detour' % (why, kw['max_offset_m']))
             return False
         poses, end = res
-        ex = self._nogo_body(poses)
         if ex is not None and ex > 0.0:
             self._log('warn', 'edge lap: %s: the detour would put the body %.2f m beyond its '
                               'limit: no detour' % (why, ex))

@@ -110,6 +110,7 @@ behavior_tree_node:
     nogo_edge_costmap_corridor_m: 0.60
     nogo_edge_costmap_max_offset_m: 1.50
     nogo_edge_costmap_ramp_m: 1.20
+    nogo_edge_costmap_ramp_per_m: 3.0      # ramp >= 3 x the offset: <= ~28 deg rejoin
     nogo_edge_costmap_backup_near_m: 0.80   # robot this close to the cells: back up first
     nogo_edge_costmap_backup_m: 0.50
     nogo_living_memory_s: 60.0        # a static mark this recently under a person / animal zone is it
