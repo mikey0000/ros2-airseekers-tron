@@ -9,11 +9,14 @@ package api
 // RosoutRecord (base64 like the container log stream, so the dedicated-socket
 // path of useWS decodes both the same way).
 //
-// A single hub holds the upstream "rosout" subscription while at least one
-// client is connected and keeps the last rosoutHistorySize records, which a new
-// client receives first. Every record carries the hub's boot id and a
-// monotonically increasing seq so a client that reconnects can skip the
-// history it already has.
+// A single hub holds the upstream "rosout" subscription and keeps the last
+// rosoutHistorySize records, which a new client receives first. RosoutRoutes
+// pins the subscription at start-up (Pin), so the history covers the time
+// before the Logs page was opened (F24: it used to subscribe only while a
+// client was connected, so the page started empty). Unpinned, the hub
+// subscribes while at least one client is connected. Every record carries the
+// hub's boot id and a monotonically increasing seq so a client that reconnects
+// can skip the history it already has.
 
 import (
 	"encoding/base64"
@@ -122,6 +125,8 @@ type RosoutHub struct {
 	history  [][]byte // encoded frames, oldest first, at most historySize
 	clients  map[*rosoutClient]struct{}
 	upstream bool
+	// pinned keeps the upstream subscription without clients (Pin / Unpin).
+	pinned bool
 
 	historySize  int
 	clientBuffer int
@@ -144,16 +149,58 @@ func (h *RosoutHub) subscriberID() string {
 	return fmt.Sprintf("rosout-hub-%d", h.boot)
 }
 
+// subscribeLocked opens the upstream subscription if it is not open. h.mtx held.
+func (h *RosoutHub) subscribeLocked() error {
+	if h.upstream {
+		return nil
+	}
+	if err := h.provider.Subscribe(rosoutTopic, h.subscriberID(), 0, h.ingest); err != nil {
+		return err
+	}
+	h.upstream = true
+	return nil
+}
+
+// unsubscribeLocked drops the upstream subscription when nothing needs it
+// (no client, not pinned); the history is kept. h.mtx held.
+func (h *RosoutHub) unsubscribeLocked() {
+	if !h.upstream || h.pinned || len(h.clients) > 0 {
+		return
+	}
+	h.upstream = false
+	// Safe under h.mtx: the provider never holds its own lock while
+	// calling ingest (delivery runs on the subscriber's goroutine).
+	h.provider.UnSubscribe(rosoutTopic, h.subscriberID())
+}
+
+// Pin subscribes upstream now and keeps the subscription while no client is
+// connected, so the history fills before the first Logs page opens.
+func (h *RosoutHub) Pin() error {
+	h.mtx.Lock()
+	defer h.mtx.Unlock()
+	if err := h.subscribeLocked(); err != nil {
+		return err
+	}
+	h.pinned = true
+	return nil
+}
+
+// Unpin undoes Pin: the upstream subscription is dropped once no client is
+// connected.
+func (h *RosoutHub) Unpin() {
+	h.mtx.Lock()
+	defer h.mtx.Unlock()
+	h.pinned = false
+	h.unsubscribeLocked()
+}
+
 // attach registers a client and returns it with a snapshot of the history,
 // which the caller must send before reading from client.ch.
 func (h *RosoutHub) attach() (*rosoutClient, [][]byte, error) {
 	h.mtx.Lock()
 	defer h.mtx.Unlock()
-	if !h.upstream {
-		if err := h.provider.Subscribe(rosoutTopic, h.subscriberID(), 0, h.ingest); err != nil {
-			return nil, nil, err
-		}
-		h.upstream = true
+	if err := h.subscribeLocked(); err != nil {
+		return nil, nil, err
 	}
 	client := &rosoutClient{ch: make(chan []byte, h.clientBuffer)}
 	h.clients[client] = struct{}{}
@@ -162,17 +209,12 @@ func (h *RosoutHub) attach() (*rosoutClient, [][]byte, error) {
 }
 
 // detach removes a client; the upstream subscription is dropped (and the
-// history kept) when it was the last one.
+// history kept) when it was the last one and the hub is not pinned.
 func (h *RosoutHub) detach(client *rosoutClient) {
 	h.mtx.Lock()
 	defer h.mtx.Unlock()
 	delete(h.clients, client)
-	if len(h.clients) == 0 && h.upstream {
-		h.upstream = false
-		// Safe under h.mtx: the provider never holds its own lock while
-		// calling ingest (delivery runs on the subscriber's goroutine).
-		h.provider.UnSubscribe(rosoutTopic, h.subscriberID())
-	}
+	h.unsubscribeLocked()
 }
 
 // ingest handles one upstream message (called from the provider's delivery
@@ -226,6 +268,11 @@ func (h *RosoutHub) ingest(msg []byte) {
 // @Router /rosout/stream [get]
 func RosoutRoutes(r *gin.RouterGroup, provider types.IRosProvider) {
 	hub := NewRosoutHub(provider)
+	// Collect history from start-up (F24). On failure the hub still
+	// subscribes when the first client connects.
+	if err := hub.Pin(); err != nil {
+		log.Printf("rosout: start-up subscribe failed, history starts with the first client: %v", err)
+	}
 	r.GET("/rosout/stream", func(c *gin.Context) {
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {

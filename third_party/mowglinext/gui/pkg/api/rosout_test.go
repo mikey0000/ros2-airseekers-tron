@@ -119,6 +119,44 @@ func TestRosoutHubSubscribesLazilyAndKeepsHistory(t *testing.T) {
 	}
 }
 
+func TestRosoutHubPinnedKeepsHistoryFromBeforeTheFirstClient(t *testing.T) {
+	ros := pkgtypes.NewMockRosProvider()
+	hub := NewRosoutHub(ros)
+	if err := hub.Pin(); err != nil {
+		t.Fatal(err)
+	}
+	// Logged before the Logs page was opened (F24).
+	ros.Dispatch(rosoutTopic, rosLog(30, "early", "before the page"))
+
+	client, history, err := hub.attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || decodeFrame(t, history[0]).Msg != "before the page" {
+		t.Fatalf("history = %d records, want the early line", len(history))
+	}
+	// The last client leaving does not drop a pinned subscription.
+	hub.detach(client)
+	ros.Dispatch(rosoutTopic, rosLog(20, "n", "while closed"))
+	if hub.seq != 2 {
+		t.Fatalf("pinned hub stopped ingesting: seq = %d, want 2", hub.seq)
+	}
+	// Unpinned without clients: dropped.
+	hub.Unpin()
+	ros.Dispatch(rosoutTopic, rosLog(20, "n", "after unpin"))
+	if hub.seq != 2 {
+		t.Errorf("hub ingested after Unpin: seq = %d, want 2", hub.seq)
+	}
+}
+
+func TestRosoutHubPinSubscribeError(t *testing.T) {
+	ros := pkgtypes.NewMockRosProvider()
+	ros.SubscribeErr = errors.New("bridge down")
+	if err := NewRosoutHub(ros).Pin(); err == nil {
+		t.Fatal("expected the subscribe error to surface")
+	}
+}
+
 func TestRosoutHubSlowClientDropsOldest(t *testing.T) {
 	ros := pkgtypes.NewMockRosProvider()
 	hub := NewRosoutHub(ros)
