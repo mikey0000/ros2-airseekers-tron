@@ -297,6 +297,8 @@ FOXGLOVE_GUI_TOPICS = [
     r'^/mower_gps_node/lora_status$',
     # mower_control/wifi_monitor 1 Hz link status (GUI header Wi-Fi chip).
     r'^/wifi/status$',
+    # mower_docking charger-moved check, latched JSON once per dock (GUI dock card).
+    r'^/mower_docking/dock_moved$',
     # gui_bridge's low-rate GUI copies (mower_gui_bridge/gui_relay.py): pose 5 Hz, status
     # 2 Hz, emergency on change + 1 Hz, detections 2 Hz/camera on demand. The GUI provider
     # reads these instead of the 20 / 5 / 5 / 15 Hz originals (kept above for older GUIs);
