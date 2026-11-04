@@ -506,6 +506,13 @@ class NogoMixin:
             cells.setdefault((int(math.floor(x / 0.1)), int(math.floor(y / 0.1))), (x, y))
         def xy(c):
             return (c[0] + 0.5) * 0.1, (c[1] + 0.5) * 0.1
+        if len(cells) > 2000:            # bound the work (a hedge / fence in view): ahead only
+            near = {}
+            for c, q in cells.items():
+                if min(math.hypot(q[0] - a[0], q[1] - a[1]) for a in ahead[::5] + ahead[-1:]) \
+                        <= reach:
+                    near[c] = q
+            cells = near
         cells = [c for c in cells if bb.point_outside(*xy(c), polys) <= 0.05]
         free = set(cells)
         todo = [c for c in cells if min(_seg_dist(xy(c), a, b) for a, b in
@@ -521,6 +528,10 @@ class NogoMixin:
                     if n in free:
                         free.discard(n)
                         todo.append(n)
+        if len(keep) > 300:              # merge into 0.2 m discs (edge_detour is O(discs x poses))
+            big = {(c[0] // 2, c[1] // 2) for c in keep}
+            return [nogo.Zone((b[0] + 0.5) * 0.2, (b[1] + 0.5) * 0.2, 0.142, label='costmap',
+                              state='costmap') for b in big]
         return [nogo.Zone(*xy(c), 0.071, label='costmap', state='costmap') for c in keep]
 
     def _nogo_edge_detour(self, prog, why, proactive=False, costmap=False):
@@ -535,6 +546,8 @@ class NogoMixin:
         polys = self._region()
         if not polys:
             return False
+        import time as _time
+        t0 = _time.monotonic()
         discs = self._nogo_edge_discs()
         cm = self._nogo_costmap_discs(prog, polys) if costmap else []
         if not discs and not cm:
@@ -554,6 +567,10 @@ class NogoMixin:
                                clearance=float(p.nogo_edge_clearance_m),
                                lookahead_m=float(p.nogo_edge_lookahead_m),
                                **dict({'max_offset_m': float(p.nogo_edge_max_offset_m)}, **kw))
+        dt = _time.monotonic() - t0
+        if dt > 0.2:
+            self._log('warn', 'edge lap detour geometry took %.2f s (%d discs, %d costmap)'
+                      % (dt, len(discs), len(cm)))
         if res is None:
             if cm:
                 self._log('warn', 'edge lap: %s: no inward detour fits within %.2f m: no '

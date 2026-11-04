@@ -603,3 +603,58 @@ def test_route_corner_mark_under_a_dog_is_the_dog_and_clears_with_it():
 def _answer_corner_route(h):
     from test_mission_fsm import _answer_route, _route_resp
     _answer_route(h, resp=_route_resp(_corner_route(100.0, h.fsm.mission.transit_target)))
+
+
+def test_edge_detour_round_a_chain_of_discs_terminates_fast():
+    """Sim 2026-11-04: the chain push loop never ended when abs(lat_in - o) rounded to just
+    below reach after o = lat_in + reach (mission_node hung at the branch)."""
+    import random
+    import signal
+    import time
+    rnd = random.Random(7)
+    lap = [(0.05 * i, 0.0, 0.0) for i in range(120)]
+    reach = 0.071 + 0.235 + 0.10                # disc r + edge_detour half_width + clearance
+    deep = next(y for y in (rnd.uniform(0.85, 0.95) for _ in range(10000))
+                if abs(y - (y + reach)) < reach)    # the rounding that looped forever
+    discs = [Z(1.5 + rnd.uniform(-0.05, 0.05), rnd.uniform(-0.1, 0.8), 0.071)
+             for _ in range(300)] + [Z(1.5, deep, 0.071)]
+
+    def boom(*_a):
+        raise TimeoutError('edge_detour did not return')
+    old = signal.signal(signal.SIGALRM, boom)
+    signal.alarm(5)
+    try:
+        t0 = time.monotonic()
+        res = nogo.edge_detour(lap, 0, discs, lambda x, y: y > 0, max_offset_m=1.5,
+                               ramp_m=1.2)
+        dt = time.monotonic() - t0
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+    assert res is not None and dt < 1.0
+    poses, _end = res
+    assert max(q[1] for q in poses) >= deep + reach - 0.02
+
+
+def test_edge_lap_abort_on_a_dense_costmap_blob_is_bounded():
+    """A wide blob of lethal cells (hedge, bed) on the lap: the disc set is merged (<= 0.2 m
+    discs past 300 cells) and the abort is handled in well under a tick budget."""
+    import time
+    h = _edge_h()
+    h.fsm.inputs.pose = (1.6, 0.0, 0.0)
+    h.tick(n=2)
+    h.fsm.inputs.costmap_lethal = [(2.2 + 0.05 * i, -0.2 + 0.05 * j)
+                                   for i in range(40) for j in range(40)]
+    h.fsm.inputs.costmap_lethal_stamp = h.t
+    polys = h.fsm._region()
+    t0 = time.monotonic()
+    cm = h.fsm._nogo_costmap_discs(16, polys)
+    assert time.monotonic() - t0 < 0.5
+    assert cm and len(cm) <= 300 and all(abs(z.r - 0.142) < 1e-9 for z in cm)
+    mk = h.mark()
+    h.fsm.inputs.collision_stamp = h.t
+    t0 = time.monotonic()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert time.monotonic() - t0 < 1.0
+    assert any('edge blocked: skip' in t or 'no inward detour fits' in t
+               for t in logs(h, mk))     # 1.8 m deep: no detour fits, skipped

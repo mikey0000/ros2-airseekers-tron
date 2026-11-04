@@ -358,12 +358,18 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
         # the least inward offset whose body clears every disc beside the pose: a chain of
         # discs (costmap cells of a branch, 2026-11-04) pushes past each in turn; one disc
         # gives lat_in + reach as before
-        o, moved = 0.0, True
-        while moved and o <= max_offset_m:
+        # o only ever grows (each disc can push at most once): bounded by len(beside) passes.
+        # Strictly: after o = lat_in + reach, abs(lat_in - o) can round to just below reach
+        # and the same disc fired forever (sim 2026-11-04: mission_node hung at the branch).
+        o = 0.0
+        for _pass in range(len(beside) + 1):
             moved = False
             for lat_in, reach in beside:
-                if abs(lat_in - o) < reach:
-                    o, moved = lat_in + reach, True
+                push = lat_in + reach
+                if push > o + 1e-9 and abs(lat_in - o) < reach:
+                    o, moved = push, True
+            if not moved or o > max_offset_m:
+                break
         need[k] = o
     if max(need) <= 1e-3:
         return None
