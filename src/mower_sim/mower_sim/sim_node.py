@@ -282,7 +282,11 @@ class SimNode(Node):
         self.rear = RearCamera(RearCameraParams(
             marker_size=float(gp('rear_marker_size').value),
             marker_offset=float(gp('rear_marker_offset').value),
-            mount_yaw_deg=float(gp('rear_camera_mount_yaw_deg').value)))
+            mount_yaw_deg=float(gp('rear_camera_mount_yaw_deg').value),
+            **self.world.rear_camera))
+        if self.world.rear_camera:
+            self.get_logger().warn('rear camera overrides from the world: %s'
+                                   % self.world.rear_camera)
         self.dt = 1.0 / float(gp('physics_rate_hz').value)
         self.rate = max(0.05, float(gp('rate_factor').value))
         self.clock_dt = 1.0 / float(gp('clock_rate_hz').value)

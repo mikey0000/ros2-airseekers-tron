@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for mower_sim.marker (rear camera ArUco rendering); need cv2 with aruco."""
 
+import math
+
 import pytest
 
 cv2 = pytest.importorskip('cv2')
@@ -107,3 +109,34 @@ def test_real_marker_read_with_the_deployed_config_reads_its_docked_offset():
     # under-read by 0.04 / 0.055 in the camera frame, zero at the docked pose
     assert rem[0] == pytest.approx(0.30 * 0.04 / 0.055, abs=0.03)
     assert rem[1] == pytest.approx(0.50 * 0.04 / 0.055, abs=0.04)
+
+
+def _yaw_errors(cam, x, y, yaw, n):
+    import os
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'mower_docking'))
+    from mower_docking.aruco_detect import ArucoDetector
+    from mower_docking import dock_logic as dl
+    det = ArucoDetector('DICT_4X4_50', 0.04)
+    errs = []
+    for _ in range(n):
+        img = cam.render(x, y, yaw, 0.0, 0.0, 0.0)
+        res = det.detect(img, cam.K, [0.0] * 5)
+        if res:
+            m = dl.marker_in_base(res[0][1], res[0][2], REAR_CAMERA_XYZ, REAR_CAMERA_RPY)
+            errs.append(math.degrees(dl.wrap_angle(-m.yaw - yaw)))
+    return errs
+
+
+def test_dusk_scene_is_dark_detected_and_swings_the_marker_yaw():
+    """dock_dusk (2026-10-31 night dock): brightness ~10, detection 100 %, yaw +-15-20 deg."""
+    clean = RearCamera(RearCameraParams(marker_size=0.055, marker_offset=0.543, dusk=True))
+    img = clean.render(1.0, 0.05, 0.05, 0.0, 0.0, 0.0)
+    assert img.mean() < 15.0
+    e0 = _yaw_errors(clean, 1.0, 0.05, 0.05, 5)
+    assert len(e0) == 5 and max(e0) - min(e0) < 1.0       # no jitter: the same solve each frame
+    dusk = RearCamera(RearCameraParams(marker_size=0.055, marker_offset=0.543, dusk=True,
+                                       corner_noise_px=0.5, seed=3))
+    errs = _yaw_errors(dusk, 1.0, 0.05, 0.05, 40)
+    assert len(errs) == 40
+    assert max(errs) - min(errs) > 25.0

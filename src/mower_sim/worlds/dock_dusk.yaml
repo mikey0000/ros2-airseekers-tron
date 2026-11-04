@@ -1,0 +1,14 @@
+# Dusk/night docking scenario (2026-10-31 20:02 night dock): dock_approach with the rear camera
+# rendering a black scene in which only the lit marker is visible (brightness ~10), its white
+# cells blooming, and 0.5 px per-frame corner jitter: the IPPE solve of the small marker swings
+# its yaw by +-15-20 deg from frame to frame while detection stays at 100 %.
+#   ros2 launch mower_bringup sim.launch.py world:=dock_dusk mission:=false mission_stub:=true
+#   ros2 run mower_sim scenario dock
+name: dock_dusk
+datum: {lat: 48.0, lon: 9.0}
+lawn: [[-1.0, -5.0], [12.0, -5.0], [12.0, 5.0], [-1.0, 5.0]]
+dock: {x: 0.0, y: 0.0, yaw: 0.0}
+start: {x: 1.2, y: 0.05, yaw: 0.05}
+obstacles: []
+battery: {voltage: 23.0, percentage: 0.35}
+rear_camera: {dusk: true, bloom_px: 0.5, corner_noise_px: 0.5, seed: 1}

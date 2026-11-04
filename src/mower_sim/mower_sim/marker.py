@@ -46,6 +46,16 @@ class RearCameraParams:
     # camera): the robot's rear camera reads the heading 6.5 deg off (2026-10-21 night fit),
     # which docking.yaml rear_camera_yaw_correction_deg undoes. 0 = ideal camera.
     mount_yaw_deg: float = 0.0
+    # Dusk/night (2026-10-31 20:02 night dock): a black scene with only the lit marker visible,
+    # its white cells blooming. ``dusk`` darkens the background to ``dusk_background`` and
+    # blurs + over-exposes the marker (``bloom_px``); ``corner_noise_px`` jitters the four
+    # projected corners per frame (seeded), which at 30-50 px makes the IPPE solve swap
+    # between its two near-equal solutions, as the night's +-20 deg marker yaw did.
+    dusk: bool = False
+    dusk_background: int = 6
+    bloom_px: float = 0.5
+    corner_noise_px: float = 0.0
+    seed: int = 1
 
 
 def _marker_bitmap(marker_id: int, cells_px: int = 20, quiet: int = 2):
@@ -74,6 +84,7 @@ class RearCamera:
                            [0.0, 0.0, 1.0]])
             self.r_cam = rz @ self.r_cam
         self._bitmap = None
+        self._rng = np.random.default_rng(self.p.seed)
 
     @property
     def K(self):
@@ -109,7 +120,8 @@ class RearCamera:
         """mono8 image (H x W) of the scene from the robot pose (x, y, yaw)."""
         import cv2
         p = self.p
-        img = np.full((p.height, p.width), p.background, dtype=np.uint8)
+        img = np.full((p.height, p.width), p.dusk_background if p.dusk else p.background,
+                      dtype=np.uint8)
         if self._bitmap is None:
             self._bitmap = _marker_bitmap(p.marker_id, quiet=p.quiet_zone_cells)
         bmp, side, pad = self._bitmap
@@ -121,6 +133,8 @@ class RearCamera:
         dst = np.array([[u, v] for u, v, _ in proj], dtype=np.float32)
         if not np.all(np.isfinite(dst)):
             return img
+        if p.corner_noise_px > 0:
+            dst = dst + self._rng.normal(0.0, p.corner_noise_px, dst.shape).astype(np.float32)
         # facing check: the camera must see the marker's front side
         cross = (dst[1, 0] - dst[0, 0]) * (dst[3, 1] - dst[0, 1]) - \
                 (dst[1, 1] - dst[0, 1]) * (dst[3, 0] - dst[0, 0])
@@ -134,4 +148,14 @@ class RearCamera:
                                    flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT,
                                    borderValue=0)
         img[mask > 0] = warped[mask > 0]
+        if p.dusk:
+            img = self._bloom(img)
         return img
+
+    def _bloom(self, img: np.ndarray) -> np.ndarray:
+        """Lit marker in a black scene: the white cells spread into the black ones."""
+        import cv2
+        if self.p.bloom_px <= 0:
+            return img
+        blur = cv2.GaussianBlur(img.astype(np.float32), (0, 0), self.p.bloom_px)
+        return np.clip(blur * 1.6, 0, 255).astype(np.uint8)
