@@ -4231,7 +4231,9 @@
     "setFromRobotConfirm": "The robot must be sitting on its dock. The stored dock heading is kept; set it on the map if needed.",
     "setFromRobotDone": "Dock position saved",
     "setFromRobotFailed": "Could not set the dock position",
-    "storedPose": "Stored at X {{x}} m, Y {{y}} m."
+    "storedPose": "Stored at X {{x}} m, Y {{y}} m.",
+    "movedTitle": "The charger seems to have moved",
+    "movedBody": "After the last dock the robot sat {{distance}} m from the stored dock position. With the robot on its dock, use \"Set dock = current robot pose\" below, then check the dock heading on the map."
   },
   "areaSettings": {
     "title": "Mow settings",
@@ -4429,7 +4431,10 @@
     "undockFailed": "Couldn't leave the dock",
     "batteryCritical": "Battery critically low",
     "rtkLost": "RTK fix lost",
-    "rtkRecovered": "RTK fix back"
+    "rtkRecovered": "RTK fix back",
+    "dockMoved": "The charger seems to have moved",
+    "cameraBlocked": "Camera blocked",
+    "batteryTemp": "Battery temperature out of range"
   },
   "mapPath": {
     "title": "New path",

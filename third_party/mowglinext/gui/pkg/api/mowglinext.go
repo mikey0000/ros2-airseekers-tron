@@ -143,6 +143,8 @@ func topicSubscribeInterval(topic string) (int, bool) {
 		"missionPlan", "missionProgress", "cutterHeight", "rtkBaseStatus",
 		// Header Wi-Fi chip; wifi_monitor publishes at 1 Hz anyway.
 		"wifiStatus",
+		// Latched charger-moved result, once per dock.
+		"dockMoved",
 		// mower_alerts operator events (JSON). Queued server-side, so the
 		// throttle never applies and every event reaches the bell.
 		"alerts",

@@ -17,6 +17,11 @@ vi.mock("../../hooks/useCalibrationStatus.ts", () => ({
     useCalibrationStatus: () => ({status: {dock: dockStatus}, error: null, refresh: vi.fn()}),
 }));
 
+let dockMoved: Record<string, unknown> | null = null;
+vi.mock("../../hooks/useDockMoved.ts", () => ({
+    useDockMoved: () => dockMoved,
+}));
+
 describe("resolveDockPose", () => {
     it("prefers the persisted pose, then the settings form, and treats (0, 0) as unset", () => {
         expect(resolveDockPose({present: true, dock_pose_x: 1, dock_pose_y: 2, dock_pose_yaw_rad: 0.5}, {dock_pose_x: 9, dock_pose_y: 9}))
@@ -44,6 +49,22 @@ describe("VisionDockCard", () => {
         mapDockingCreate.mockReset();
         request.mockReset();
         dockStatus = {present: false};
+        dockMoved = null;
+    });
+
+    it("offers the re-calibration while the charger looks moved", () => {
+        dockStatus = {present: true, dock_pose_x: 0.7, dock_pose_y: 2, dock_pose_yaw_rad: 0};
+        dockMoved = {moved: true, distance_m: 0.8, docked: [1.5, 2], stored: [0.7, 2], warn_m: 0.5};
+        renderCard();
+        expect(screen.getByTestId("dock-moved-alert")).toHaveTextContent("The charger seems to have moved");
+        expect(screen.getByTestId("dock-moved-alert")).toHaveTextContent("0.80 m");
+    });
+
+    it("drops the offer once the stored dock matches where the robot docked", () => {
+        dockStatus = {present: true, dock_pose_x: 1.5, dock_pose_y: 2, dock_pose_yaw_rad: 0};
+        dockMoved = {moved: true, distance_m: 0.8, docked: [1.5, 2], stored: [0.7, 2], warn_m: 0.5};
+        renderCard();
+        expect(screen.queryByTestId("dock-moved-alert")).not.toBeInTheDocument();
     });
 
     it("shows the stored dock pose", () => {

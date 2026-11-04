@@ -1,12 +1,14 @@
 import React, {useState} from "react";
 import {useNavigate} from "react-router-dom";
 import {useTranslation} from "react-i18next";
-import {App, Button, Card, Descriptions, Popconfirm, Space, Tag, Typography} from "antd";
+import {Alert, App, Button, Card, Descriptions, Popconfirm, Space, Tag, Typography} from "antd";
 import {AimOutlined, EnvironmentOutlined, HomeOutlined} from "@ant-design/icons";
 import {useThemeMode} from "../../theme/ThemeContext.tsx";
 import {useApi} from "../../hooks/useApi.ts";
 import {type CalibrationStatus, useCalibrationStatus} from "../../hooks/useCalibrationStatus.ts";
 import {type DockPose, resolveDockPose} from "./visionDockPose.ts";
+import {useDockMoved} from "../../hooks/useDockMoved.ts";
+import {dockMoveNeedsRecalibration} from "../../utils/dockMoved.ts";
 
 const {Text, Paragraph} = Typography;
 
@@ -45,6 +47,10 @@ export const VisionDockCard: React.FC<Props> = ({values, onChange}) => {
     const [setting, setSetting] = useState(false);
 
     const pose = resolveDockPose(status?.dock, values);
+    // Charger-moved check after the last RTK-fixed dock (mower_docking): offer
+    // the re-calibration until the stored pose matches where the robot docked.
+    const dockMoved = useDockMoved();
+    const offerRecalibration = dockMoveNeedsRecalibration(dockMoved, pose);
 
     const setFromRobotPose = async () => {
         setSetting(true);
@@ -121,6 +127,16 @@ export const VisionDockCard: React.FC<Props> = ({values, onChange}) => {
                     </Descriptions>
                 ) : (
                     <Tag color="warning" style={{alignSelf: "flex-start"}}>{t("visionDock.notSet")}</Tag>
+                )}
+
+                {offerRecalibration && dockMoved && (
+                    <Alert
+                        type="warning"
+                        showIcon
+                        data-testid="dock-moved-alert"
+                        message={t("visionDock.movedTitle")}
+                        description={t("visionDock.movedBody", {distance: dockMoved.distance_m.toFixed(2)})}
+                    />
                 )}
 
                 <Space wrap>

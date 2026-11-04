@@ -4231,7 +4231,9 @@
     "setFromRobotConfirm": "Le robot doit être sur sa base. Le cap enregistré de la base est conservé ; réglez-le sur la carte si nécessaire.",
     "setFromRobotDone": "Position de la base enregistrée",
     "setFromRobotFailed": "Impossible de définir la position de la base",
-    "storedPose": "Enregistrée en X {{x}} m, Y {{y}} m."
+    "storedPose": "Enregistrée en X {{x}} m, Y {{y}} m.",
+    "movedTitle": "Le chargeur semble avoir été déplacé",
+    "movedBody": "Au dernier retour à la base, le robot était à {{distance}} m de la position enregistrée de la base. Robot sur sa base, utilisez « Base = position actuelle du robot » ci-dessous, puis vérifiez l’orientation de la base sur la carte."
   },
   "areaSettings": {
     "title": "Réglages de tonte",
@@ -4429,7 +4431,10 @@
     "undockFailed": "Sortie de base impossible",
     "batteryCritical": "Batterie très faible",
     "rtkLost": "Fix RTK perdu",
-    "rtkRecovered": "Fix RTK retrouvé"
+    "rtkRecovered": "Fix RTK retrouvé",
+    "dockMoved": "Le chargeur semble avoir été déplacé",
+    "cameraBlocked": "Caméra obstruée",
+    "batteryTemp": "Température de la batterie hors plage"
   },
   "mapPath": {
     "title": "Nouveau chemin",

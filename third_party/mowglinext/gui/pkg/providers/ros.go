@@ -129,6 +129,10 @@ var topicMap = map[string]topicDef{
 	// Wi-Fi link of the mower (mower_control/wifi_monitor, 1 Hz): signal, BSSID,
 	// freq, bitrates, roam count. Header Wi-Fi chip.
 	"wifiStatus": {"/wifi/status", "mower_interfaces/msg/WifiStatus"},
+	// Charger-moved check (mower_docking dock_moved.py), latched JSON after each
+	// RTK-fixed dock: {moved, distance_m, docked[x,y], stored[x,y], warn_m}.
+	// The dock card offers re-calibration while moved is true.
+	"dockMoved": {"/mower_docking/dock_moved", "std_msgs/msg/String"},
 }
 
 // TopicKeys returns every logical topic key the provider can subscribe to, so
