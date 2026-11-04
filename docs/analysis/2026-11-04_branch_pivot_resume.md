@@ -70,8 +70,35 @@ needs no matching removal.
   - the detour itself aborts (`_nogo_detour_done` -> `_edge_skip`).
 - **Blade.** It stays on in the detour (owner policy, unchanged).
 
+### Follow-ups found in the sim (commits 13a6f5a, 6cad540, 2f0af8d)
+
+- **The mission node hung at the branch (first scenario run, f8edc0d).** The chain loop
+  in `nogo.edge_detour` could fire the same disc forever. After `o = lat_in + reach`,
+  `abs(lat_in - o)` can round to just below `reach`, which happens for about 22 % of
+  offsets. The FSM tick then never returned while holding the lock. The bag shows the
+  status stopping at START+425 s, the moment of the branch abort.
+  - **Fix:** a push must now strictly raise the offset, and the number of passes is
+    bounded by the disc count.
+  - **Bounded work:** past 2000 cells only those near the lap ahead are kept; past 300
+    the cluster is merged into 0.2 m discs; a WARN is logged when the geometry takes
+    longer than 0.2 s.
+  - **Tests:** the rounding case, which hangs on the old code (alarm), and a dense blob.
+- **The detour started but aborted within 1 s.** A collision abort leaves the robot with
+  its nose at the obstacle, where every MPPI trajectory collides. Nav2 BackUp refuses
+  too ("Collision Ahead - Exiting DriveOnHeading"), because its footprint check fails at
+  the start pose.
+  - **Fix:** when the robot is within `nogo_edge_costmap_backup_near_m` 0.8 m of the
+    cells, the mission reverses straight itself with DriveCmd (the emergency twist lane,
+    as the loc retrace and boundary moves do), by up to `nogo_edge_costmap_backup_m`
+    0.5 m.
+  - **Why reversing is safe:** the robot goes back down the lap it has just driven, which
+    is clear by construction, and `_safe_backoff` keeps the body inside.
+  - **Then:** the detour is bent from the lap pose nearest the robot
+    (`_nogo_detour_backup`, `_nogo_backup_tick`, `_nogo_detour_backup_done`).
+
 New parameters in `mission.yaml`: `nogo_edge_costmap`, `_max_age_s` 3.0, `_corridor_m`
-0.60, `_max_offset_m` 1.50, `_ramp_m` 1.20. New mission_node topics:
+0.60, `_max_offset_m` 1.50, `_ramp_m` 1.20, `_backup_near_m` 0.80, `_backup_m` 0.50.
+New mission_node topics:
 `local_costmap_topic`, `local_costmap_updates_topic`, `odom_frame_pose_topic` (each '' =
 off).
 
@@ -206,46 +233,82 @@ Tests changed on purpose:
 
 ## Sim
 
-### Support added (commit 138ff2e)
+### Support added (commits 138ff2e, 8c3161a, 6cad540, c507b35, 2f0af8d)
 
 - **mower_sim rtk anchor `pivot`.** Event times count from the first in-place rotation
-  with the cutter on, held 0.4 s.
+  with the cutter on that has lasted `pivot_min_s`.
+- **rtk `ekf_sigma_m`.** The `/odometry/filtered_map` xy sigma while RTK is not fixed.
+  - Without it the sim's map pose always carried the odom covariance. The monitor's
+    sigma check (the field's "ekf_map sigma 0.17 m > 0.15 m (rtk float)") could not
+    fire, and a pivot travels nothing for the drift budget.
+  - The first scenario run's float therefore raised no hold: "status stayed ok".
 - **`sim_gate.sh --at T:cmd:N | T:stuck:X:Y`.** HighLevelControl commands and stuck
   incidents at sim times. Two stuck incidents at least 60 s wall apart make
-  obstacle_tracker propose a pending zone, as in the field. An IDLE state does not end
-  the run while steps are left.
+  obstacle_tracker propose a pending zone, as in the field.
+  - `ros2 topic pub` waits for 3 subscribers (recorder, tracker, map_server) and sends
+    three times. With `-w 1` the recorder alone satisfied it and the tracker lost the
+    second incident.
+  - An IDLE state does not end the run while steps are left.
+- **evaluate.py k.** The blade-off window starts 0.3 s after the hold. The 10 Hz sim
+  status still showed the cutter one sample (30 ms) after the blade-off command.
 - **World `worlds/owner_area3_fix1104.yaml`.** owner_far's Area 6 is the same polygon as
   area 3. It contains:
-  - (i) a stereo-only 1.2 m branch across edge lap 0 at (-28.7, -14.9);
-  - (ii) RTK float 12 s at the first bladed pivot;
+  - (i) a stereo-only branch, 1.2 x 0.15 x 0.25 m, across edge lap 0 at (-28.7, -14.9).
+    At 8 x 15 cm the 64 x 32-ray sim stereo saw it only with the nose on it: the robot
+    stopped in contact and stayed wedged, unlike the field.
+  - (ii) RTK float 12 s from 2 s into the first bladed pivot, ekf sigma 0.17 m;
   - (iii), via `--at`, a pending zone at (-28.0, -9.0), STOP at +1300 s, START at
     +1330 s.
 
-### Runs: not yet run
+### Runs (2026-11-04 / 05, host performance profile, load5 < 3 at start, one at a time)
 
-On 2026-11-04 the host failed the gate preconditions: `powerprofilesctl get` = balanced and
-load5 4.2-5.9. `sim_gate.sh` would set the profile itself, and the agent may not change
-system settings, so no gate was run. The owner's approval needs these runs.
+Scenario command: `sim_gate.sh --at 700:stuck:-28.0:-9.0 --at 900:stuck:-28.0:-9.0 --at
+1300:cmd:8 --at 1330:cmd:1 -w src/mower_sim/worlds/owner_area3_fix1104.yaml -x 2 -t 3600`.
+The master runs use a master 41e61e3 worktree with this branch's sim tooling (identical
+files).
 
-Run them one at a time with `SIM_GATE_OUT=<...>/ros2_stack-wt/simout_fix1104`. For the
-master runs, use a master worktree that has this branch's `src/mower_sim` (rtk.py,
-sim_node.py, the world) and `scripts/sim_gate.sh`.
-
-| Run | Command (from the stack root) | Expected on the branch |
+| Scenario | master 41e61e3 (`master-scen2`) | branch 2f0af8d (`branch-scen5`) |
 |---|---|---|
-| scenarios | `sim_gate.sh -n fix1104-scen -w src/mower_sim/worlds/owner_area3_fix1104.yaml -x 2 -t 3600 --at 700:stuck:-28.0:-9.0 --at 900:stuck:-28.0:-9.0 --at 1300:cmd:8 --at 1330:cmd:1` | (i) `edge lap: ... (N costmap cells): detour inward`, then `edge detour done: rejoining`, no `edge blocked: skip` near (-28.7, -14.9); (ii) after the hold's `resuming`, a `pivot ... in place` before `/follow_path`, no BOUNDARY OUT; (iii) `1 pending (unreviewed) keepout(s) left out of the plan`, `resuming (k/N sub-paths done ...)` at the STOP's sub-path, no `plan geometry changed` |
-| full gate | `sim_gate.sh -n fix1104-d1 -d -s 1 -x 1` | no new failures vs master, a/b clean, docked |
-| fast gate | `sim_gate.sh -n fix1104-l3 -l -x 3` (launch.log "desired rate of 60") | as above |
+| (i) costmap branch on lap 0 | `edge blocked: skip 2.0 m ... collision ahead`; the robot then stays wedged at the branch (-28.18, -15.48), 12 sub-paths NOT mowed | `back up 0.50 m, then detour` -> `detour inward ... (14 costmap cells) ... max offset 1.31 m` -> `edge detour done: rejoining the lap`, twice on lap 0. The map tag is placed on the obstacle. Later laps: `would put the body 0.28 / 0.41 m beyond its limit: no detour` -> skip (the designed fallback) |
+| (ii) RTK hold mid-pivot | pivot -84 deg, hold, `ok again: resuming` -> `/follow_path` with no pivot (the field bug) | pivot -86 deg, hold, resume -> `pivot -41 deg in place` -> follow. k PASS (held 0.1 s, blade off, resumed, 0 excursions) |
+| (iii) STOP / START with a pending zone | mid-mow `no-go re-plan ... zone #3 ... pending`, then on START `plan geometry changed, stale resume cursor discarded`, 17 sub-paths 528.7 m | `1 pending (unreviewed) keepout(s) left out of the plan`, `resuming (2/6 sub-paths done, cursor (3, 0))`, the same 6 sub-paths 546.9 m |
+| verdict | FAIL (c, d, h, i) | FAIL (a, b, c, d, e, f, h, i), see below |
 
-| Criterion / scenario | master | branch | verdict |
-|---|---|---|---|
-| (i) costmap branch on lap 0 | not run | not run | pending |
-| (ii) RTK hold mid-pivot | not run | not run | pending |
-| (iii) STOP / START with a pending zone | not run | not run | pending |
-| `-d -s 1 -x 1` a-i | not run | not run | pending |
-| `-l -x 3` a-i | not run | not run | pending |
+`branch-scen5` overall: 28.5 % mowed, ending in STUCK_NEEDS_HELP at (-27.86, -14.90) next
+to the branch.
+
+- **Action servers lost.** From +1642 s to the end the mission logged `action server
+  /spin not available after 3.0s` (28 times) and the same for `/backup` (twice).
+  behavior_server was running. The route corners by the branch then failed and two
+  sub-paths stayed NOT mowed.
+- **Boundary.** Two BOUNDARY OUT trips (+440 s mowing at the branch, +1547 s in transit
+  there) and 45 samples over 0.10 m (max 0.141 m, 501-503 s, at (-30.02, -14.44)).
+- **What master shows instead.** Master never gets past the branch (wedged), so it has
+  no comparable exposure there.
+- **Has the loss recurred?** No. It appeared in 1 of 7 scenario runs and in none of the
+  full gates.
+
+One master scenario run (`master-scen`) froze its mission node at START+192 s, in the
+first route transit, with no log. A rerun with a stack watchdog did not reproduce it
+(`master-scen2` above).
+
+| Full gate (real_run5) | master 41e61e3 | branch 2f0af8d |
+|---|---|---|
+| `-d -s 1 -x 1` | FAIL: a 0.078 / b 0 / c docked / d 0 / e 0.110 PASS / h 0.084, 0.104 FAIL / i 0.130 FAIL | FAIL: a 0.099 / b 0 / c docked / d 0 / e 0.151 FAIL (route corner (-3.00, 0.89), 1 of 19) / h 0.088, 0.111 FAIL / i 0.157 FAIL |
+| `-l -x 3` ("desired rate of 60" 10 / 16 times) | PASS: a 0.078, e 0.094, h 0.083 / 0.075, i 0.080 | FAIL: a 0.104 (3 samples), e 0.123, h 0.090 / 0.061, i 0.117 FAIL |
+
+On real_run5 none of the new code paths fired:
+
+- no costmap detour or back-up;
+- no hold;
+- no pending zone or cursor remap.
+
+The controller loop was 20 Hz (median and p10) in all four runs. The branch's a / e / i
+margins are 0.02-0.04 m worse than master's in both modes. That is within the documented
+single-run noise (a and i ±0.05 m), but it is two runs in the same direction, so a
+second seed on each side would settle it. `_cursor_mowed_update` costs about 12 ms per
+mowed piece, once (cached). The costmap pump thread handles a 1 Hz message.
 
 Known residual: criterion i also fails on master.
 
-CI (`scripts/ci_test.sh`, branch 138ff2e): colcon PASS (3795 cases, 0 failed), scripts PASS,
-replay PASS.
+CI (`scripts/ci_test.sh`, branch 2f0af8d): colcon PASS (3799 cases, 0 failed), scripts PASS, replay PASS.
