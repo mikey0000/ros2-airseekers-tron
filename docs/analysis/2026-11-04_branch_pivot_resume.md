@@ -260,55 +260,79 @@ Tests changed on purpose:
   - (iii), via `--at`, a pending zone at (-28.0, -9.0), STOP at +1300 s, START at
     +1330 s.
 
-### Runs (2026-11-04 / 05, host performance profile, load5 < 3 at start, one at a time)
+### Second round (2026-11-05): plain-mow regression, detour rejoin and back-up
 
-Scenario command: `sim_gate.sh --at 700:stuck:-28.0:-9.0 --at 900:stuck:-28.0:-9.0 --at
-1300:cmd:8 --at 1330:cmd:1 -w src/mower_sim/worlds/owner_area3_fix1104.yaml -x 2 -t 3600`.
-The master runs use a master 41e61e3 worktree with this branch's sim tooling (identical
-files).
+- **The plain-mow regression came from the costmap event subscription.** On real_run5,
+  where none of the fix paths fire, the branch's e (sharp corners) was 0.151 / 0.123 /
+  0.174 against master's 0.110 / 0.094 / 0.114.
+  - Cause: the event subscription started a SubscriptionPump thread, which master's
+    mission_node does not have, and converted every update.
+  - A/B: `-l -x 3 -s 2` with the subscription off gave e 0.134 and PASS.
+  - Fix (d77e45c): sampled subscriptions polled on the tick, and the lethal cells
+    extracted only when the detour asks (`fsm.common.costmap_lethal_points`).
+  - After the fix the branch is level with or better than master (table below).
+- **The detour rejoin (38893cf, e0a3084, 41fe18f).**
+  - The return ramp scales with the offset (`nogo_edge_costmap_ramp_per_m` 3.0, return
+    side only), which keeps the rejoin at or below about 28 deg.
+  - The detour ends 0.10 m inside the lap and merges onto it with the existing tangent
+    join. Before, branch-scen5 overshot 0.14 m outside right after a rejoin, and
+    branch-scen6 swung the rear to 0.35 m (a BOUNDARY OUT).
+- **The back-up (098ce0c).** It retraces the lap instead of reversing straight. In
+  branch-scen8 the straight reverse took base_link 0.137 m outside where lap 0 curves.
+  The steering is the loc retrace's, factored out as `_track_cmd`.
+- **What item-1 analysis found in branch-scen5.**
+  - BOUNDARY OUT at +440 s: a plain lap follow before the abort.
+  - BOUNDARY OUT at +1547 s: a transit after the skip fallback.
+  - The 501-503 s excursion: the detour rejoin (fixed, see above).
+- **The "/spin not available" loss (branch-scen5 only).** No evidence it is ours.
+  - The availability check is rclpy's sleep-and-poll graph query
+    (`is_action_server_available`); no executor or lock is involved.
+  - behavior_server served a spin in the middle of the outage.
+  - The detour-geometry WARN never fired.
+  - It did not recur in 9 later branch runs.
+- **Pre-existing on master, not changed here.** `boundary.py:775`
+  `_hb_resume_in_next` reads the removed param `hard_boundary_back_speed_mps`. The tick
+  raises AttributeError after some boundary recoveries; it is in the field log of
+  2026-11-04 23:30 too.
 
-| Scenario | master 41e61e3 (`master-scen2`) | branch 2f0af8d (`branch-scen5`) |
-|---|---|---|
-| (i) costmap branch on lap 0 | `edge blocked: skip 2.0 m ... collision ahead`; the robot then stays wedged at the branch (-28.18, -15.48), 12 sub-paths NOT mowed | `back up 0.50 m, then detour` -> `detour inward ... (14 costmap cells) ... max offset 1.31 m` -> `edge detour done: rejoining the lap`, twice on lap 0. The map tag is placed on the obstacle. Later laps: `would put the body 0.28 / 0.41 m beyond its limit: no detour` -> skip (the designed fallback) |
-| (ii) RTK hold mid-pivot | pivot -84 deg, hold, `ok again: resuming` -> `/follow_path` with no pivot (the field bug) | pivot -86 deg, hold, resume -> `pivot -41 deg in place` -> follow. k PASS (held 0.1 s, blade off, resumed, 0 excursions) |
-| (iii) STOP / START with a pending zone | mid-mow `no-go re-plan ... zone #3 ... pending`, then on START `plan geometry changed, stale resume cursor discarded`, 17 sub-paths 528.7 m | `1 pending (unreviewed) keepout(s) left out of the plan`, `resuming (2/6 sub-paths done, cursor (3, 0))`, the same 6 sub-paths 546.9 m |
-| verdict | FAIL (c, d, h, i) | FAIL (a, b, c, d, e, f, h, i), see below |
+### Runs (one at a time, performance profile, load5 < 3 at start, bags pruned)
 
-`branch-scen5` overall: 28.5 % mowed, ending in STUCK_NEEDS_HELP at (-27.86, -14.90) next
-to the branch.
+Full gates on real_run5. "Final" means d77e45c or later. The later commits change only
+the costmap detour, the back-up, and the loc retrace refactor (identical behaviour), none
+of which run on these mows.
 
-- **Action servers lost.** From +1642 s to the end the mission logged `action server
-  /spin not available after 3.0s` (28 times) and the same for `/backup` (twice).
-  behavior_server was running. The route corners by the branch then failed and two
-  sub-paths stayed NOT mowed.
-- **Boundary.** Two BOUNDARY OUT trips (+440 s mowing at the branch, +1547 s in transit
-  there) and 45 samples over 0.10 m (max 0.141 m, 501-503 s, at (-30.02, -14.44)).
-- **What master shows instead.** Master never gets past the branch (wedged), so it has
-  no comparable exposure there.
-- **Has the loss recurred?** No. It appeared in 1 of 7 scenario runs and in none of the
-  full gates.
+| Gate | master 41e61e3 | branch final | new failures |
+|---|---|---|---|
+| `-d -s 1 -x 1` | FAIL: a 0.078, e 0.110, h 0.084 / 0.104 FAIL, i 0.130 FAIL | e0a3084, FAIL: a 0.092, e 0.101, h 0.078 / 0.088 PASS, i 0.129 FAIL | none (h better) |
+| `-l -x 3 -s 1` | PASS: a 0.078, e 0.094, i 0.080 | d77e45c, PASS: a 0.066, e 0.096, i 0.076 | none |
+| `-l -x 3 -s 2` | FAIL: a 0.077, e 0.114, i 0.121 FAIL | d77e45c, PASS: a 0.071, e 0.106, i 0.092 | none (i better) |
 
-One master scenario run (`master-scen`) froze its mission node at START+192 s, in the
-first route transit, with no log. A rerun with a stack watchdog did not reproduce it
-(`master-scen2` above).
+The earlier branch runs (2f0af8d / 38893cf, with the event subscription) failed e or a
+where master passed: `-d -s 1` e 0.151, then a 0.101 on d77e45c; `-l -x 3 -s 1` a 0.104;
+`-l -x 3 -s 2` e 0.174. "desired rate of 60" appears in every `-x 3` launch.log.
 
-| Full gate (real_run5) | master 41e61e3 | branch 2f0af8d |
-|---|---|---|
-| `-d -s 1 -x 1` | FAIL: a 0.078 / b 0 / c docked / d 0 / e 0.110 PASS / h 0.084, 0.104 FAIL / i 0.130 FAIL | FAIL: a 0.099 / b 0 / c docked / d 0 / e 0.151 FAIL (route corner (-3.00, 0.89), 1 of 19) / h 0.088, 0.111 FAIL / i 0.157 FAIL |
-| `-l -x 3` ("desired rate of 60" 10 / 16 times) | PASS: a 0.078, e 0.094, h 0.083 / 0.075, i 0.080 | FAIL: a 0.104 (3 samples), e 0.123, h 0.090 / 0.061, i 0.117 FAIL |
+**Area-3 scenario.** `--at 700:stuck:-28.0:-9.0 --at 900:stuck:-28.0:-9.0 --at
+1300:cmd:8 --at 1330:cmd:1 -w worlds/owner_area3_fix1104.yaml -x 2 -t 3600`.
 
-On real_run5 none of the new code paths fired:
+| Run | (i) branch on lap 0 | (ii) hold mid-pivot | (iii) pending + STOP / START | end |
+|---|---|---|---|---|
+| master-scen2 (41e61e3) | skip, then wedged at the branch: 12 sub-paths NOT mowed | resume without the pivot (the bug) | mid-mow re-plan on the pending zone, then "plan geometry changed, stale resume cursor discarded" (17 sub-paths, 528.7 m) | TRANSIT timeout |
+| branch-scen5 (2f0af8d) | back up, detour, rejoin x2; overshoot 0.14 m after a rejoin | pivot -41 deg redone | same plan, resumed | STUCK; /spin lost |
+| branch-scen7 (e0a3084) | 2 detours aborted, skip | pivot redone | same plan, cursor (3, 198) | timeout in master's `_try_detour` loop |
+| branch-scen8 (41fe18f) | back up, detour, merge x2, no rejoin trip; back-up took base_link 0.137 m out | pivot done before the hold | same plan | STUCK in master's `_try_detour` |
+| branch-scen9 (098ce0c, final) | detour aborted after 15 s (base_link 0.16 m out of a lap-0 corner), skip, then wedged at the branch | pivot 214 deg, hold, 156 deg rest redone | "1 pending keepout left out", same plan, cursor (2, 0) | TRANSIT timeout |
 
-- no costmap detour or back-up;
-- no hold;
-- no pending zone or cursor remap.
+(ii) and (iii) pass in every branch run where they fire (k PASS each time). (i) is the
+weak point:
 
-The controller loop was 20 Hz (median and p10) in all four runs. The branch's a / e / i
-margins are 0.02-0.04 m worse than master's in both modes. That is within the documented
-single-run noise (a and i ±0.05 m), but it is two runs in the same direction, so a
-second seed on each side would settle it. `_cursor_mowed_update` costs about 12 ms per
-mowed piece, once (cached). The costmap pump thread handles a 1 Hz message.
+- the detour fired every time;
+- it succeeded in 2 of 4 runs on this branch-in-a-corner world;
+- otherwise the skip fallback ran;
+- the base_link excursions there are lap-0 at the line plus loc drift during the detour
+  and back-up.
 
-Known residual: criterion i also fails on master.
+Late-run trips and STUCK endings come from master's interior-swath `_try_detour` at the
+branch. Master never reaches that point (wedged), so there is nothing to compare.
 
-CI (`scripts/ci_test.sh`, branch 2f0af8d): colcon PASS (3799 cases, 0 failed), scripts PASS, replay PASS.
+CI (`scripts/ci_test.sh`, 098ce0c): colcon PASS (3802 cases, 0 failed), scripts PASS,
+replay PASS.
