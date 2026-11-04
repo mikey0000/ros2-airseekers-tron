@@ -319,20 +319,26 @@ def plan_pivot(x: float, y: float, yaw: float, delta: float, discs: Sequence,
 
 def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width: float = 0.235,
                 clearance: float = 0.10, lookahead_m: float = 3.0, ramp_m: float = 0.8,
-                max_offset_m: float = 1.2):
+                max_offset_m: float = 1.2, ramp_per_m: float = 0.0, end_offset_m: float = 0.0):
     """Bend the edge lap ``poses`` from local ``i0`` inward around the ``discs`` within
     ``lookahead_m``: each pose beside a disc moves toward the area interior until the body
     side clears the disc by ``clearance``, ramped in and out (cosine) over ``ramp_m``.
     ``inside(x, y) -> bool`` tells the interior side. Returns ``(detour, end)``: the bent
     poses from i0 to local ``end`` (where the lap is rejoined), or None when no disc is
-    beside the stretch or the needed offset exceeds ``max_offset_m``."""
+    beside the stretch or the needed offset exceeds ``max_offset_m``. ``ramp_per_m`` > 0:
+    the ramp is at least that many metres per metre of the largest offset (a deep detour
+    returns to the lap at a shallow angle; sim 2026-11-04: a 1.31 m offset over a 1.2 m
+    ramp rejoined steeply and the robot overshot 0.14 m outside the line). ``end_offset_m``
+    > 0: the detour ends where the return ramp is down to that inward offset (the caller
+    merges onto the lap from there tangentially, as the boundary rejoin does)."""
     if i0 >= len(poses) - 1 or not discs:
         return None
     cum = [0.0]
     for a, b in zip(poses[i0:-1], poses[i0 + 1:]):
         cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+    ramp_cap = max(ramp_m, ramp_per_m * max_offset_m)
     n = 0
-    while n < len(cum) and cum[n] <= lookahead_m + ramp_m + 1.0:
+    while n < len(cum) and cum[n] <= lookahead_m + ramp_cap + 1.0:
         n += 1
     seg = [tuple(q) for q in poses[i0:i0 + n]]
     if len(seg) < 3:
@@ -347,31 +353,57 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
         sides.append((nx * sgn, ny * sgn, h))
         if cum[k] > lookahead_m:
             continue
+        beside = []
         for z in discs:
             dx, dy = z.x - q[0], z.y - q[1]
             along = dx * math.cos(h) + dy * math.sin(h)
             if along < -0.15 or along > 0.65:        # beside the body box (-0.10 .. 0.60)
                 continue
-            lat_in = dx * nx * sgn + dy * ny * sgn   # disc offset toward the interior
-            reach = z.r + half_width + clearance
-            if abs(lat_in) >= reach:
-                continue
-            need[k] = max(need[k], lat_in + reach)
+            # disc offset toward the interior, and how far the body must stay from it
+            beside.append((dx * nx * sgn + dy * ny * sgn, z.r + half_width + clearance))
+        # the least inward offset whose body clears every disc beside the pose: a chain of
+        # discs (costmap cells of a branch, 2026-11-04) pushes past each in turn; one disc
+        # gives lat_in + reach as before
+        # o only ever grows (each disc can push at most once): bounded by len(beside) passes.
+        # Strictly: after o = lat_in + reach, abs(lat_in - o) can round to just below reach
+        # and the same disc fired forever (sim 2026-11-04: mission_node hung at the branch).
+        o = 0.0
+        for _pass in range(len(beside) + 1):
+            moved = False
+            for lat_in, reach in beside:
+                push = lat_in + reach
+                if push > o + 1e-9 and abs(lat_in - o) < reach:
+                    o, moved = push, True
+            if not moved or o > max_offset_m:
+                break
+        need[k] = o
     if max(need) <= 1e-3:
         return None
     if max(need) > max_offset_m:
         return None
+    # the return (after a disc) may be longer than the way in: the detour starts at the
+    # robot (i0), so a long entry ramp would put its first pose far beside the robot (sim
+    # 2026-11-05: both detours with a symmetric 2.9 m ramp aborted at once)
+    ramp_out = max(ramp_m, ramp_per_m * max(need)) if ramp_per_m > 0.0 else ramp_m
     # ramp: offset(s) = max over k of need[k] * cosine window around cum[k]
     off = [0.0] * len(seg)
     for k in range(len(seg)):
         for j in range(len(seg)):
             if need[j] <= 0.0:
                 continue
-            ds = abs(cum[k] - cum[j])
-            if ds <= ramp_m:
-                off[k] = max(off[k], need[j] * 0.5 * (1.0 + math.cos(math.pi * ds / ramp_m)))
+            ds = cum[k] - cum[j]
+            r = ramp_out if ds > 0.0 else ramp_m
+            ds = abs(ds)
+            if ds <= r:
+                off[k] = max(off[k], need[j] * 0.5 * (1.0 + math.cos(math.pi * ds / r)))
     last = max(k for k in range(len(seg)) if off[k] > 1e-3)
     end = min(len(seg) - 1, last + 1)
+    if end_offset_m > 0.0:
+        pk = max(range(len(seg)), key=lambda k: off[k])
+        e = next((k for k in range(pk + 1, len(seg)) if off[k] <= end_offset_m), None)
+        if e is not None:
+            end = e
+            off[e] = min(end_offset_m, max(off[pk], 0.0))
     out = []
     for k in range(end + 1):
         q = seg[k]

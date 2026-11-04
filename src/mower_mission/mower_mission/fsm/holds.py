@@ -4,7 +4,7 @@
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
 from mower_mission.fsm.common import (ACT_NAV, DOCK_PHASES, SRV_GET_AREA,
-    SRV_SET_CHANNEL, DriveCmd, SuppressStuckGuard, ZeroBurst, _STILL_V, _STILL_W, _along, _seg_dist, absolute_to_local, geo, json, math,
+    SRV_SET_CHANNEL, DriveCmd, accepted_area, SuppressStuckGuard, ZeroBurst, _STILL_V, _STILL_W, _along, _seg_dist, absolute_to_local, geo, json, math,
     subpath_offsets)
 from mower_mission.fsm.hold import Hold
 
@@ -747,6 +747,17 @@ class HoldsMixin:
         self._log('info', 'localization retrace ended after %.2f m (%s): waiting'
                   % (rt['driven'], why))
 
+    @staticmethod
+    def _track_cmd(pose, target, v0):
+        """(v, w) toward ``target`` (x, y) at speed ``v0``: forward when it is ahead of the
+        robot, reversing when behind (pure pursuit on the arc through it, |w| <= 0.3)."""
+        dx, dy = target[0] - pose[0], target[1] - pose[1]
+        c, s = math.cos(pose[2]), math.sin(pose[2])
+        xr, yr = c * dx + s * dy, -s * dx + c * dy
+        v = v0 if xr > 0 else -v0
+        w = max(-0.3, min(0.3, v * 2.0 * yr / max(1e-6, xr * xr + yr * yr)))
+        return v, w
+
     def _loc_retrace_tick(self, d):
         rt, pose = d['rt'], self.inputs.pose
         if pose is None:
@@ -770,13 +781,7 @@ class HoldsMixin:
         if self._now - rt['best_t'] > 10.0:
             self._loc_retrace_stop('no progress for 10 s')
             return
-        tx, ty = path[rt['i']]
-        dx, dy = tx - pose[0], ty - pose[1]
-        c, s = math.cos(pose[2]), math.sin(pose[2])
-        xr, yr = c * dx + s * dy, -s * dx + c * dy
-        v0 = abs(float(self.p.slow_maneuver_mps))
-        v = v0 if xr > 0 else -v0
-        w = max(-0.3, min(0.3, v * 2.0 * yr / max(1e-6, xr * xr + yr * yr)))
+        v, w = self._track_cmd(pose, path[rt['i']], abs(float(self.p.slow_maneuver_mps)))
         self._fx.append(DriveCmd(v, w))
         Hold.show_wait(self, 'localization lost: retracing (%.1f of %.1f m)'
                        % (rt['driven'], rt['len']))
@@ -1052,7 +1057,11 @@ class HoldsMixin:
             if e is None:
                 return
             if ok and resp.get('success'):
-                area = resp.get('area', {})
+                area = accepted_area(resp.get('area', {}))
+                if area.get('pending_obstacles') and e['purpose'] == 'start':
+                    self._log('info', 'area %d: %d pending (unreviewed) keepout(s) left out of '
+                                      'the plan: run time only until accepted'
+                              % (e['index'], len(area['pending_obstacles'])))
                 e['count'] += 1
                 e.setdefault('all', {})[e['index']] = area
                 if not area.get('is_navigation_area', False):

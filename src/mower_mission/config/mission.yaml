@@ -90,7 +90,7 @@ behavior_tree_node:
     nogo_enabled: true
     nogo_zones_max_age_s: 10.0        # /obstacle_tracker/nogo_zones older than this: ignored
     nogo_replan: true                 # re-plan the area around a zone on its remaining path
-    nogo_replan_states: [pending, accepted]
+    nogo_replan_states: [accepted]     # never pending: unreviewed zones never re-shape the plan
     nogo_replan_pad_m: 0.10
     nogo_replan_min_interval_s: 60.0
     nogo_replan_max_per_area: 3
@@ -103,6 +103,16 @@ behavior_tree_node:
     nogo_edge_lookahead_m: 2.5
     nogo_edge_clearance_m: 0.10
     nogo_edge_max_offset_m: 0.60      # larger needed: no detour (re-plan / skip)
+    # collision abort on an edge lap, no zone / detection: the local costmap's lethal cells
+    # on the lap ahead are the obstacle (2026-11-04 branch); detour inward, else skip
+    nogo_edge_costmap: false          # off until a mid-edge scenario + seeds pass (2026-11-05)
+    nogo_edge_costmap_max_age_s: 3.0
+    nogo_edge_costmap_corridor_m: 0.60
+    nogo_edge_costmap_max_offset_m: 1.50
+    nogo_edge_costmap_ramp_m: 1.20
+    nogo_edge_costmap_ramp_per_m: 3.0      # ramp >= 3 x the offset: <= ~28 deg rejoin
+    nogo_edge_costmap_backup_near_m: 0.80   # robot this close to the cells: back up first
+    nogo_edge_costmap_backup_m: 0.50
     nogo_living_memory_s: 60.0        # a static mark this recently under a person / animal zone is it
     nogo_plan_grow_m: 0.25            # zone hole + this: the nose (0.60 m) vs the 0.40 keepout
 

@@ -15,6 +15,7 @@ File layout (one record per line, unknown tags ignored, exactly as upstream)::
     area <idx> <pose_count> <fingerprint> <resume_pose_index|-1> completed <i> <j> ...
     area_run <idx> <run>            # ours: repeat / cross run in progress (0-based)
     area_skip <idx> <from> <to>     # ours: stretch skipped by an obstacle detour
+    area_mowed <idx> x,y x,y ...    # ours: one mowed polyline of the plan (simplified, m)
     live_height <mm>                # ours: live GUI deck height of this mow (2026-10-13)
 
 ``pose_count`` is the number of poses over all drivable sub-paths of the
@@ -25,15 +26,17 @@ skipped when read; our own ``area_run`` row (repeat / cross / alternate run in
 progress) is ignored by upstream readers.
 """
 
+import math
+
 HEADER = 'mowgli_coverage_resume v2'
 
 
 class AreaCursor:
     __slots__ = ('pose_count', 'fingerprint', 'resume_index', 'completed', 'skipped', 'done_fps',
-                 'blocked_static')
+                 'blocked_static', 'mowed')
 
     def __init__(self, pose_count=0, fingerprint=0, resume_index=-1, completed=None,
-                 skipped=None, done_fps=None, blocked_static=None):
+                 skipped=None, done_fps=None, blocked_static=None, mowed=None):
         self.pose_count = int(pose_count)
         self.fingerprint = int(fingerprint)
         self.resume_index = int(resume_index)
@@ -47,6 +50,11 @@ class AreaCursor:
         # [(abs_from, abs_to)] stretches excluded as blocked by a static obstacle (a retry hit
         # it again, or a plan-time obstacle mark): never driven, the area counts as complete
         self.blocked_static = [tuple(s) for s in (blocked_static or ())]
+        # [[(x, y), ...]] the mowed part of this plan as simplified polylines (completed
+        # sub-paths, the current one up to resume_index, minus skipped / excluded stretches):
+        # a re-plan whose geometry changed maps it onto the new plan by position
+        # (nogo.mowed_progress) instead of discarding the cursor (field 2026-11-04 00:02)
+        self.mowed = [[tuple(q) for q in pl] for pl in (mowed or ())]
 
     def __eq__(self, other):
         return isinstance(other, AreaCursor) and all(
@@ -109,6 +117,10 @@ class ResumeCursor:
                 out.append('area_skip %d %d %d' % (idx, fr, to))
             for fr, to in self.areas[idx].blocked_static:
                 out.append('area_static %d %d %d' % (idx, fr, to))
+            for pl in self.areas[idx].mowed:
+                if len(pl) >= 2:
+                    out.append(' '.join(['area_mowed', str(idx)]
+                                        + ['%.2f,%.2f' % (q[0], q[1]) for q in pl]))
             if self.areas[idx].done_fps:
                 out.append(' '.join(['area_donefp', str(idx)]
                                     + [str(f) for f in sorted(self.areas[idx].done_fps)]))
@@ -150,6 +162,10 @@ class ResumeCursor:
                     cur.area(int(args[0])).skipped.append((int(args[1]), int(args[2])))
                 elif tag == 'area_static' and len(args) >= 3:
                     cur.area(int(args[0])).blocked_static.append((int(args[1]), int(args[2])))
+                elif tag == 'area_mowed' and len(args) >= 3:
+                    pl = [tuple(float(v) for v in a.split(',')[:2]) for a in args[1:]]
+                    if all(len(q) == 2 for q in pl):
+                        cur.area(int(args[0])).mowed.append(pl)
                 elif tag == 'area_run' and len(args) >= 2:
                     cur.area_runs[int(args[0])] = int(args[1])
                 elif tag == 'live_height' and args:
@@ -166,6 +182,68 @@ def subpath_offsets(subpaths):
         offs.append(total)
         total += len(sp)
     return offs, total
+
+
+def _seg_dist(p, a, b):
+    ax, ay, bx, by = a[0], a[1], b[0], b[1]
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 <= 1e-12 else max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / L2))
+    return math.hypot(p[0] - ax - t * dx, p[1] - ay - t * dy)
+
+
+def simplify_polyline(points, tol=0.02):
+    """Douglas-Peucker on the distance to the SEGMENT (a lap that runs out and back keeps
+    its far end), endpoints kept; points rounded to 1 cm (the file's resolution)."""
+    pts = [(round(float(q[0]), 2), round(float(q[1]), 2)) for q in points]
+    n = len(pts)
+    if n < 3:
+        return pts
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j <= i + 1:
+            continue
+        best, bi = -1.0, i
+        for k in range(i + 1, j):
+            d = _seg_dist(pts[k], pts[i], pts[j])
+            if d > best:
+                best, bi = d, k
+        if best > tol:
+            keep[bi] = True
+            stack.append((i, bi))
+            stack.append((bi, j))
+    return [q for q, k in zip(pts, keep) if k]
+
+
+def mowed_pieces(subpaths, completed, resume_index, cut=()):
+    """[(k, lo, hi)] local pose ranges of ``subpaths`` already mowed per the cursor: every
+    ``completed`` sub-path, the one holding ``resume_index`` up to it, without the absolute
+    ``cut`` stretches [(from, to)] (skipped / excluded, not mowed)."""
+    offs, _total = subpath_offsets(subpaths)
+    cur = absolute_to_local(subpaths, resume_index) if resume_index >= 0 else None
+    out = []
+    for k, sp in enumerate(subpaths):
+        if k in completed:
+            hi = len(sp) - 1
+        elif cur is not None and cur[0] == k:
+            hi = cur[1]
+        else:
+            continue
+        lo = None
+        for j in range(0, min(hi, len(sp) - 1) + 1):
+            a = offs[k] + j
+            if any(f <= a < t for f, t in cut):
+                if lo is not None and j - 1 > lo:
+                    out.append((k, lo, j - 1))
+                lo = None
+            elif lo is None:
+                lo = j
+        if lo is not None and hi > lo:
+            out.append((k, lo, hi))
+    return out
 
 
 def absolute_to_local(subpaths, absolute):

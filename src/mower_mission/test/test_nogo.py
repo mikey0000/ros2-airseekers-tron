@@ -190,9 +190,9 @@ def test_cov_gate_maneuvers_are_capped_then_e_skips_the_leg(monkeypatch):
     assert h.name != 'STUCK_NEEDS_HELP'
 
 
-def test_cov_gate_e_replans_around_a_pending_zone_in_the_area(monkeypatch):
+def test_cov_gate_e_replans_around_an_accepted_zone_in_the_area(monkeypatch):
     r = ring()
-    z = Z(r[0][0] + 0.5, r[0][1] + 0.2, 0.25, 9, 'trunk', 'pending')
+    z = Z(r[0][0] + 0.5, r[0][1] + 0.2, 0.25, 9, 'trunk', 'accepted')
     hit = nogo.nz.SweepHit(z, 0.0)
     h, _calls = _cov_pivot_h(monkeypatch, [nogo.PivotPlan('blocked', [], 'x', [hit])], zs=[z])
     a = h.pending_action(f.ACT_PLAN)
@@ -327,7 +327,7 @@ def test_replan_around_a_new_zone_on_the_remaining_path_keeps_progress():
     h = _mowing_row2()
     m = h.fsm.mission
     mk = h.mark()
-    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'pending'))
+    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'accepted'))
     h.tick(dt=1.1)
     assert h.pending_action(f.ACT_PLAN).purpose == 'nogo_replan'
     assert any(isinstance(e, f.CancelActions) for e in h.since(mk))
@@ -347,18 +347,18 @@ def test_replan_around_a_new_zone_on_the_remaining_path_keeps_progress():
 
 def test_replan_is_rate_limited_and_a_zone_in_the_plan_is_not_replanned():
     h = _mowing_row2()
-    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'pending'))
+    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'accepted'))
     h.tick(dt=1.1)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([list(sp) for sp in ROWS]))
     h.fsm.inputs.is_cutting = True
     h.tick(n=3)
     m0 = h.mark()
     # the same zone again: already a hole of the plan
-    zones(h, Z(1.55, 2.0, 0.25, 3, 'trunk', 'pending'))
+    zones(h, Z(1.55, 2.0, 0.25, 3, 'trunk', 'accepted'))
     h.tick(dt=1.1, n=3)
     assert not starts(h, m0, f.ACT_PLAN)
     # a second zone within nogo_replan_min_interval_s: no re-plan
-    zones(h, Z(1.5, 3.0, 0.2, 4, 'stone', 'pending'))
+    zones(h, Z(1.5, 3.0, 0.2, 4, 'stone', 'accepted'))
     h.tick(dt=1.1, n=3)
     assert not starts(h, m0, f.ACT_PLAN)
 
@@ -377,7 +377,7 @@ def test_candidate_and_expired_zones_never_replan_and_the_plan_stays():
 
 def test_replan_failure_keeps_the_old_plan_and_resumes():
     h = _mowing_row2()
-    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'pending'))
+    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'accepted'))
     h.tick(dt=1.1)
     h.finish(f.ACT_PLAN, f.ABORTED, {'success': False, 'message': 'boom'})
     m = h.fsm.mission
@@ -394,26 +394,62 @@ def test_mowed_progress_maps_done_rows_and_a_prefix():
 
 
 # =====================================================================
-# pending zones on a re-START (policy): holes for the current mow
+# pending zones on a re-START (policy 2026-11-04): never holes; accepted ones are
 # =====================================================================
-def test_restart_plans_pending_zones_as_holes_and_replanned_zones_stay_holes():
+def test_restart_plans_accepted_zones_as_holes_and_replanned_zones_stay_holes():
     h = Harness()
     a = square(0, 0, 5)
-    a['obstacles'] = [nogo.zone_polygon(2.0, 2.0, 0.25)]       # pending zone in the map
+    a['obstacles'] = [nogo.zone_polygon(2.0, 2.0, 0.25)]       # accepted zone in the map
     h.areas = [a]
     start_until_planning(h)
     obs = h.goal(f.ACT_PLAN)['obstacles']
-    assert len(obs) == 1                       # the pending zone is a hole of this mow
+    assert len(obs) == 1                       # the accepted zone is a hole of this mow
     m = h.fsm.mission
     m.nogo_extra[0] = [nogo.zone_polygon(3.0, 3.0, 0.2)]
     assert len(h.fsm._nogo_area_holes(0)) == 2  # + zones added mid-mow (re-plans, run 2)
 
 
+def test_restart_never_plans_a_pending_zone_as_a_hole():
+    """Field 2026-11-04 00:02: a stuck-spot proposal (pending, #1097) became a hole on the
+    STOP / START re-plan: plan 541 -> 526 m, cursor discarded, mow restarted at sub-path 1."""
+    h = Harness()
+    a = square(0, 0, 5)
+    acc, pend = nogo.zone_polygon(2.0, 2.0, 0.25), nogo.zone_polygon(3.5, 3.5, 1.0)
+    a['obstacles'] = [acc, pend]
+    a['obstacle_pending'] = [False, True]
+    h.areas = [a]
+    start_until_planning(h)
+    obs = h.goal(f.ACT_PLAN)['obstacles']
+    assert obs == [list(acc)]
+    m = h.fsm.mission
+    assert m.areas[0]['obstacles'] == [acc] and m.areas[0]['pending_obstacles'] == [pend]
+    assert any('1 pending (unreviewed) keepout' in t for t in logs(h))
+
+
+def test_pending_zone_on_the_remaining_path_never_replans():
+    h = _mowing_row2()
+    m0 = h.mark()
+    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'pending'))
+    h.tick(dt=1.1, n=3)
+    assert not starts(h, m0, f.ACT_PLAN)
+    assert h.fsm.mission.nogo_replans.get(0, 0) == 0
+
+
+def test_cov_gate_e_pending_zone_in_the_sweep_skips_the_leg_no_replan(monkeypatch):
+    r = ring()
+    z = Z(r[0][0] + 0.5, r[0][1] + 0.2, 0.25, 9, 'trunk', 'pending')
+    hit = nogo.nz.SweepHit(z, 0.0)
+    h, _calls = _cov_pivot_h(monkeypatch, [nogo.PivotPlan('blocked', [], 'x', [hit])], zs=[z])
+    assert h.fsm.mission.nogo_replans.get(0, 0) == 0
+    assert h.fsm._action is None or h.fsm._action.name != f.ACT_PLAN
+    assert any('(e)' in t and 'skip the leg' in t for t in logs(h))
+
+
 # =====================================================================
 # edge laps (B6): detour inward around it, rejoin, no stop-wait
 # =====================================================================
-def _edge_h():
-    h = Harness()
+def _edge_h(**params):
+    h = Harness(**params)
     start_until_planning(h)
     h.fsm.inputs.pose = (0.0, 0.0, 0.0)
     lap = line(0.0, 0.0, 5.0, 0.0, 51)         # lap 0 on the south line
@@ -444,6 +480,83 @@ def test_edge_lap_abort_detours_inward_around_a_zone_and_rejoins():
     a = h.pending_action(f.ACT_FOLLOW)
     assert a.purpose != 'nogo_detour' and h.fsm.mission.start_local == end
     assert any('rejoining the lap' in t for t in logs(h, mk))
+
+
+def _branch(h, x, y0, y1, age=0.0):
+    """Lethal local-costmap cells of a branch lying across the lap at ``x`` (no zone, no
+    detection: stereo depth only), as mission_node feeds them (map frame)."""
+    n = int(round((y1 - y0) / 0.05))
+    h.fsm.inputs.costmap_lethal = [(x + 0.02 * (k % 2), y0 + 0.05 * k) for k in range(n + 1)]
+    h.fsm.inputs.costmap_lethal_stamp = h.t - age
+
+
+def _abort_on_branch(x, y0, y1, age=0.0, costmap=True):
+    h = _edge_h(nogo_edge_costmap=costmap)       # off by default (2026-11-05)
+    h.fsm.inputs.pose = (1.6, 0.0, 0.0)
+    h.tick(n=2)
+    _branch(h, x, y0, y1, age)
+    mk = h.mark()
+    h.fsm.inputs.collision_stamp = h.t          # MPPI "Optimizer fail" -> patience exceeded
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    return h, mk
+
+
+def test_edge_lap_costmap_only_obstacle_detours_tags_and_rejoins():
+    """Field 2026-11-04 (area 3, 5 times): a branch across edge lap 0 seen only as stereo
+    lethal cells -> follow_path aborted -> 'edge blocked: skip 2.0 m'. Now: detour inward
+    round the cells, tag the obstacle on the map, rejoin the lap."""
+    h, mk = _abort_on_branch(2.5, -0.3, 0.5)
+    a = h.pending_action(f.ACT_FOLLOW)
+    assert a.purpose == 'nogo_detour', logs(h, mk)
+    poses = h.goal(f.ACT_FOLLOW)['poses']
+    # the cells reach 0.5 m in: body half width + clearance past them (> the zone cap 0.6)
+    assert max(q[1] for q in poses) >= 0.5 + h.fsm.p.robot_width_m / 2.0 + 0.1 - 0.02
+    assert not any('edge blocked: skip' in t for t in logs(h, mk))
+    inc = [e for e in h.since(mk, f.RecordIncident) if e.kind == 'edge_detour']
+    assert inc and abs(inc[0].x - 2.5) < 0.15 and 'costmap obstacle' in inc[0].detail
+    assert h.blade                              # owner policy: blade on in-area detours
+    end = h.fsm.mission.nogo_detour['end']
+    h.finish(f.ACT_FOLLOW)
+    assert h.pending_action(f.ACT_FOLLOW).purpose != 'nogo_detour'
+    assert h.fsm.mission.start_local == end
+    assert any('rejoining the lap' in t for t in logs(h, mk))
+
+
+def test_edge_lap_costmap_obstacle_right_ahead_backs_up_then_detours():
+    """Sim 2026-11-04: the abort stops the robot at the branch, a detour from there aborted
+    in 1 s (every MPPI trajectory collides): back up first, bend the detour from there."""
+    h, mk = _abort_on_branch(2.0, -0.3, 0.5)       # cells 0.4 m ahead of the robot at 1.6
+    # not Nav2 BackUp (its footprint check refuses with the nose on the cells): DriveCmd
+    assert h.fsm._action is None and h.fsm.mission.step == 'nogo_detour'
+    assert any('back up' in t and 'then detour' in t for t in logs(h, mk))
+    cmds = [e for e in h.since(mk, f.DriveCmd)]
+    assert cmds and cmds[-1].linear < 0.0 and cmds[-1].angular == 0.0
+    x = 1.6
+    for _ in range(4):                             # reversing: still going
+        x -= 0.1
+        h.fsm.inputs.pose = (x, 0.0, 0.0)
+        h.tick()
+        assert h.fsm._action is None and h.since(mk, f.DriveCmd)[-1].linear < 0.0
+    h.fsm.inputs.pose = (1.1, 0.0, 0.0)            # backed up 0.5 m
+    h.tick()
+    a = h.pending_action(f.ACT_FOLLOW)
+    assert a.purpose == 'nogo_detour'
+    poses = h.goal(f.ACT_FOLLOW)['poses']
+    assert abs(poses[0][0] - 1.1) < 0.06            # bent from the lap pose by the robot
+    assert max(q[1] for q in poses) >= 0.5 + 0.235 + 0.1 - 0.02
+    assert not any('edge blocked: skip' in t for t in logs(h, mk))
+
+
+def test_edge_lap_costmap_obstacle_too_deep_for_a_detour_is_skipped():
+    h, mk = _abort_on_branch(2.5, -0.3, 1.6)         # needs ~1.9 m > 1.5 m
+    assert any('no inward detour fits' in t for t in logs(h, mk))
+    assert any('edge blocked: skip' in t for t in logs(h, mk))
+
+
+def test_edge_lap_stale_costmap_is_not_used():
+    h, mk = _abort_on_branch(2.5, -0.3, 0.5, age=10.0)
+    assert any('edge blocked: skip' in t for t in logs(h, mk))
+    assert h.fsm.mission.nogo_edge_detours == 0
 
 
 def test_edge_lap_proactive_detour_for_a_zone_ahead_without_stopping():
@@ -477,7 +590,7 @@ def test_edge_detour_ignores_marks_and_too_large_offsets():
 
 def test_replan_hole_is_grown_for_the_nose():
     h = _mowing_row2()
-    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'pending'))
+    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'accepted'))
     h.tick(dt=1.1)
     obs = h.goal(f.ACT_PLAN)['obstacles'][0]
     r = min(math.hypot(q[0] - 1.5, q[1] - 2.0) for q in obs)
@@ -515,3 +628,158 @@ def test_route_corner_mark_under_a_dog_is_the_dog_and_clears_with_it():
 def _answer_corner_route(h):
     from test_mission_fsm import _answer_route, _route_resp
     _answer_route(h, resp=_route_resp(_corner_route(100.0, h.fsm.mission.transit_target)))
+
+
+def test_edge_detour_round_a_chain_of_discs_terminates_fast():
+    """Sim 2026-11-04: the chain push loop never ended when abs(lat_in - o) rounded to just
+    below reach after o = lat_in + reach (mission_node hung at the branch)."""
+    import random
+    import signal
+    import time
+    rnd = random.Random(7)
+    lap = [(0.05 * i, 0.0, 0.0) for i in range(120)]
+    reach = 0.071 + 0.235 + 0.10                # disc r + edge_detour half_width + clearance
+    deep = next(y for y in (rnd.uniform(0.85, 0.95) for _ in range(10000))
+                if abs(y - (y + reach)) < reach)    # the rounding that looped forever
+    discs = [Z(1.5 + rnd.uniform(-0.05, 0.05), rnd.uniform(-0.1, 0.8), 0.071)
+             for _ in range(300)] + [Z(1.5, deep, 0.071)]
+
+    def boom(*_a):
+        raise TimeoutError('edge_detour did not return')
+    old = signal.signal(signal.SIGALRM, boom)
+    signal.alarm(5)
+    try:
+        t0 = time.monotonic()
+        res = nogo.edge_detour(lap, 0, discs, lambda x, y: y > 0, max_offset_m=1.5,
+                               ramp_m=1.2)
+        dt = time.monotonic() - t0
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+    assert res is not None and dt < 1.0
+    poses, _end = res
+    assert max(q[1] for q in poses) >= deep + reach - 0.02
+
+
+def test_edge_lap_abort_on_a_dense_costmap_blob_is_bounded():
+    """A wide blob of lethal cells (hedge, bed) on the lap: the disc set is merged (<= 0.2 m
+    discs past 300 cells) and the abort is handled in well under a tick budget."""
+    import time
+    h = _edge_h(nogo_edge_costmap=True)
+    h.fsm.inputs.pose = (1.6, 0.0, 0.0)
+    h.tick(n=2)
+    h.fsm.inputs.costmap_lethal = [(2.2 + 0.05 * i, -0.2 + 0.05 * j)
+                                   for i in range(40) for j in range(40)]
+    h.fsm.inputs.costmap_lethal_stamp = h.t
+    polys = h.fsm._region()
+    t0 = time.monotonic()
+    cm = h.fsm._nogo_costmap_discs(16, polys)
+    assert time.monotonic() - t0 < 0.5
+    assert cm and len(cm) <= 300 and all(abs(z.r - 0.142) < 1e-9 for z in cm)
+    mk = h.mark()
+    h.fsm.inputs.collision_stamp = h.t
+    t0 = time.monotonic()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert time.monotonic() - t0 < 1.0
+    assert any('edge blocked: skip' in t or 'no inward detour fits' in t
+               for t in logs(h, mk))     # 1.8 m deep: no detour fits, skipped
+
+
+def test_deep_costmap_detour_rejoins_the_lap_at_a_shallow_angle():
+    """Sim 2026-11-04 (branch-scen5 501-503 s): a 1.31 m detour over a 1.2 m ramp came back
+    onto lap 0 at ~60 deg and the robot overshot 0.14 m outside the line. The costmap
+    detour's ramp scales with its offset (nogo_edge_costmap_ramp_per_m)."""
+    h = Harness(nogo_edge_costmap=True)
+    h.areas = [square(0, 0, 12)]
+    start_until_planning(h)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0.0, 0.0, 12.0, 0.0, 121),
+                                            line(11.5, 2.0, 0.5, 2.0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    assert h.pending_action(f.ACT_FOLLOW) and h.fsm._edge_lap(0)
+    h.fsm.inputs.pose = (1.6, 0.0, 0.0)
+    h.tick(n=2)
+    _branch(h, 3.0, -0.3, 0.9)                     # deep: ~1.3 m inward offset, far ahead
+    h.fsm.inputs.collision_stamp = h.t
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    poses = h.goal(f.ACT_FOLLOW)['poses']
+    assert max(q[1] for q in poses) >= 0.9 + 0.071 + 0.235 + 0.10 - 0.03
+    # the way in keeps the plain 1.2 m ramp (~0.4 m beside the robot here); a symmetric
+    # long ramp started ~1.2 m beside it (sim 2026-11-05: both such detours aborted)
+    assert abs(poses[0][1]) < 0.6, poses[0]
+    pk = max(range(len(poses)), key=lambda k: poses[k][1])
+    steep = max(abs(math.atan2(b[1] - a[1], b[0] - a[0]))
+                for a, b in zip(poses[pk:-1], poses[pk + 1:]) if b[0] - a[0] > 1e-6)
+    assert math.degrees(steep) <= 32.0, math.degrees(steep)
+    # ends boundary_recover_margin_m inside the lap, then merges tangentially (sim
+    # 2026-11-05: a rejoin straight onto the line swung the rear 0.35 m out)
+    assert abs(poses[-1][1] - h.fsm.p.boundary_recover_margin_m) < 0.02
+    h.fsm.inputs.pose = (poses[-1][0], poses[-1][1], 0.0)
+    mk = h.mark()
+    h.finish(f.ACT_FOLLOW, arrive=False)
+    assert any('merging from 0.10 m inside' in t for t in logs(h, mk))
+    assert not [e for e in h.since(mk, f.StartAction) if e.name == f.ACT_SPIN]   # no pivot
+    nxt = h.goal(f.ACT_FOLLOW)['poses']
+    assert abs(nxt[0][1] - 0.10) < 0.02 and abs(nxt[-1][1]) < 1e-6   # merges onto the lap
+
+
+def test_costmap_lethal_points_maps_odom_cells_into_the_map_frame():
+    """mission_node hands the grid + map <- odom; the cells are extracted on demand."""
+    import numpy as np
+    from mower_mission.fsm.common import costmap_lethal_points
+    data = np.zeros((3, 4), dtype=np.int8)
+    data[1, 2] = 100                                 # lethal: odom (1.0+2.5*0.5, 2.0+1.5*0.5)
+    data[0, 0] = 99                                  # inscribed: not lethal
+    lc = {'w': 4, 'h': 3, 'res': 0.5, 'ox': 1.0, 'oy': 2.0, 'data': data}
+    a = math.pi / 2                                  # map <- odom: +90 deg, then (10, 20)
+    pts = costmap_lethal_points((lc, (math.cos(a), math.sin(a), 10.0, 20.0)))
+    assert len(pts) == 1
+    ox, oy = 2.25, 2.75
+    assert abs(pts[0][0] - (10.0 - oy)) < 1e-9 and abs(pts[0][1] - (20.0 + ox)) < 1e-9
+    big = {'w': 100, 'h': 100, 'res': 0.05, 'ox': 0.0, 'oy': 0.0,
+           'data': np.full((100, 100), 100, dtype=np.int8)}
+    assert len(costmap_lethal_points((big, (1.0, 0.0, 0.0, 0.0)), cap=500)) == 500
+    assert costmap_lethal_points(None) == []
+
+
+def test_costmap_detour_back_up_follows_a_curved_lap_back():
+    """Sim 2026-11-05 (branch-scen8 446-448 s): a straight reverse on lap 0 where the line
+    curves took base_link 0.14 m outside; the back-up retraces the lap it just drove."""
+    h = Harness(nogo_edge_costmap=True)
+    h.areas = [square(-6, -6, 12)]
+    start_until_planning(h)
+    R = 4.0                                         # lap: arc of radius 4 about (0, 4)
+    arc = [(R * math.sin(a), 4.0 - R * math.cos(a), a)
+           for a in [k * 0.0125 for k in range(160)]]
+    h.fsm.inputs.pose = arc[0]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([arc, line(-2.0, 2.0, -4.0, 2.0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.fsm.mission.edge_laps[(h.fsm.mission.area_idx, 0)] = True
+    q = arc[40]
+    h.fsm.inputs.pose = q
+    h.tick(n=2)
+    ahead = arc[50]                                 # the branch 0.5 m ahead on the arc
+    h.fsm.inputs.costmap_lethal = [(ahead[0] + 0.05 * k * -math.sin(ahead[2]),
+                                    ahead[1] + 0.05 * k * math.cos(ahead[2]))
+                                   for k in range(-4, 8)]
+    h.fsm.inputs.costmap_lethal_stamp = h.t
+    mk = h.mark()
+    h.fsm.inputs.collision_stamp = h.t
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.fsm.mission.step == 'nogo_detour' and h.fsm._action is None, logs(h, mk)
+    cmd = h.since(mk, f.DriveCmd)[-1]
+    assert cmd.linear < 0.0 and abs(cmd.angular) > 0.01   # reversing along the arc
+
+
+def test_costmap_edge_detour_off_by_default_skips_like_master():
+    """2026-11-05: shipped off. A costmap-only obstacle on an edge lap: the collision abort
+    skips the stretch (master behaviour), no back-up, no detour, no costmap read."""
+    h, mk = _abort_on_branch(2.0, -0.3, 0.5, costmap=False)
+    assert h.fsm.p.nogo_edge_costmap is False
+    assert Harness().fsm.p.nogo_edge_costmap is False       # the shipped default
+    txt = logs(h, mk)
+    assert any('edge blocked: skip' in t for t in txt), txt
+    assert not any('costmap cells' in t or 'back up' in t for t in txt)
+    assert h.fsm.mission.nogo_edge_detours == 0

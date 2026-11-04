@@ -1,0 +1,37 @@
+# 2026-11-04 field mow on area 3 ("further backyard lawn" = owner_far's Area 6, same
+# polygon; docs/analysis/2026-11-04_branch_pivot_resume.md). One world for the three
+# scenarios of that analysis:
+#   (i)   a branch lying across edge lap 0 near (-28.7, -14.9): 1.2 m long, square to the
+#         lap (the boundary runs ~150 deg there), 0.06 m outside to 0.6 m inside the line.
+#         Stereo only (no detection class): it reaches the mission only as local costmap
+#         lethal cells, as the field branch did. Expect: detour inward, map tag, rejoin.
+#   (ii)  RTK FLOAT 12 s from 2 s into the first in-place pivot with the blade on that lasts
+#         that long (rtk anchor 'pivot', pivot_min_s), ekf_map sigma 0.17 m meanwhile (as
+#         the field's 23:42 / 23:53 holds: "ekf_map sigma 0.17 m > 0.15 m (rtk float)"; the
+#         drift budget alone never trips without travel): the localization hold
+#         interrupts a coverage pivot. Expect the rest of the pivot after the resume.
+#   (iii) sim_gate.sh --at: two stuck incidents at (-28.0, -9.0) make obstacle_tracker
+#         propose a pending no-go zone, then STOP and START. Expect the resume at the same
+#         sub-path with the plan unchanged.
+# Gate: sim_gate.sh -w src/mower_sim/worlds/owner_area3_fix1104.yaml -x 2 -t 3600 \
+#   --at 700:stuck:-28.0:-9.0 --at 900:stuck:-28.0:-9.0 --at 1300:cmd:8 --at 1330:cmd:1
+name: owner_area3_fix1104
+datum: {lat: 48.0, lon: 9.0}
+areas_file: owner_far_areas.dat
+areas_select: [Area 1, lawn section, Area 6, Dock path, Path 2, Path 3, Path 4]
+lawn_area: Area 6
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+obstacles:
+  # 0.15 x 0.25 m (a branch with its twigs): the sim stereo (64 x 32 rays) saw an 8 x 15 cm
+  # box only when the nose was on it (2026-11-04 runs branch-scen2 / 3: MPPI stopped in
+  # contact, the robot wedged); the field stereo stopped the robot short of the branch
+  - {name: branch, type: box, x: -28.7, y: -14.9, yaw: 1.047, size_x: 1.2, size_y: 0.15,
+     height: 0.25}
+rtk:
+  anchor: pivot
+  pivot_min_s: 2.0
+  ekf_sigma_m: 0.17
+  events:
+    - {t0: 0.0, dur: 12.0, kind: float}
+battery: {voltage: 25.0, percentage: 0.9}

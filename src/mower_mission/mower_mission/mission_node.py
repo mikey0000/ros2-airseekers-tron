@@ -87,6 +87,12 @@ TOPIC_DEFAULTS = {
     'odom_topic': '/odometry/filtered_map',
     # wheel odometry (boundary_recover_slip_check: wheel vs RTK distance; '' = off)
     'wheel_odom_topic': '/odom',
+    # local costmap lethal cells for the edge-lap detour round a costmap-only obstacle
+    # (2026-11-04; nav2_params local_costmap: global_frame odom). The odom-frame pose
+    # (ekf_odom) and odom_topic give map <- odom. '' = off
+    'local_costmap_topic': '/local_costmap/costmap',
+    'local_costmap_updates_topic': '/local_costmap/costmap_updates',
+    'odom_frame_pose_topic': '/odometry/filtered',
     'boundary_violation_topic': '/map_server_node/boundary_violation',
     'lethal_boundary_violation_topic': '/map_server_node/lethal_boundary_violation',
     # task 0.4 (a): Float32 distance outside areas U paths U dock corridor ('' = no hard boundary)
@@ -337,6 +343,24 @@ class MissionNode(Node):
         sub(Odometry, p['odom_topic'], self._on_odom, 1, parser=parse_odometry)
         if p['wheel_odom_topic']:
             sub(Odometry, p['wheel_odom_topic'], self._on_wheel_odom, 1, parser=parse_odometry)
+        self._lc = None               # local costmap: dict(w, h, res, ox, oy, data ndarray)
+        self._odom_frame_pose = None  # (x, y, yaw) of base_link in the odom frame
+        # only with the costmap edge detour on (nogo_edge_costmap, off by default): off,
+        # no costmap is subscribed, sampled or converted at all
+        if p['local_costmap_topic'] and p['odom_frame_pose_topic'] and \
+                bool(self.fsm.p.nogo_edge_costmap):
+            from map_msgs.msg import OccupancyGridUpdate
+            from nav_msgs.msg import OccupancyGrid
+            sub(Odometry, p['odom_frame_pose_topic'], self._on_odom_frame, 1,
+                parser=parse_odometry)
+            # sampled like every other input (no pump thread: the 2026-11-05 A/B showed the
+            # event thread costs the plain mow), polled on the tick; the update patches are
+            # all applied in order (deliver_all). Only the grid is kept here: the lethal
+            # cells are extracted when the FSM asks (an edge-lap collision abort).
+            sub(OccupancyGrid, p['local_costmap_topic'], self._on_costmap, latched)
+            if p['local_costmap_updates_topic']:
+                sub(OccupancyGridUpdate, p['local_costmap_updates_topic'],
+                    self._on_costmap_update, 10, deliver_all=True)
         sub(Bool, p['boundary_violation_topic'], self._on_boundary, 1, parser=flat_parser(Bool))
         # stuck guard (mower_control slip_detector): latched /stuck
         sub(Bool, '/stuck', self._on_stuck, latched, parser=flat_parser(Bool))
@@ -802,6 +826,49 @@ class MissionNode(Node):
         with self._lock:
             self.fsm.inputs.pose = (pose.position.x, pose.position.y,
                                     _yaw_from_quat(pose.orientation))
+
+    def _on_odom_frame(self, msg):
+        pose = msg.pose.pose
+        self._odom_frame_pose = (pose.position.x, pose.position.y,
+                                 _yaw_from_quat(pose.orientation))
+
+    def _on_costmap(self, msg):
+        import numpy as np
+        info = msg.info
+        w, h = int(info.width), int(info.height)
+        if w <= 0 or h <= 0 or len(msg.data) != w * h:
+            return
+        self._lc = {'w': w, 'h': h, 'res': float(info.resolution),
+                    'ox': float(info.origin.position.x), 'oy': float(info.origin.position.y),
+                    'data': np.array(msg.data, dtype=np.int8).reshape(h, w)}
+        self._costmap_input()
+
+    def _on_costmap_update(self, msg):
+        import numpy as np
+        lc = self._lc
+        if lc is None:
+            return
+        x0, y0, w, h = int(msg.x), int(msg.y), int(msg.width), int(msg.height)
+        if w <= 0 or h <= 0 or len(msg.data) != w * h or x0 < 0 or y0 < 0 or \
+                x0 + w > lc['w'] or y0 + h > lc['h']:
+            return
+        lc['data'][y0:y0 + h, x0:x0 + w] = np.array(msg.data, dtype=np.int8).reshape(h, w)
+        self._costmap_input()
+
+    def _costmap_input(self):
+        """Hand the FSM the odom-frame grid and map <- odom at receipt (from the map and odom
+        EKF poses); fsm.common.costmap_lethal_points extracts the lethal cells on demand."""
+        lc, ob = self._lc, self._odom_frame_pose
+        with self._lock:
+            mb = self.fsm.inputs.pose
+            if lc is None or ob is None or mb is None:
+                return
+            a = float(mb[2]) - float(ob[2])                 # map <- odom
+            c, sn = math.cos(a), math.sin(a)
+            tx = float(mb[0]) - (c * ob[0] - sn * ob[1])
+            ty = float(mb[1]) - (sn * ob[0] + c * ob[1])
+            self.fsm.inputs.costmap_grid = (lc, (c, sn, tx, ty))
+            self.fsm.inputs.costmap_lethal_stamp = self._clk.now()
 
     def _on_wheel_odom(self, msg):
         pos = msg.pose.pose.position
@@ -1537,6 +1604,10 @@ class MissionNode(Node):
                 'name': a.name,
                 'outer': [(p.x, p.y) for p in a.area.points],
                 'obstacles': [[(p.x, p.y) for p in o.points] for o in a.obstacles],
+                # per obstacle: an unreviewed robot proposal (the FSM keeps it out of the
+                # plan, fsm.common.accepted_area)
+                'obstacle_pending': [bool(getattr(o, 'pending', False))
+                                     for o in getattr(a, 'obstacle_info', [])],
                 'is_navigation_area': bool(a.is_navigation_area)}}
         elif e.name == fsm_mod.SRV_ADD_AREA:
             resp = {'success': bool(res.success)}

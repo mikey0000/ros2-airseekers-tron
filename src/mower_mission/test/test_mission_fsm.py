@@ -998,14 +998,38 @@ def test_resume_cursor_survives_restart_via_file():
     assert (h2.fsm.mission.sub_i, h2.fsm.mission.start_local) == (1, 5)
 
 
-def test_resume_discarded_when_plan_changes():
+def test_resume_mapped_by_position_when_plan_geometry_changes():
+    """Field 2026-11-04 00:02: a re-plan with changed geometry discarded the cursor and the
+    mow restarted at sub-path 1. The old plan's mowed part is mapped onto the new one."""
     h = Harness()
     sps, _ = mow_first_subpath_then_stop(h)
+    assert ResumeCursor.loads(h.saved).areas[0].mowed      # mowed polylines stored
+    h = Harness(cursor=ResumeCursor.loads(h.saved))        # also across a restart
     start_until_planning(h)
-    changed = [line(0, 0, 4.5, 0)] + sps[1:]
+    mk = h.mark()
+    changed = [line(0, 0, 4.05, 0, n=17), line(4.05, 1, -0.05, 1, n=17)] + sps[2:]
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(changed))
+    m = h.fsm.mission
+    assert h.fsm.cursor.areas[0].completed == {0}
+    assert m.sub_i == 1
+    x = m.subpaths[1][m.start_local][0]
+    assert 1.9 <= x <= 2.2, (m.start_local, x)       # the robot stopped at x 2.05
+    txt = [e.text for e in h.since(mk, f.Log)]
+    assert any('mapped onto the new plan by position' in t for t in txt), txt
+    assert not any('discarded' in t for t in txt)
+
+
+def test_resume_that_cannot_be_mapped_logs_an_error_and_starts_over():
+    h = Harness()
+    mow_first_subpath_then_stop(h)
+    start_until_planning(h)
+    mk = h.mark()
+    other = [line(0, 3, 4, 3), line(4, 3.8, 0, 3.8)]       # nothing of it was mowed
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(other))
     assert (h.fsm.mission.sub_i, h.fsm.mission.start_local) == (0, 0)
     assert h.fsm.cursor.areas[0].completed == set()
+    errs = [e.text for e in h.since(mk, f.Log) if e.level == 'error']
+    assert any('could not be mapped' in t for t in errs), errs
 
 
 def test_clear_coverage_resume():

@@ -554,6 +554,16 @@ class Inputs:
     stuck: bool = False
     # /collision_monitor_state: monotonic time the current STOP began (None = not stopping)
     cm_stop_since: Optional[float] = None
+    # local costmap lethal cells in the map frame [(x, y)] + receipt time (mission_node:
+    # /local_costmap/costmap + _updates, odom -> map from the two EKF poses). The edge-lap
+    # detour locates a costmap-only obstacle (stereo depth, no detection class) from these
+    # after a collision abort (field 2026-11-04: a branch across edge lap 0, skipped 5 times)
+    costmap_lethal: Optional[list] = None
+    costmap_lethal_stamp: Optional[float] = None
+    # (grid dict {w, h, res, ox, oy, data int8 ndarray}, (cos, sin, tx, ty) map <- odom):
+    # what mission_node keeps; the cells are extracted only when needed
+    # (costmap_lethal_points); costmap_lethal, when set, takes precedence (tests)
+    costmap_grid: Any = None
     # /tilt/status (mower_control tilt_monitor, latched JSON): band ok|caution|limit|critical|
     # unknown, filtered roll / pitch (deg, REP-103), axis that set the band, receipt time
     tilt_band: str = 'unknown'
@@ -1445,9 +1455,11 @@ class Params:
     # ---- 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py) ----
     nogo_enabled: bool = True
     nogo_zones_max_age_s: float = 10.0       # /obstacle_tracker/nogo_zones receipt age
-    # mid-mow re-plan around a zone (pending / accepted) on the remaining path of the area
+    # mid-mow re-plan around a zone on the remaining path of the area. Accepted zones only
+    # (2026-11-04 owner rule): a pending (unreviewed) zone never changes the plan geometry;
+    # it acts at run time only (edge-lap detour, pre-pivot check: skip the leg)
     nogo_replan: bool = True
-    nogo_replan_states: list = field(default_factory=lambda: ['pending', 'accepted'])
+    nogo_replan_states: list = field(default_factory=lambda: ['accepted'])
     nogo_replan_pad_m: float = 0.10          # footprint growth for the on-path test
     nogo_replan_min_interval_s: float = 60.0
     nogo_replan_max_per_area: int = 3
@@ -1462,6 +1474,26 @@ class Params:
     nogo_edge_lookahead_m: float = 2.5
     nogo_edge_clearance_m: float = 0.10
     nogo_edge_max_offset_m: float = 0.60     # larger: no detour (re-plan / skip instead)
+    # a collision abort on an edge lap with no zone / detection to detour round: the local
+    # costmap's lethal cells inside the area (+ margin) within this corridor of the lap ahead
+    # are the obstacle (2026-11-04). No re-plan exists for them, so the inward offset may be
+    # larger than for a zone (the alternative is the skip), with a longer ramp.
+    # OFF by default (2026-11-05): built and unit-tested, but on the area-3 sim scenario
+    # (branch in a corner) the detour worked in 2 of 4 runs and once took base_link 0.16 m
+    # out; needs a mid-edge scenario plus seeds before it is enabled. Off: mission_node
+    # takes no costmap at all and an edge-lap collision abort skips as before.
+    nogo_edge_costmap: bool = False
+    nogo_edge_costmap_max_age_s: float = 3.0
+    nogo_edge_costmap_corridor_m: float = 0.60  # cell to the lap ahead (body half width + 0.37)
+    nogo_edge_costmap_max_offset_m: float = 1.50
+    nogo_edge_costmap_ramp_m: float = 1.20
+    # ramp >= this x the largest offset: the return onto the lap stays shallow (a 1.31 m
+    # offset over 1.2 m overshot 0.14 m outside on the rejoin, sim 2026-11-04)
+    nogo_edge_costmap_ramp_per_m: float = 3.0   # cosine ramp: max slope pi/(2 x 3) ~ 28 deg
+    # the abort left the robot within this of the cells: back up this far first (body
+    # inside, _safe_backoff), then detour (0 = never)
+    nogo_edge_costmap_backup_near_m: float = 0.80
+    nogo_edge_costmap_backup_m: float = 0.50
     nogo_living_memory_s: float = 60.0       # static marks this recently under a living zone
     nogo_plan_grow_m: float = 0.25           # zone hole radius + this (nose 0.60 vs 0.40 keepout)
 
@@ -1629,6 +1661,41 @@ def blocked_text(n):
     """Sub_state for stretches the end-of-area pass could not mow (vendor IotNotice
     900027 'obstacle cannot be bypassed')."""
     return '%d stretch%s blocked by obstacles' % (n, '' if n == 1 else 'es')
+
+
+def costmap_lethal_points(grid, cap=4000):
+    """[(x, y)] map-frame centres of the LETHAL (OccupancyGrid 100) cells of ``grid`` (the
+    inputs.costmap_grid pair), at most ``cap`` (evenly thinned)."""
+    if grid is None:
+        return []
+    import numpy as np
+    lc, (c, s, tx, ty) = grid
+    rows, cols = np.nonzero(lc['data'] == 100)
+    if len(rows) > cap:
+        k = np.linspace(0, len(rows) - 1, cap).astype(int)
+        rows, cols = rows[k], cols[k]
+    ox = lc['ox'] + (cols + 0.5) * lc['res']
+    oy = lc['oy'] + (rows + 0.5) * lc['res']
+    return list(zip((tx + c * ox - s * oy).tolist(), (ty + s * ox + c * oy).tolist()))
+
+
+def accepted_area(area):
+    """``area`` (a get_mowing_area response dict) with its PENDING obstacles (robot
+    proposals the owner has not reviewed: obstacle_tracker stuck / det zones, dig keepouts)
+    moved from ``obstacles`` to ``pending_obstacles``. Pending zones never shape the coverage
+    plan, the path conditioning region or the boundary keepouts: a STOP / START with one
+    present re-planned 541 -> 526 m and discarded the resume cursor (field 2026-11-04
+    00:02, zone #1097). They act at run time only (/obstacle_tracker/nogo_zones: edge-lap
+    detour, pre-pivot check) until accepted. No / mismatched flags: unchanged."""
+    obs = list(area.get('obstacles') or [])
+    pend = list(area.get('obstacle_pending') or [])
+    if not any(pend) or len(pend) != len(obs):
+        return area
+    out = dict(area)
+    out['obstacles'] = [o for o, pd in zip(obs, pend) if not pd]
+    out['pending_obstacles'] = [o for o, pd in zip(obs, pend) if pd]
+    out['obstacle_pending'] = [False] * len(out['obstacles'])
+    return out
 
 
 def blade_allowed(fsm):

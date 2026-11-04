@@ -129,6 +129,8 @@ class PhaseDispatchMixin:
             if now >= self.mission.retry_at:
                 self._retry_fire()
         elif ph == 'MOWING' and self.mission is not None:
+            if self._nogo_backup_tick():          # edge detour: reverse off the obstacle
+                return
             if self.mission.step == 'follow':
                 self._track_progress()
                 if self._leg_watch():

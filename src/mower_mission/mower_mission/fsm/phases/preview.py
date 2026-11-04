@@ -6,7 +6,7 @@ Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 from mower_mission.fsm.common import (ACT_PLAN, CancelActions, PARAM_NODE_COVERAGE,
     PREVIEW_ALL, PREVIEW_CLEAR, PREVIEW_PHASES, PublishPlan, PublishPreviewSummary,
     SEGMENT_RING, SEGMENT_SWATH, SRV_GET_AREA, SRV_GET_AREA_SETTINGS, SRV_SET_PARAMS,
-    SUCCEEDED, coverage_route_params, geo)  # noqa: F401
+    SUCCEEDED, accepted_area, coverage_route_params, geo)  # noqa: F401
 
 
 class PreviewMixin:
@@ -74,7 +74,7 @@ class PreviewMixin:
             return
         if purpose == 'preview_enum':
             if ok and resp.get('success'):
-                a = resp.get('area', {})
+                a = accepted_area(resp.get('area', {}))
                 if not a.get('is_navigation_area', False):
                     pv['areas'][pv['index']] = a
                 pv['index'] += 1
