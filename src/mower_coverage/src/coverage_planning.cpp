@@ -1480,35 +1480,55 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
       addPolys(mp, segRect(s.first, s.second, hw));
       ++plan->fill_swaths;
     };
+    // drive order: nearest neighbour, a spur entered at its mouth only (never reversed)
+    std::vector<FillPass> order;
     for (size_t step = 0; step < fills.size(); ++step) {
       size_t pick = 0;
       double pd = std::numeric_limits<double>::max();
       for (size_t i = 0; i < fills.size(); ++i) {
         if (used[i]) continue;
         const Seg& f = fills[i].seg;
-        // a spur is entered at its mouth only
         const double d = fills[i].spur ? dist(cur, f.first)
                                        : std::min(dist(cur, f.first), dist(cur, f.second));
         if (d < pd) { pd = d; pick = i; }
       }
       used[pick] = true;
-      Seg s = fills[pick].seg;
-      if (fills[pick].spur) {
-        // in to the end, pivot about there, back out to the mouth (the out leg starts
-        // kSpurTurnBackM back so the planner path keeps two poses per swath)
-        const double len = dist(s.first, s.second);
-        const double f = kSpurTurnBackM / std::max(len, 1e-9);
+      FillPass fp = fills[pick];
+      if (!fp.spur && dist(cur, fp.seg.second) < dist(cur, fp.seg.first)) {
+        std::swap(fp.seg.first, fp.seg.second);
+      }
+      order.push_back(fp);
+      cur = fp.spur ? fp.seg.first : fp.seg.second;
+    }
+    for (size_t k = 0; k < order.size(); ++k) {
+      const Seg& s = order[k].seg;
+      if (!order[k].spur) {
         append(s);
-        append({{s.second.first + f * (s.first.first - s.second.first),
-                 s.second.second + f * (s.first.second - s.second.second)},
-                s.first});
-        ++spurs;
-        cur = s.first;
         continue;
       }
-      if (dist(cur, s.second) < dist(cur, s.first)) std::swap(s.first, s.second);
+      // in to the end, pivot about there, back out: to the mouth, or straight to just short
+      // of the next spur's mouth when that is near and the line there stays in the row region (one
+      // about-turn there instead of pivot / short straight / pivot: the "V"s of a pocket).
+      // The out leg starts kSpurTurnBackM back so the planner path keeps two poses per swath.
+      Point2D out_to = s.first;
+      if (k + 1 < order.size() && order[k + 1].spur &&
+          dist(s.first, order[k + 1].seg.first) <= kTransitGapM) {
+        const Point2D& next = order[k + 1].seg.first;
+        const std::vector<Seg> in = clipLine(s.second, next, centre_region.get());
+        if (in.size() == 1 && dist(in[0].first, in[0].second) >= dist(s.second, next) - 1e-3) {
+          // short of the mouth too: the next in leg starts there (no duplicate pose)
+          const double g = kSpurTurnBackM / std::max(dist(s.second, next), 1e-9);
+          out_to = {next.first + g * (s.second.first - next.first),
+                    next.second + g * (s.second.second - next.second)};
+        }
+      }
+      const double len = dist(out_to, s.second);
+      const double f = kSpurTurnBackM / std::max(len, 1e-9);
       append(s);
-      cur = s.second;
+      append({{s.second.first + f * (out_to.first - s.second.first),
+               s.second.second + f * (out_to.second - s.second.second)},
+              out_to});
+      ++spurs;
     }
     covered = unionAll(mp);
     unc = evaluate(target, covered.get(), min_gap, plan);

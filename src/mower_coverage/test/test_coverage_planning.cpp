@@ -2290,15 +2290,19 @@ struct Spur {
   Point2D mouth, end;
 };
 
-// in leg (mouth -> end) directly followed by its out leg (just short of end -> mouth)
+// in leg (mouth -> end) directly followed by its out leg (from just short of the end back
+// out: to the mouth, or to the next spur's mouth)
 std::vector<Spur> spursOf(const CoveragePlan& plan) {
   std::vector<Spur> out;
-  for (size_t i = 1; i < plan.swaths.size(); ++i) {
+  for (size_t i = plan.swaths.size() - plan.fill_swaths + 1; i < plan.swaths.size(); ++i) {
     const auto& a = plan.swaths[i - 1];
     const auto& b = plan.swaths[i];
+    const double ax = a.second.first - a.first.first, ay = a.second.second - a.first.second;
+    const double bx = b.second.first - b.first.first, by = b.second.second - b.first.second;
     if (std::hypot(a.second.first - b.first.first, a.second.second - b.first.second) < 0.03 &&
-        std::hypot(a.first.first - b.second.first, a.first.second - b.second.second) < 1e-6) {
+        ax * bx + ay * by < 0.0) {
       out.push_back({a.first, a.second});
+      ++i;
     }
   }
   return out;
