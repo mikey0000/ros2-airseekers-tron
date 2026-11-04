@@ -554,6 +554,12 @@ class Inputs:
     stuck: bool = False
     # /collision_monitor_state: monotonic time the current STOP began (None = not stopping)
     cm_stop_since: Optional[float] = None
+    # local costmap lethal cells in the map frame [(x, y)] + receipt time (mission_node:
+    # /local_costmap/costmap + _updates, odom -> map from the two EKF poses). The edge-lap
+    # detour locates a costmap-only obstacle (stereo depth, no detection class) from these
+    # after a collision abort (field 2026-11-04: a branch across edge lap 0, skipped 5 times)
+    costmap_lethal: Optional[list] = None
+    costmap_lethal_stamp: Optional[float] = None
     # /tilt/status (mower_control tilt_monitor, latched JSON): band ok|caution|limit|critical|
     # unknown, filtered roll / pitch (deg, REP-103), axis that set the band, receipt time
     tilt_band: str = 'unknown'
@@ -1464,6 +1470,15 @@ class Params:
     nogo_edge_lookahead_m: float = 2.5
     nogo_edge_clearance_m: float = 0.10
     nogo_edge_max_offset_m: float = 0.60     # larger: no detour (re-plan / skip instead)
+    # a collision abort on an edge lap with no zone / detection to detour round: the local
+    # costmap's lethal cells inside the area (+ margin) within this corridor of the lap ahead
+    # are the obstacle (2026-11-04). No re-plan exists for them, so the inward offset may be
+    # larger than for a zone (the alternative is the skip), with a longer ramp.
+    nogo_edge_costmap: bool = True
+    nogo_edge_costmap_max_age_s: float = 3.0
+    nogo_edge_costmap_corridor_m: float = 0.60  # cell to the lap ahead (body half width + 0.37)
+    nogo_edge_costmap_max_offset_m: float = 1.50
+    nogo_edge_costmap_ramp_m: float = 1.20
     nogo_living_memory_s: float = 60.0       # static marks this recently under a living zone
     nogo_plan_grow_m: float = 0.25           # zone hole radius + this (nose 0.60 vs 0.40 keepout)
 

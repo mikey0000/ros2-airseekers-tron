@@ -1044,8 +1044,12 @@ class TransitMixin:
                 collided = self._collision_recent()
                 if (collided or static or self.inputs.cm_stop_since is not None) and \
                         self._edge_lap(m.sub_i) and self._nogo_edge_detour(
-                            prog, 'follow_path %s, obstacle on the lap' % outcome):
-                    return     # option C / B6: detour inward around it, rejoin, no stop-wait
+                            prog, 'follow_path %s, obstacle on the lap' % outcome,
+                            costmap=bool(collided or self.inputs.cm_stop_since is not None)):
+                    # option C / B6: detour inward around it (a zone, a detection, or the
+                    # local costmap's lethal cells on the lap ahead), rejoin, no stop-wait;
+                    # the skip below stays the fallback when no detour fits
+                    return
                 if (collided or self.inputs.cm_stop_since is not None) and \
                         self._edge_lap(m.sub_i):
                     self._edge_skip(prog, 'follow_path %s, collision ahead' % outcome)

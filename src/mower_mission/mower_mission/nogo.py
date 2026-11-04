@@ -347,16 +347,24 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
         sides.append((nx * sgn, ny * sgn, h))
         if cum[k] > lookahead_m:
             continue
+        beside = []
         for z in discs:
             dx, dy = z.x - q[0], z.y - q[1]
             along = dx * math.cos(h) + dy * math.sin(h)
             if along < -0.15 or along > 0.65:        # beside the body box (-0.10 .. 0.60)
                 continue
-            lat_in = dx * nx * sgn + dy * ny * sgn   # disc offset toward the interior
-            reach = z.r + half_width + clearance
-            if abs(lat_in) >= reach:
-                continue
-            need[k] = max(need[k], lat_in + reach)
+            # disc offset toward the interior, and how far the body must stay from it
+            beside.append((dx * nx * sgn + dy * ny * sgn, z.r + half_width + clearance))
+        # the least inward offset whose body clears every disc beside the pose: a chain of
+        # discs (costmap cells of a branch, 2026-11-04) pushes past each in turn; one disc
+        # gives lat_in + reach as before
+        o, moved = 0.0, True
+        while moved and o <= max_offset_m:
+            moved = False
+            for lat_in, reach in beside:
+                if abs(lat_in - o) < reach:
+                    o, moved = lat_in + reach, True
+        need[k] = o
     if max(need) <= 1e-3:
         return None
     if max(need) > max_offset_m:

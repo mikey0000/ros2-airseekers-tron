@@ -222,9 +222,10 @@ class MissionFSM(PreviewMixin,
     def _log(self, level, text):
         self._fx.append(Log(level, text))
 
-    def _incident(self, kind, detail=''):
-        """Terrain-memory incident at the current pose (no-op without a pose)."""
-        pose = self.inputs.pose
+    def _incident(self, kind, detail='', xy=None):
+        """Terrain-memory incident at ``xy`` (an obstacle's position), else the current pose
+        (no-op without either)."""
+        pose = self.inputs.pose if xy is None else xy
         if pose is None:
             return
         self._fx.append(RecordIncident(kind, float(pose[0]), float(pose[1]), str(detail)))

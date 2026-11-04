@@ -482,6 +482,58 @@ def test_edge_lap_abort_detours_inward_around_a_zone_and_rejoins():
     assert any('rejoining the lap' in t for t in logs(h, mk))
 
 
+def _branch(h, x, y0, y1, age=0.0):
+    """Lethal local-costmap cells of a branch lying across the lap at ``x`` (no zone, no
+    detection: stereo depth only), as mission_node feeds them (map frame)."""
+    n = int(round((y1 - y0) / 0.05))
+    h.fsm.inputs.costmap_lethal = [(x + 0.02 * (k % 2), y0 + 0.05 * k) for k in range(n + 1)]
+    h.fsm.inputs.costmap_lethal_stamp = h.t - age
+
+
+def _abort_on_branch(x, y0, y1, age=0.0):
+    h = _edge_h()
+    h.fsm.inputs.pose = (1.6, 0.0, 0.0)
+    h.tick(n=2)
+    _branch(h, x, y0, y1, age)
+    mk = h.mark()
+    h.fsm.inputs.collision_stamp = h.t          # MPPI "Optimizer fail" -> patience exceeded
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    return h, mk
+
+
+def test_edge_lap_costmap_only_obstacle_detours_tags_and_rejoins():
+    """Field 2026-11-04 (area 3, 5 times): a branch across edge lap 0 seen only as stereo
+    lethal cells -> follow_path aborted -> 'edge blocked: skip 2.0 m'. Now: detour inward
+    round the cells, tag the obstacle on the map, rejoin the lap."""
+    h, mk = _abort_on_branch(2.5, -0.3, 0.5)
+    a = h.pending_action(f.ACT_FOLLOW)
+    assert a.purpose == 'nogo_detour', logs(h, mk)
+    poses = h.goal(f.ACT_FOLLOW)['poses']
+    # the cells reach 0.5 m in: body half width + clearance past them (> the zone cap 0.6)
+    assert max(q[1] for q in poses) >= 0.5 + h.fsm.p.robot_width_m / 2.0 + 0.1 - 0.02
+    assert not any('edge blocked: skip' in t for t in logs(h, mk))
+    inc = [e for e in h.since(mk, f.RecordIncident) if e.kind == 'edge_detour']
+    assert inc and abs(inc[0].x - 2.5) < 0.15 and 'costmap obstacle' in inc[0].detail
+    assert h.blade                              # owner policy: blade on in-area detours
+    end = h.fsm.mission.nogo_detour['end']
+    h.finish(f.ACT_FOLLOW)
+    assert h.pending_action(f.ACT_FOLLOW).purpose != 'nogo_detour'
+    assert h.fsm.mission.start_local == end
+    assert any('rejoining the lap' in t for t in logs(h, mk))
+
+
+def test_edge_lap_costmap_obstacle_too_deep_for_a_detour_is_skipped():
+    h, mk = _abort_on_branch(2.5, -0.3, 1.6)         # needs ~1.9 m > 1.5 m
+    assert any('no inward detour fits' in t for t in logs(h, mk))
+    assert any('edge blocked: skip' in t for t in logs(h, mk))
+
+
+def test_edge_lap_stale_costmap_is_not_used():
+    h, mk = _abort_on_branch(2.5, -0.3, 0.5, age=10.0)
+    assert any('edge blocked: skip' in t for t in logs(h, mk))
+    assert h.fsm.mission.nogo_edge_detours == 0
+
+
 def test_edge_lap_proactive_detour_for_a_zone_ahead_without_stopping():
     h = _edge_h()
     h.fsm.p.nogo_replan = False                # zone not re-planned: the detour handles it

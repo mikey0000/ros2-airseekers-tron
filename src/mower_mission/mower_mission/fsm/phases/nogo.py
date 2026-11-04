@@ -16,7 +16,7 @@ docs/analysis/2026-10-23_obstacle_nogo_options.md).
 from mower_mission import nogo
 from mower_mission.fsm.common import (ACT_BACKUP, ACT_DRIVE, ACT_FOLLOW, ACT_PLAN, ACT_SPIN,
     AreaCursor, CancelActions, DriveCmd, PublishPlan, SUCCEEDED, CONDITIONED_KEY, geo, math,
-    subpath_offsets, walls)  # noqa: F401
+    _seg_dist, subpath_offsets, walls)  # noqa: F401
 
 
 class NogoMixin:
@@ -481,29 +481,83 @@ class NogoMixin:
                                    label=i.obstacle_class or 'static', state='detection'))
         return discs
 
-    def _nogo_edge_detour(self, prog, why, proactive=False):
+    def _nogo_costmap_discs(self, prog, polys):
+        """The local costmap's lethal cells (map frame, fresh) inside the allowed region
+        (+ 0.05 m), binned to 0.10 m discs: those within nogo_edge_costmap_corridor_m of the
+        lap ahead (from local ``prog``, nogo_edge_lookahead_m + 0.5 m) and every cell
+        connected to them (the whole obstacle: a branch reaching further in). A costmap-only
+        obstacle (stereo depth, no detection class) on an edge lap (field 2026-11-04)."""
+        m, p, i = self.mission, self.p, self.inputs
+        pts = i.costmap_lethal
+        if not p.nogo_edge_costmap or not pts or i.costmap_lethal_stamp is None or \
+                self._now - i.costmap_lethal_stamp > float(p.nogo_edge_costmap_max_age_s):
+            return []
+        from mower_mission import body_boundary as bb
+        sp = m.subpaths[m.sub_i]
+        cum = geo.cumulative_lengths(sp)
+        k0 = max(0, min(prog, len(sp) - 1))
+        reach = float(p.nogo_edge_lookahead_m) + 0.5
+        ahead = [tuple(q[:2]) for k, q in enumerate(sp) if k >= k0 and cum[k] - cum[k0] <= reach]
+        if len(ahead) < 2:
+            return []
+        cor = float(p.nogo_edge_costmap_corridor_m)
+        cells = {}
+        for x, y in pts:
+            cells.setdefault((int(math.floor(x / 0.1)), int(math.floor(y / 0.1))), (x, y))
+        def xy(c):
+            return (c[0] + 0.5) * 0.1, (c[1] + 0.5) * 0.1
+        cells = [c for c in cells if bb.point_outside(*xy(c), polys) <= 0.05]
+        free = set(cells)
+        todo = [c for c in cells if min(_seg_dist(xy(c), a, b) for a, b in
+                                        zip(ahead[:-1], ahead[1:])) <= cor]
+        free.difference_update(todo)
+        keep = []
+        while todo:                          # 8-connected cluster of the near cells
+            c = todo.pop()
+            keep.append(c)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    n = (c[0] + dx, c[1] + dy)
+                    if n in free:
+                        free.discard(n)
+                        todo.append(n)
+        return [nogo.Zone(*xy(c), 0.071, label='costmap', state='costmap') for c in keep]
+
+    def _nogo_edge_detour(self, prog, why, proactive=False, costmap=False):
         """Bend the edge lap ahead inward around a disc and follow that, blade on, then
-        rejoin the lap after it. True = the detour follow was started."""
+        rejoin the lap after it. True = the detour follow was started. ``costmap`` (a
+        collision abort): the lethal cells of the local costmap on the lap ahead count as
+        discs too (an obstacle no camera classified), with the costmap offset / ramp."""
         m, p = self.mission, self.p
         if not p.nogo_enabled or not p.nogo_edge_detour or m.nogo_detour is not None:
-            return False
-        discs = self._nogo_edge_discs()
-        if not discs:
             return False
         sp = m.subpaths[m.sub_i]
         polys = self._region()
         if not polys:
             return False
+        discs = self._nogo_edge_discs()
+        cm = self._nogo_costmap_discs(prog, polys) if costmap else []
+        if not discs and not cm:
+            return False
         from mower_mission import body_boundary as bb
 
         def inside(x, y):
             return bb.point_outside(x, y, polys) <= 0.0
-        res = nogo.edge_detour(sp, prog, discs, inside,
+        kw = {}
+        if cm:
+            kw = {'max_offset_m': max(float(p.nogo_edge_max_offset_m),
+                                      float(p.nogo_edge_costmap_max_offset_m)),
+                  'ramp_m': float(p.nogo_edge_costmap_ramp_m)}
+            why = '%s (%d costmap cells)' % (why, len(cm))
+        res = nogo.edge_detour(sp, prog, discs + cm, inside,
                                half_width=float(p.robot_width_m) / 2.0,
                                clearance=float(p.nogo_edge_clearance_m),
                                lookahead_m=float(p.nogo_edge_lookahead_m),
-                               max_offset_m=float(p.nogo_edge_max_offset_m))
+                               **dict({'max_offset_m': float(p.nogo_edge_max_offset_m)}, **kw))
         if res is None:
+            if cm:
+                self._log('warn', 'edge lap: %s: no inward detour fits within %.2f m: no '
+                                  'detour' % (why, kw['max_offset_m']))
             return False
         poses, end = res
         ex = self._nogo_body(poses)
@@ -529,8 +583,17 @@ class NogoMixin:
                                     q[1] - sp[min(prog + k, len(sp) - 1)][1])
                          for k, q in enumerate(poses)),
                      'on' if self.blade_on else 'off'))
-        self._incident('edge_detour', '%s at (%.2f, %.2f)' % (why, pose[0], pose[1])
-                       if pose is not None else why)
+        if cm:
+            # B6 "tag it on the map": the incident sits on the obstacle (the cells the
+            # detour bends round), not on the robot
+            used = [z for z in cm if any(math.hypot(z.x - q[0], z.y - q[1]) <= 0.8
+                                         for q in poses)] or cm
+            ox, oy = (sum(z.x for z in used) / len(used), sum(z.y for z in used) / len(used))
+            self._incident('edge_detour', 'costmap obstacle at (%.2f, %.2f): %s'
+                           % (ox, oy, why), xy=(ox, oy))
+        else:
+            self._incident('edge_detour', '%s at (%.2f, %.2f)' % (why, pose[0], pose[1])
+                           if pose is not None else why)
         self._start_action(ACT_FOLLOW, {
             'poses': poses, 'controller_id': self.coverage_controller_id(False),
             'goal_checker_id': self.p.follow_goal_checker_id,
