@@ -10,6 +10,7 @@ first version are in `docs/audit_2026-10-05/`.
 ## Current state (2026-11-04)
 
 **Deployed:** master 41e61e3, synced 2026-11-03 18:25 NZDT and running for the 2026-11-04 mow.
+**Open proposal (2026-11-05, `ws/blade1105`, not merged):** soft row ends for the blade point. It costs about 3 points of coverage on real_run5 in the sim, so it waits for an owner decision (section at the end).
 **Field:** full-area mows complete, with edge laps (soft layout, option (c)), no-go zones,
 mid-mow re-plan, obstacle detours on labelled detections, docking by day, and resume after STOP.
 
@@ -1604,3 +1605,18 @@ while the sim reports cutting:
   unpersisted, ungated paint (then retire that paint).
 - A resume scenario with a changed plan in the sim.
 - A field mow.
+
+## Soft row ends for the blade point (2026-11-05, branch ws/blade1105, unit + sim; not merged, not field tested)
+
+- **Change.**
+  - Soft row ends and turns are planned for the blade point. The blade (base_link -> blade_link 0.23, from `/tf_static`, sent as PlanCoverage `blade_offset_m`) stops 0.45 inside, so base_link stops 0.68 inside square-on.
+  - Row sides (0.45), lap positions and the hard layout are unchanged.
+  - The planner's coverage check and gap fill sweep the blade's path.
+  - `mower_common.frames` now holds the static-tree helpers that the mission and the bridge share.
+  - No new parameter. One srv field was added.
+- **Tests.**
+  - gtest: the inset values (soft 3 / 1 / 0 laps: row ends 0.68 / 0.38 / 0.23, sides 0.45 / 0.15 / 0), the square-on and angled row-end geometry, the blade footprint, and the gap tests (no band square-on, scallops pinned at an angle, moving the sides in leaves a band).
+  - Bridge: forwarding of `blade_offset_m`.
+- **Result.** The proposal fails the coverage bar on real_run5: ground truth 96.0-96.4 % -> 92.5-93.2 %. Owner_far Area 6 went 97.0 -> 97.6 %, and its nose and sweep excursions fell. The rows leaving a row end leave slivers (square-on) or scallops (about 60 deg off the normal) 0.40-0.50 from the line, which the pivot does not sweep.
+- **Owner decision needed.** Full table and options: `analysis/2026-10-21_stock_firmware_findings.md`, "Decision 2026-11-05".
+

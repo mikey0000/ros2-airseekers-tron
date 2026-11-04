@@ -194,6 +194,31 @@ Where our large ring turns came from, and what changed:
     - coverage cut_width_m is 0.22 (was 0.20).
   - `blade_disc_mm` is the one robot-wide setting, and the UI cutter_size setting (B1) will drive it.
 
+### Decision 2026-11-05 (proposal, branch `ws/blade1105`, not merged): soft row ends for the blade point
+
+- **Why.** Stock puts `cutter_link` 0.30 ahead of base_link in every model URDF (joint `base_joint`), plans the mow task with `robot_base_frame: cutter_link` and has `cutter_center_x` in its planner (`GlobalMap.h:97`). Its "rows end 0.45 inside" is therefore most likely the cutter 0.45 inside, not the axle (medium confidence). We had read it as base_link, so at a row end our nose ran 0.15 past the line and a pivot swept the front corners 0.19 past.
+- **Proposal (owner did not object).** Only the soft row-end inset changes. The blade point (`blade_link`, 0.23 ahead of base_link, the measured deck centre; not stock's 0.30 / 0.398) stops 0.45 inside. base_link then stops 0.68 inside where a row meets the line square-on: nose 0.08 inside, front corners 0.04 inside through the pivot, blade sweep to 0.34 from the line. Lap positions, row sides and the hard layout stay as they are.
+- **Implementation.** The bridge reads base_link -> blade_link from `/tf_static` and sends it as PlanCoverage `blade_offset_m`. The planner keeps the blade point 0.45 inside in either drive direction, so base_link stops at 0.45 + 0.23 cos(angle), where angle is measured from the line's normal. Turns stay 0.68 inside. The coverage check sweeps the blade's path (legs 0.23 ahead, with the pivot arcs between them) instead of base_link's.
+- **Sides stay at 0.45.** The blade is on the centreline, so it runs where base_link runs. With the sides at 0.68 as well, a band 0.40-0.58 from the side lines stays uncut. The gtest `MovingTheRowSidesInLeavesABand` reproduces that band.
+- **Coverage finding: the band is not fully covered.** The pivot at a row end only sweeps the quarter on the side of the arriving row. The rows that leave that end start their blade 0.45 + 2 x 0.23 cos(angle) inside, so the strip below them is cut only if the inner lap (to 0.41) or a pivot reaches it:
+  - Square-on: small slivers 0.41-0.5 from the line beside each leaving row.
+  - Rows about 60 deg off the normal: scallops 0.40-0.50 from the line, about 0.6 m long, one per row pair. At 30 deg the ends stay covered.
+  - Planner gap check, blade footprint, 0.20 spacing: rect 8 x 6 -0.4 points square-on and -2.1 points at 30 / 60 deg; real_run5 Area 1 94.6 -> 90.1 %; owner_far Area 6 98.3 -> 96.4 %.
+- **Sim gate, ground truth** (master = b4437d0, the merged A3 slice 1; runs on 2026-11-05):
+
+  | Run | lawn cut master | branch | nose / sweep over plan master | branch | mow time master | branch |
+  |---|---|---|---|---|---|---|
+  | real_run5 `-l -x 3 -s 1` | 96.4 % | 93.2 % | 0.059 / 0.089 | 0.085 / 0.095 | 740 s | 685 s |
+  | real_run5 `-d -s 1 -x 1` | 96.0-96.2 % | 92.5 % | 0.096-0.141 / 0.090-0.118 | 0.104 / 0.126 | 751-757 s | 701 s |
+  | owner_far Area 6 `-l -x 3 -s 1` | 97.0 % | 97.6 % | 0.056 / 0.091 | 0.051 / 0.077 | 3122 s | 2980 s |
+
+  The absolute body excursions past the line fell on owner_far: nose 0.361 -> 0.346, sweep 0.352 -> 0.275. On real_run5 they did not.
+- **Verdict.** The proposal fails the bar of "coverage not lower beyond 0.5 points" on real_run5: -3 to -3.5 points on the small, angular lawn. On owner_far, which is large and has many square-on ends, coverage went up 0.6 points. The owner has to choose between:
+  - (a) keep the base_link-referenced 0.45 (master);
+  - (b) take the blade-referenced ends and accept the scallops;
+  - (c) blade-referenced ends plus a band-closing lap at 0.45, with the sides at 0.60. Planner check: real_run5 95.8 %, owner_far 97.8 %, rect 8 x 6 99.4 %, but -1 to -3 points on triangles. This changes the lap positions.
+  - (d) a reach smaller than the blade offset. It also costs coverage on angular lawns: planner check -1.2 points on real_run5 at 0.05.
+
 ## Obstacles
 
 Source: `mower_task/mower_logic/config/costmap.yaml` and controller strings.
