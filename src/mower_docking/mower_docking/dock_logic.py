@@ -27,6 +27,7 @@ Frame conventions (see docs/audit_2026-10-05/vendor_mission_layer.md s3/s5):
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, field, replace
 from typing import List, Optional, Sequence, Tuple
@@ -113,6 +114,9 @@ class MarkerObs:
     stamp: float = 0.0
     marker_id: int = -1
     z: float = 0.0        # marker centre height in base_link (obstacle_guard dock foot)
+    # the other IPPE solution's yaw (solvePnPGeneric), None = not solved: the two solutions of a
+    # small planar marker are near-equal in reprojection error and swap from frame to frame
+    yaw_alt: Optional[float] = None
 
 
 def marker_in_base(rvec: Sequence[float], tvec: Sequence[float],
@@ -183,6 +187,38 @@ def dock_errors_with_heading(marker: MarkerObs, heading: float,
     return DockErrors(remaining=-docked_offset - (c * marker.x - s * marker.y),
                       lateral=-(s * marker.x + c * marker.y),
                       heading=wrap_angle(heading))
+
+
+def rehead_errors(e: DockErrors, heading: float, docked_offset: float) -> DockErrors:
+    """``e`` with the robot's docked-frame heading replaced by ``heading``, keeping the marker
+    centre where ``e`` saw it: the position is re-derived as :func:`dock_errors_with_heading`
+    would from the same detection. Used to re-head detections solved with a flipped marker
+    yaw (``e`` from :func:`dock_errors`) onto a trusted heading."""
+    vx, vy = -docked_offset - e.remaining, -e.lateral        # marker minus robot, docked frame
+    c, s = math.cos(-e.heading), math.sin(-e.heading)
+    seen = MarkerObs(c * vx - s * vy, s * vx + c * vy, wrap_angle(-e.heading))
+    return dock_errors_with_heading(seen, heading, docked_offset)
+
+
+def pick_marker_yaw(marker: MarkerObs, heading: float) -> MarkerObs:
+    """``marker`` with the IPPE solution whose docked heading (``-yaw``) is nearest
+    ``heading`` as its ``yaw`` (the other one moves to ``yaw_alt``). Without an alternative
+    it is returned unchanged."""
+    if marker.yaw_alt is None or abs(wrap_angle(-marker.yaw_alt - heading)) >= \
+            abs(wrap_angle(-marker.yaw - heading)):
+        return marker
+    return replace(marker, yaw=marker.yaw_alt, yaw_alt=marker.yaw)
+
+
+def heading_status_trusted(text: str, qualities: Sequence[str]) -> bool:
+    """mower_localization ``/heading_aligner/status`` JSON: aligned and its ``quality`` in
+    ``qualities`` (e.g. ['good'] = yaw sigma <= 8 deg). Unparseable = not trusted."""
+    try:
+        st = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(st, dict) and bool(st.get('aligned')) and \
+        str(st.get('quality', '')) in set(qualities)
 
 
 def propagate_errors(e: DockErrors, odom_from: Optional['Pose2D'],
@@ -537,6 +573,7 @@ class Snapshot:
     bumper: bool = False                     # bumper pressed OR bumper_controller manoeuvring
     rear_blocked: bool = False               # obstacle_guard /vision/rear_blocked (fresh)
     teleop: bool = False                     # operator joystick (/cmd_vel_teleop) active now
+    heading_trusted: bool = False            # heading_aligner reports a trusted map yaw (fresh)
 
 
 class StallGuard:
@@ -809,6 +846,21 @@ class DockParams:
     # solve was -167 deg (RTK 11 deg).
     rtk_check_max_deg: float = 30.0
     rtk_check_max_m: float = 0.3
+    # SEARCHING -> DOCKING: seed the filter heading from RTK (map yaw minus the measured dock
+    # yaw, the "RTK says" heading) instead of the median marker yaw, when the dock pose is
+    # measured, RTK is fixed and the heading aligner reports a trusted yaw
+    # (Snapshot.heading_trusted). The marker stays the position source: the accepted
+    # detections are re-headed onto that heading (rehead_errors) before their median.
+    # 2026-10-31 night: a lit marker in a black scene swung its yaw +-20 deg per frame and
+    # four SEARCH seeds came out -7.5..-21 deg against RTK -3..+9 deg; each approach started
+    # 0.1-0.2 m off in lateral (2 pose + 2 near realigns, a retry, 77 s). False = marker seed.
+    search_seed_rtk_heading: bool = True
+    # With that RTK seed (and in SEARCHING while the RTK heading is trusted), take the IPPE
+    # solution nearest the filter / RTK heading (pick_marker_yaw) instead of the solver's pick,
+    # so a per-frame ambiguity swap does not reach the filter gate or the pose / near checks.
+    # Without the RTK seed the solver's pick is kept (a wrong marker seed must stay
+    # correctable by the filter's re-init on consistent rejections).
+    ippe_pick_nearest: bool = True
     pose_check_median_n: int = 5        # pose check on the median of the last N detections
     # Forward manoeuvres (realign, retry, LATERAL_ALIGN) never take the robot further than
     # approach_distance + this from the dock (RTK; the "Dock path" corridor ends ~1.15 m out).
@@ -951,6 +1003,7 @@ class DockStateMachine:
         self._search_n = 0                   # distinct marker detections this SEARCHING
         self._inplace_done = False           # in-place search retry used for this approach
         self._realign_lat = None             # (lateral, odom pose) at the realign start
+        self._rtk_seeded = False             # the filter started on the RTK heading
 
     # -- helpers ---------------------------------------------------------
     def _enter(self, state: str, snap: Snapshot) -> None:
@@ -1106,6 +1159,8 @@ class DockStateMachine:
         """One marker measurement in the docked frame. Once the filter has a heading, the
         position comes from the marker centre with that heading (a pose flip cannot move
         it); the heading component stays the marker's own (the filter gates it)."""
+        if self._rtk_seeded and self._kf.x is not None:
+            m = self._pick_ippe(m, self._kf.x.heading)
         raw = dock_errors(m, self.p.docked_marker_offset)
         if self.p.marker_position_only and self.p.marker_filter and self._kf.x is not None:
             pos = dock_errors_with_heading(m, self._kf.x.heading, self.p.docked_marker_offset)
@@ -1495,6 +1550,37 @@ class DockStateMachine:
                 else max(self._marker_seen_t, m.stamp)
         return m
 
+    def _rtk_seed_heading(self, snap: Snapshot) -> Optional[float]:
+        """The RTK docked-frame heading to seed the filter with (search_seed_rtk_heading), or
+        None when RTK cannot be trusted for it: dock pose not measured, RTK not fixed, no map
+        pose, or the heading aligner not reporting a trusted yaw."""
+        if not self.p.search_seed_rtk_heading or not self.dock_pose_measured or \
+                not snap.rtk_fixed or not snap.heading_trusted or snap.map_pose is None:
+            return None
+        return rtk_dock_errors(snap.map_pose, self.dock_pose).heading
+
+    def _pick_ippe(self, m: MarkerObs, heading: Optional[float]) -> MarkerObs:
+        """:func:`pick_marker_yaw` when ippe_pick_nearest and a reference heading exist."""
+        if not self.p.ippe_pick_nearest or heading is None:
+            return m
+        return pick_marker_yaw(m, heading)
+
+    def _search_seed(self, snap: Snapshot, med: DockErrors, n: int) -> DockErrors:
+        """Filter start at SEARCHING -> DOCKING: the median of the last ``n`` detections,
+        re-headed onto the RTK heading when :meth:`_rtk_seed_heading` allows it (marker
+        centres for the position), else the plain median (marker yaw)."""
+        h = self._rtk_seed_heading(snap)
+        self._rtk_seeded = h is not None
+        if h is None:
+            return med
+        seed = median_errors([rehead_errors(e, h, self.p.docked_marker_offset)
+                              for e in self._recent_obs(n, snap.odom)])
+        self._notes.append('filter heading seeded from RTK: %.1f deg (marker %.1f deg), '
+                           'lateral %.2f m (marker yaw %.2f m)' % (
+                               math.degrees(seed.heading), math.degrees(med.heading),
+                               seed.lateral, med.lateral))
+        return seed
+
     def _rtk_check(self, snap: Snapshot, med: DockErrors) -> str:
         """Stock's intended (unused) cross-check: marker pose vs RTK pose (log only)."""
         if snap.map_pose is None or not self.dock_pose_measured:
@@ -1576,6 +1662,7 @@ class DockStateMachine:
             if use_kf:
                 if self._kf.x is None:
                     self._kf.init(gerr)
+                    self._rtk_seeded = False
                 else:
                     c0 = self._kf.clamped
                     r0 = (self._kf.rejected_pos, self._kf.rejected_heading)
@@ -1632,6 +1719,7 @@ class DockStateMachine:
             return self._out()  # hold still while the marker is lost
         if use_kf and self._kf.x is None:
             self._kf.init(gerr)
+            self._rtk_seeded = False
         est = self._kf.x if use_kf else err
         dec = self._kf.x if use_kf else gerr
         if p.pose_check_median_n > 1 and use_kf and len(self._obs) >= 3:
@@ -1916,6 +2004,7 @@ class DockStateMachine:
         if st == DockState.SEARCHING:
             m = self._fresh_marker(snap)
             if m is not None:
+                m = self._pick_ippe(m, self._rtk_seed_heading(snap))
                 err = dock_errors(m, self.p.docked_marker_offset)
                 fresh = not self._obs or self._obs[-1][0] != m.stamp
                 if fresh:
@@ -1944,14 +2033,15 @@ class DockStateMachine:
                         ok = False
                 if ok:
                     self._lost = 0
-                    self._last_err, self._last_err_odom = med, snap.odom
                     self._notes.append(
                         'marker accepted after %d detection(s) in %.1f s: %.2f m to go, '
                         'lateral %.2f m, heading %.1f deg%s' % (
                             self._search_n, el, med.remaining, med.lateral,
                             math.degrees(med.heading), self._rtk_check(snap, med)))
+                    seed = self._search_seed(snap, med, n_med)
+                    self._last_err, self._last_err_odom = seed, snap.odom
                     self._kf.reset()
-                    self._kf.init(med)
+                    self._kf.init(seed)
                     self._pose_checked = False
                     self._near_checked = False
                     self._enter(DockState.DOCKING, snap)

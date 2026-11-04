@@ -16,6 +16,7 @@ import math
 import sys
 import threading
 import time
+from dataclasses import replace
 from typing import Optional
 
 import rclpy
@@ -69,6 +70,10 @@ class DockingServer(Node):
         decl('dock_pose_measured_topic', '/map_server_node/docking_pose_measured')
         decl('progress_odom_topic', '/odometry/filtered')   # stall guard (fused pose)
         decl('gps_status_topic', '/gps/status')
+        # trusted map yaw for the SEARCH filter seed (search_seed_rtk_heading)
+        decl('heading_status_topic', '/heading_aligner/status')
+        decl('heading_trusted_qualities', ['good'])
+        decl('heading_status_timeout_s', 5.0)
         decl('image_topic', '/rear_camera/image_raw')
         decl('camera_info_topic', '/rear_camera/camera_info')
         decl('charging_service', '/charging')
@@ -198,7 +203,7 @@ class DockingServer(Node):
                   'realign_steer', 'realign_forward_per_lateral', 'realign_forward_max',
                   'align_to_marker_bearing', 'near_check_remaining', 'near_check_max_lateral',
                   'near_check_max_heading_deg', 'near_check_forward',
-                  'near_check_max_realigns'):
+                  'near_check_max_realigns', 'search_seed_rtk_heading', 'ippe_pick_nearest'):
             decl(n, getattr(dp, n))
         decl('max_angular_accel', g.max_angular_accel)
         # 2026-10-21 stock-structure port (README "Stock structure port")
@@ -260,6 +265,8 @@ class DockingServer(Node):
         self._is_charging = False
         self._map_pose_t = -1e9
         self._rtk_fixed = False
+        self._heading_trusted = False
+        self._heading_status_t = -1e9
         self._marker: Optional[dl.MarkerObs] = None
         self._cam_K = None
         self._cam_D = None
@@ -320,6 +327,8 @@ class DockingServer(Node):
         sub(Bool, p('dock_pose_measured_topic').value, self._on_dock_measured, latched)
         if p('rear_blocked_topic').value:
             sub(Bool, p('rear_blocked_topic').value, self._on_rear_blocked, latched)
+        if p('heading_status_topic').value:
+            sub(String, p('heading_status_topic').value, self._on_heading_status, latched)
         if GnssStatus is not None:
             sub(GnssStatus, p('gps_status_topic').value, self._on_gps, 10)
         else:
@@ -435,6 +444,16 @@ class DockingServer(Node):
         with self._lock:
             self._rtk_fixed = int(msg.fix_type) == 3
 
+    def _on_heading_status(self, msg: String) -> None:
+        trusted = dl.heading_status_trusted(
+            msg.data, self.get_parameter('heading_trusted_qualities').value)
+        with self._lock:
+            changed = self._heading_trusted != trusted
+            self._heading_trusted = trusted
+            self._heading_status_t = self._clk.now()
+        if changed and self._busy:
+            self.get_logger().info('heading aligner yaw trusted: %s' % trusted)
+
     def _on_camera_info(self, msg: CameraInfo) -> None:
         if len(msg.k) >= 9 and msg.k[0] > 0:
             with self._lock:
@@ -459,6 +478,8 @@ class DockingServer(Node):
                                        throttle_duration_sec=5.0)
                 return
             res = det.detect(gray, K, D, int(self.get_parameter('marker_id').value))
+            alts = det.solve_alternatives(res[0][3], K, D) \
+                if res and self.get_parameter('ippe_pick_nearest').value else []
         except Exception as exc:  # keep the server alive on bad frames
             self.get_logger().warn('aruco detection failed: %s' % exc, throttle_duration_sec=5.0)
             return
@@ -471,10 +492,15 @@ class DockingServer(Node):
             return
         mid, rvec, tvec, _ = res[0]
         ext = list(self.get_parameter('rear_camera_T_base').value)
-        obs = dl.marker_in_base(
-            rvec, tvec, ext[0:3], ext[3:6], stamp=now, marker_id=mid,
-            yaw_correction=math.radians(float(
-                self.get_parameter('rear_camera_yaw_correction_deg').value)))
+        yaw_corr = math.radians(float(self.get_parameter('rear_camera_yaw_correction_deg').value))
+        obs = dl.marker_in_base(rvec, tvec, ext[0:3], ext[3:6], stamp=now, marker_id=mid,
+                                yaw_correction=yaw_corr)
+        if len(alts) > 1:
+            # the IPPE solution whose normal differs most from detect()'s pick is the mirror
+            yaws = [dl.marker_in_base(r, t, ext[0:3], ext[3:6], yaw_correction=yaw_corr).yaw
+                    for r, t in alts]
+            alt = max(yaws, key=lambda y: abs(dl.wrap_angle(y - obs.yaw)))
+            obs = replace(obs, yaw_alt=alt)
         with self._lock:
             self._marker = obs
         ps = PoseStamped()
@@ -621,7 +647,9 @@ class DockingServer(Node):
                 rear_blocked=self._rear_blocked,
                 teleop=now - self._teleop_t <= p('teleop_active_timeout_s').value,
                 nav_status=self._nav_status, charging_result=self._charging_result,
-                rtk_fixed=self._rtk_fixed)
+                rtk_fixed=self._rtk_fixed,
+                heading_trusted=self._heading_trusted and
+                now - self._heading_status_t <= p('heading_status_timeout_s').value)
 
     def _publish_cmd(self, v: float, w: float) -> None:
         t = Twist()
@@ -794,7 +822,7 @@ class DockingServer(Node):
                   'realign_steer', 'realign_forward_per_lateral', 'realign_forward_max',
                   'align_to_marker_bearing', 'near_check_remaining', 'near_check_max_lateral',
                   'near_check_max_heading_deg', 'near_check_forward',
-                  'near_check_max_realigns'):
+                  'near_check_max_realigns', 'search_seed_rtk_heading', 'ippe_pick_nearest'):
             extra[n] = type(getattr(dl.DockParams, n))(p(n))
         return dl.DockParams(
             **extra,

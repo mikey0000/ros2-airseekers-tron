@@ -93,6 +93,22 @@ class ArucoDetector:
         out.sort(key=lambda r: r[2][2])
         return out
 
+    def solve_alternatives(self, img_pts, K: Sequence[float],
+                           D: Sequence[float]) -> List[Tuple[list, list]]:
+        """Every IPPE_SQUARE pose of one marker's corners (``detect``'s 4th element), as
+        ``(rvec, tvec)`` lists, lowest reprojection error first. A small planar marker has two
+        near-equal solutions (its normal mirrored about the line of sight) and ``detect`` keeps
+        whichever the solver prefers; the caller can choose by a heading prior instead."""
+        flag = getattr(cv2, 'SOLVEPNP_IPPE_SQUARE', None)
+        if flag is None or not hasattr(cv2, 'solvePnPGeneric'):  # pragma: no cover
+            return []
+        n, rvecs, tvecs, _ = cv2.solvePnPGeneric(
+            self.obj_pts, np.asarray(img_pts, dtype=np.float64).reshape(4, 2),
+            np.asarray(K, dtype=np.float64).reshape(3, 3),
+            np.asarray(D, dtype=np.float64).reshape(-1), flags=flag)
+        return [(np.asarray(r).reshape(3).tolist(), np.asarray(t).reshape(3).tolist())
+                for r, t in zip(rvecs[:n], tvecs[:n])]
+
 
 def generate_marker_image(dictionary: str, marker_id: int, side_px: int):
     """Marker bitmap (black/white), for printing and tests."""
