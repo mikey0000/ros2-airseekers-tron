@@ -218,11 +218,6 @@ mower_docking:
     heading_status_topic: /heading_aligner/status
     heading_trusted_qualities: ['good']
     heading_status_timeout_s: 5.0
-    # with that RTK seed (and in SEARCH while the RTK heading is trusted): of the two IPPE
-    # solutions (solvePnPGeneric) take the one nearest the filter / RTK heading, so a per-frame
-    # ambiguity swap does not reach the filter gate or the pose / near checks. Without the RTK
-    # seed the solver's own pick is kept.
-    ippe_pick_nearest: true
     forward_cap_margin: 0.10       # realign/retry/LATERAL_ALIGN forward never beyond approach + this (RTK); 2026-10-23: was 0.25
     teleop_topic: /cmd_vel_teleop  # joystick active -> pause; resume from the current pose
     teleop_hold: true

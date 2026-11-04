@@ -57,23 +57,6 @@ def test_detect_and_pose_roundtrip():
     assert abs(obs.yaw) < math.radians(5)
 
 
-def test_solve_alternatives_returns_both_ippe_solutions():
-    """The second IPPE solution of a tilted marker mirrors its normal about the line of sight;
-    the first is detect()'s pose."""
-    rvec = [math.pi, math.radians(12.0), 0.0]
-    img = render(0.04, rvec, [0.03, 0.0, 0.9])
-    det = aruco_detect.ArucoDetector('DICT_4X4_50', 0.04)
-    res = det.detect(img, K, D)
-    sols = det.solve_alternatives(res[0][3], K, D)
-    assert len(sols) == 2
-    cam = ((-0.201, 0, 0.25), (-math.pi / 2, 0, math.pi / 2))
-    yaws = [dl.marker_in_base(r, t, *cam).yaw for r, t in sols]
-    assert yaws[0] == pytest.approx(dl.marker_in_base(res[0][1], res[0][2], *cam).yaw,
-                                    abs=1e-6)
-    assert sols[1][1] == pytest.approx(sols[0][1], abs=0.01)        # same centre
-    assert abs(dl.wrap_angle(yaws[1] - yaws[0])) > math.radians(5.0)
-
-
 def test_marker_id_filter():
     img = render(0.04, [math.pi, 0, 0], [0, 0, 0.5], marker_id=3)
     det = aruco_detect.ArucoDetector('DICT_4X4_50', 0.04)

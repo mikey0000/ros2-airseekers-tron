@@ -16,7 +16,6 @@ import math
 import sys
 import threading
 import time
-from dataclasses import replace
 from typing import Optional
 
 import rclpy
@@ -203,7 +202,7 @@ class DockingServer(Node):
                   'realign_steer', 'realign_forward_per_lateral', 'realign_forward_max',
                   'align_to_marker_bearing', 'near_check_remaining', 'near_check_max_lateral',
                   'near_check_max_heading_deg', 'near_check_forward',
-                  'near_check_max_realigns', 'search_seed_rtk_heading', 'ippe_pick_nearest'):
+                  'near_check_max_realigns', 'search_seed_rtk_heading'):
             decl(n, getattr(dp, n))
         decl('max_angular_accel', g.max_angular_accel)
         # 2026-10-21 stock-structure port (README "Stock structure port")
@@ -478,8 +477,6 @@ class DockingServer(Node):
                                        throttle_duration_sec=5.0)
                 return
             res = det.detect(gray, K, D, int(self.get_parameter('marker_id').value))
-            alts = det.solve_alternatives(res[0][3], K, D) \
-                if res and self.get_parameter('ippe_pick_nearest').value else []
         except Exception as exc:  # keep the server alive on bad frames
             self.get_logger().warn('aruco detection failed: %s' % exc, throttle_duration_sec=5.0)
             return
@@ -492,15 +489,10 @@ class DockingServer(Node):
             return
         mid, rvec, tvec, _ = res[0]
         ext = list(self.get_parameter('rear_camera_T_base').value)
-        yaw_corr = math.radians(float(self.get_parameter('rear_camera_yaw_correction_deg').value))
-        obs = dl.marker_in_base(rvec, tvec, ext[0:3], ext[3:6], stamp=now, marker_id=mid,
-                                yaw_correction=yaw_corr)
-        if len(alts) > 1:
-            # the IPPE solution whose normal differs most from detect()'s pick is the mirror
-            yaws = [dl.marker_in_base(r, t, ext[0:3], ext[3:6], yaw_correction=yaw_corr).yaw
-                    for r, t in alts]
-            alt = max(yaws, key=lambda y: abs(dl.wrap_angle(y - obs.yaw)))
-            obs = replace(obs, yaw_alt=alt)
+        obs = dl.marker_in_base(
+            rvec, tvec, ext[0:3], ext[3:6], stamp=now, marker_id=mid,
+            yaw_correction=math.radians(float(
+                self.get_parameter('rear_camera_yaw_correction_deg').value)))
         with self._lock:
             self._marker = obs
         ps = PoseStamped()
@@ -822,7 +814,7 @@ class DockingServer(Node):
                   'realign_steer', 'realign_forward_per_lateral', 'realign_forward_max',
                   'align_to_marker_bearing', 'near_check_remaining', 'near_check_max_lateral',
                   'near_check_max_heading_deg', 'near_check_forward',
-                  'near_check_max_realigns', 'search_seed_rtk_heading', 'ippe_pick_nearest'):
+                  'near_check_max_realigns', 'search_seed_rtk_heading'):
             extra[n] = type(getattr(dl.DockParams, n))(p(n))
         return dl.DockParams(
             **extra,

@@ -333,6 +333,41 @@ Tests: `test/test_dock_tweak_2026_10_23.py` (one test per rule, plus a replay of
 with a 35° rear-camera field of view: no LATERAL_ALIGN, no Nav2, no forward drive before
 DOCKING).
 
+## Night dock: RTK heading seed (2026-11-04, branch `ws/dusk1104`)
+
+Field 2026-10-31 20:02 night dock: 77 s, 5 approaches (daylight the same day: 27 s). The scene
+was black and only the lit marker was visible. Detection stayed at 100 %, so the exposure
+stepper never stepped, but the marker yaw swung +-20 deg per frame. Each SEARCH seeded the
+filter heading from the median marker yaw (-13.5, -7.5, -13.3, -21.2 deg against RTK -3..+9
+deg), and each approach started 0.1-0.2 m off in lateral.
+
+**RTK heading seed** (`search_seed_rtk_heading`). The seed applies when the dock pose is
+measured, RTK is fixed and `/heading_aligner/status` reports a trusted yaw (`quality` in
+`heading_trusted_qualities`, where ['good'] means sigma <= 8 deg, and fresher than
+`heading_status_timeout_s`). The filter then starts on the "RTK says" heading: map yaw minus the
+measured dock yaw. The accepted detections are re-headed onto that heading (`rehead_errors`), so
+the marker centres are still the position source. Otherwise the seed is the marker median, as
+before. The SEARCH acceptance checks (consistency, RTK cross-check) are unchanged.
+
+The 2026-10-21 objection to an RTK heading was that it lags in a slow reverse. That does not
+apply here: the seed is taken once, with the robot at rest after the approach and about-turn,
+and odometry propagates it from there. The 2026-10-23 daylight replay put the marker centre
+with the RTK heading within 1.3 cm of the RTK lateral at every range.
+
+**Not adopted: picking the IPPE solution nearest the RTK / filter heading** (`solvePnPGeneric`).
+It was built and tested on 2026-11-04. On synthetic flips it removed every extra approach. On
+frames rendered by mower_sim it made docking worse: 3-5 approaches against 1 with the seed alone,
+even without corner jitter. The 0.055 m marker read at `marker_size` 0.04 biases the true
+solution's normal by up to ~7 deg, so the mirror solution is often the one nearer the
+reference.
+
+`test_dock_dusk_2026_10_31.py` covers the seed. On the night stream (14 deg mirror on 70 % of
+the frames) the master seed lands 12-16 deg and 0.2-0.3 m off, as on the night, and the RTK seed
+lands within 1 deg and 2 cm. The sim reproduces the night scene with `world:=dock_dusk` (mower_sim
+`rear_camera: {dusk, corner_noise_px}`). Remaining at night: the near-field check takes its heading
+from the raw marker median, so frequent flips still cost near realigns. A darker night exposure
+preset is not built (stock picks its preset by HSV brightness; findings doc, "Detection").
+
 ## Undock
 
 The sequence is `CHARGER_OFF` (`/charging false`, waiting for the reply), then
@@ -509,7 +544,7 @@ colcon test --packages-select mower_docking && colcon test-result --verbose
 # or, without ROS:  cd src/mower_docking && python3 -m pytest test
 ```
 
-`test_dock_logic.py` is pure Python. `test_aruco_detect.py` renders a synthetic
+`test_dock_logic.py` and the dated `test_dock_*` files are pure Python. `test_aruco_detect.py` renders a synthetic
 marker and checks detection and pose. It is skipped when `cv2.aruco` is missing.
 
 License: Apache-2.0.

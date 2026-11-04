@@ -12,7 +12,6 @@ falls back to the marker median.
 """
 import math
 import random
-from dataclasses import replace
 
 import pytest
 
@@ -57,19 +56,16 @@ def test_heading_status_trusted(text, trusted):
 
 
 class DuskStream:
-    """~4 Hz detections of a lit marker in a black scene. Each frame has two IPPE solutions,
-    the true pose and its mirror ``flip_deg`` off (on the minus side with ``p_minus_side``, as the
-    night's seeds were); the solver reports the mirror on ``p_flip`` of the frames. Heading
-    noise 2 deg, position noise 1 cm. ``alt`` False drops the second solution (the solver's
-    pick only, as before solvePnPGeneric)."""
+    """~4 Hz detections of a lit marker in a black scene: on ``p_flip`` of the frames the solve
+    reports the IPPE mirror ``flip_deg`` off (on the minus side with ``p_minus_side``, as the
+    night's seeds were). Heading noise 2 deg, position noise 1 cm."""
 
-    def __init__(self, seed=1, p_flip=0.6, p_minus_side=0.7, alt=True, flip_deg=20.0):
+    def __init__(self, seed=1, p_flip=0.7, p_minus_side=0.8, flip_deg=14.0):
         self.rng = random.Random(seed)
         self.flip = math.radians(flip_deg)
-        self.p_flip, self.p_minus_side, self.alt = p_flip, p_minus_side, alt
+        self.p_flip, self.p_minus_side = p_flip, p_minus_side
         self.k = 0
         self.last = None
-        self.flips = 0
 
     def __call__(self, x, y, th, t):
         self.k += 1
@@ -77,13 +73,10 @@ class DuskStream:
             return self.last if self.last is not None and t - self.last.stamp < 0.3 else None
         r = self.rng
         mirror = -self.flip if r.random() < self.p_minus_side else self.flip
-        flipped = r.random() < self.p_flip
-        self.flips += flipped
-        noise = (math.radians(r.gauss(0.0, 2.0)), r.gauss(0.0, 0.01), r.gauss(0.0, 0.01))
-        true = _det(x, y, th, t, noise=noise)
-        alt = _det(x, y, th, t, flip=mirror, noise=noise)
-        pick, other = (alt, true) if flipped else (true, alt)
-        self.last = replace(pick, yaw_alt=other.yaw if self.alt else None)
+        flip = mirror if r.random() < self.p_flip else 0.0
+        self.last = _det(x, y, th, t, flip=flip,
+                         noise=(math.radians(r.gauss(0.0, 2.0)), r.gauss(0.0, 0.01),
+                                r.gauss(0.0, 0.01)))
         return self.last
 
 
@@ -108,18 +101,9 @@ def _search(m, stream, x, y, th, rtk_fixed=True, trusted=True, seconds=20.0):
     return m, notes
 
 
-def test_pick_marker_yaw_takes_the_solution_nearest_the_heading():
-    m = dl.MarkerObs(-1.2, 0.05, math.radians(-15.0), yaw_alt=math.radians(-3.0))
-    # docked heading = -yaw: the alternative (3 deg) is nearer 4 deg than the pick (15 deg)
-    p = dl.pick_marker_yaw(m, math.radians(4.0))
-    assert (p.yaw, p.yaw_alt) == pytest.approx((math.radians(-3.0), math.radians(-15.0)))
-    assert dl.pick_marker_yaw(m, math.radians(14.0)) is m
-    assert dl.pick_marker_yaw(replace(m, yaw_alt=None), math.radians(4.0)).yaw == m.yaw
-
-
-# the night's seeds: a 14 deg mirror on 70 % of the frames, 80 % of them on the minus side,
-# solver's pick only (no second solution): SEARCH accepts a flipped cluster
-NIGHT = dict(p_flip=0.7, p_minus_side=0.8, alt=False, flip_deg=14.0)
+# the night's seeds: a 14 deg mirror on 70 % of the frames, 80 % of them on the minus side:
+# SEARCH accepts a flipped cluster that still passes the RTK cross-check (30 deg / 0.3 m)
+NIGHT = dict(p_flip=0.7, p_minus_side=0.8, flip_deg=14.0)
 X, Y, TH = 0.6, 0.05, math.radians(4.0)
 
 
@@ -147,33 +131,33 @@ def test_marker_seed_control_reproduces_the_night():
 
 
 def test_alternating_flips_with_rtk_steady_seed_on_rtk():
-    """The solver's pick alternates +-20 deg about the true yaw (second solution = truth)."""
+    """The marker yaw alternates +-20 deg about the truth while RTK stays steady. The shipped
+    SEARCH acceptance never takes such a stream (consecutive detections disagree by 40 deg and
+    0.4 m lateral); with the acceptance widened, the seed still lands on RTK and the marker
+    centres, not between the two flips."""
     class Alternating:
         k = 0
 
         def __call__(self, x, y, th, t):
             self.k += 1
-            f = FLIP if self.k % 2 else -FLIP
-            return replace(_det(x, y, th, t, flip=f), yaw_alt=_det(x, y, th, t).yaw)
-    m, notes = _search(_machine(), Alternating(), X, Y, TH)
+            return _det(x, y, th, t, flip=FLIP if self.k % 2 else -FLIP)
+    m, _ = _search(_machine(), Alternating(), X, Y, TH, seconds=10.0)
+    assert m.state == S.SEARCHING
+    m, notes = _search(_machine(search_consistency_deg=45.0, search_consistency_m=1.0,
+                                rtk_check_max_m=0.6), Alternating(), X, Y, TH)
     assert m.state == S.DOCKING
     assert abs(math.degrees(dl.wrap_angle(m._kf.x.heading - TH))) < 1.0
     assert abs(m._kf.x.lateral - Y) < 0.01
-    # master (marker seed, solver's pick): the +-20 deg alternation is never consistent
-    m, _ = _search(_machine(search_seed_rtk_heading=False, ippe_pick_nearest=False),
-                   Alternating(), X, Y, TH)
-    assert m.state == S.SEARCHING
+    assert any('seeded from RTK' in n for n in notes)
 
 
 @pytest.mark.parametrize('measured,rtk_fixed,trusted', [
     (True, False, True), (False, True, True), (True, True, False)])
 def test_falls_back_to_the_marker_seed(measured, rtk_fixed, trusted):
-    """No measured dock pose, no RTK fix or no trusted heading: exactly the master seed (and the
-    solver's IPPE pick)."""
-    st = dict(NIGHT, alt=True)
-    a, notes = _search(_machine(measured), DuskStream(3, **st), X, Y, TH, rtk_fixed, trusted)
-    b, _ = _search(_machine(measured, search_seed_rtk_heading=False, ippe_pick_nearest=False),
-                   DuskStream(3, **st), X, Y, TH, rtk_fixed, trusted)
+    """No measured dock pose, no RTK fix or no trusted heading: exactly the master seed."""
+    a, notes = _search(_machine(measured), DuskStream(3, **NIGHT), X, Y, TH, rtk_fixed, trusted)
+    b, _ = _search(_machine(measured, search_seed_rtk_heading=False), DuskStream(3, **NIGHT),
+                   X, Y, TH, rtk_fixed, trusted)
     assert a.state == b.state == S.DOCKING
     assert (a._kf.x.remaining, a._kf.x.lateral, a._kf.x.heading) == \
         pytest.approx((b._kf.x.remaining, b._kf.x.lateral, b._kf.x.heading), abs=1e-12)
@@ -204,26 +188,15 @@ def _dock(stream, x0, y0, th0, seconds=150.0, **kw):
     return out, m, t
 
 
-# closed loop, 20 deg mirror on 70 % of the frames (sweep 2026-11-04, seeds 1-10, from 0.8 m /
-# 6 cm / 3 deg): master 8/10 docked, mean 105 s, 12 retries, 15 pose + 20 near realigns; RTK
-# seed only: 9/10, 102 s; RTK seed + IPPE pick: 10/10, 13 s, 0 retries, 0 pose + 4 near
-# realigns (= the flip-free baseline).
-DUSK = dict(p_flip=0.7, p_minus_side=0.8, flip_deg=20.0)
-
-
-@pytest.mark.parametrize('seed', range(1, 6))
-def test_dusk_dock_with_rtk_seed_and_ippe_pick_docks_first_time(seed):
-    out, m, t = _dock(DuskStream(seed, **DUSK), 0.8, 0.06, math.radians(3.0))
-    assert out.success, (out.message, m.state)
-    assert m.retries == 0 and m._realigns == 0, (m.retries, m._realigns, m._near_realigns)
-    assert t < 25.0
-
-
-def test_dusk_dock_master_control_needs_realigns():
-    spent = 0
-    for seed in range(1, 6):
-        out, m, t = _dock(DuskStream(seed, **dict(DUSK, alt=False)), 0.8, 0.06,
-                          math.radians(3.0), search_seed_rtk_heading=False,
-                          ippe_pick_nearest=False)
-        spent += m.retries + m._realigns + m._near_realigns
-    assert spent >= 10
+def test_night_closed_loop_rtk_seed_spends_fewer_approaches():
+    """Closed loop on the night stream, seeds 1-10 from 0.8 m / 6 cm / 3 deg (2026-11-04): master
+    46 s mean, 4 pose + 20 near realigns; RTK seed 35 s, 1 + 16. The near check's heading is the
+    raw marker median, which the 70 % flips still trip; the seed fixes the start, not that."""
+    def spent(**kw):
+        total = 0
+        for seed in range(1, 11):
+            out, m, _ = _dock(DuskStream(seed, **NIGHT), 0.8, 0.06, math.radians(3.0), **kw)
+            assert out.success, (out.message, seed)
+            total += m.retries + m._realigns + m._near_realigns
+        return total
+    assert spent() + 5 <= spent(search_seed_rtk_heading=False)
