@@ -400,6 +400,82 @@ def joined(pts, jl):
     return out
 
 
+def lawn_polygon(world):
+    """Outer of the world's lawn area (lawn_area, else the first mowing area) after
+    load_world, or None."""
+    import yaml
+    with open(world) as fh:
+        doc = yaml.safe_load(fh)
+    doc = doc.get('world', doc) if isinstance(doc.get('world'), dict) else doc
+    areas = [a for a in getattr(load_world, 'areas', []) if not a.is_navigation]
+    name = doc.get('lawn_area')
+    lawn = next((a for a in areas if a.name == name), None) if name else None
+    lawn = lawn or (areas[0] if areas else None)
+    return [tuple(q) for q in lawn.polygon] if lawn is not None else None
+
+
+def coverage_report(gt, status, progress, hl_state, lawn, t0):
+    """Reported, not judged (A3 2026-11-05): the cut share of the lawn from ground truth
+    (blade disc at the deck centre while /sim/status cutting), the mission's raster value
+    (last mowed_area_percent) and plan percent, and after a STOP -> START resume the length
+    the blade centre drove in MOWING over ground cut before the STOP (re-mown)."""
+    from mower_mission import mowed_raster as MR
+    if not lawn or not gt:
+        return None
+    ras = MR.MowedRaster.for_area(lawn)
+    cT = [r[0] for r in status]
+    r_blade = 0.5 * RG.BLADE_DISC_M
+
+    def cutting(t):
+        i = bisect.bisect_right(cT, t) - 1
+        return i >= 0 and bool(status[i][4])
+    # the STOP of a resume: the first IDLE after MOWING that a later MOWING follows
+    stop_t = resume_t = None
+    seen_mow = False
+    for r in gt:
+        st = hl_state(r[0])
+        if st == 'MOWING':
+            if stop_t is not None and resume_t is None:
+                resume_t = r[0]
+            seen_mow = True
+        elif st.startswith('IDLE') and seen_mow and stop_t is None:
+            stop_t = r[0]
+    before = None
+    last = None
+    recut = total = 0.0
+    for r in gt:
+        if r[0] < t0:
+            continue
+        if stop_t is not None and before is None and r[0] >= stop_t:
+            before = ras.data.copy()
+        bx, by = MR.blade_point(r[1], r[2], r[3], (RG.DECK_CENTRE_X_M, 0.0))
+        if not cutting(r[0]):
+            last = None
+            continue
+        a = last or (bx, by)
+        if math.hypot(bx - a[0], by - a[1]) <= MR.MAX_STEP_M:
+            ras.stamp_segment(a[0], a[1], bx, by, r_blade)
+        if before is not None and resume_t is not None and r[0] >= resume_t and \
+                hl_state(r[0]) == 'MOWING':
+            d = math.hypot(bx - a[0], by - a[1])
+            total += d
+            c = int(math.floor((bx - ras.ox) / ras.res))
+            w = int(math.floor((by - ras.oy) / ras.res))
+            if 0 <= w < before.shape[0] and 0 <= c < before.shape[1] and before[w, c]:
+                recut += d
+        last = (bx, by)
+    rep = [p for p in progress if len(p) > 6 and p[6] is not None]
+    plan = [p for p in progress if len(p) > 5 and p[5] is not None]
+    out = {'gt_percent': round(ras.percent(lawn) or 0.0, 1),
+           'mission_percent': rep[-1][6] if rep else None,
+           'plan_percent': plan[-1][5] if plan else None}
+    if stop_t is not None and resume_t is not None:
+        out.update({'stop_t': round(stop_t - t0, 1), 'resume_t': round(resume_t - t0, 1),
+                    'mowed_after_resume_m': round(total, 1), 'recut_after_resume_m':
+                    round(recut, 1)})
+    return out
+
+
 def main(run, world):
     D = json.load(open(os.path.join(run, 'data.json')))
     t0 = float(open(os.path.join(run, 'start_epoch')).read())
@@ -1005,9 +1081,20 @@ def main(run, world):
              'y' if e.get('resumed', True) else 'n', e['excursions'])
              for e in C['k']['windows']) or 'no loss window seen'),
     ]
+    cov = coverage_report(gt, D['status'], D['progress'], state_at, lawn_polygon(world), t0)
+    if cov is not None:
+        res['coverage'] = cov
     print('   %-2s %-44s %-40s %s' % ('', 'criterion', 'value', 'result'))
     for k, name, val in rows:
         print('   %-2s %-44s %-40s %s' % (k, name, val, 'PASS' if C[k]['pass'] else 'FAIL'))
+    if cov is not None:
+        print('   coverage (reported): lawn cut %.1f %% (ground truth), mission raster %s %%, '
+              'plan %s %%%s' % (cov['gt_percent'], cov['mission_percent'], cov['plan_percent'],
+                                '' if 'resume_t' not in cov else
+                                '; resume +%.0f s: %.1f m mowed, %.1f m of it over ground cut '
+                                'before the STOP' % (cov['resume_t'],
+                                                     cov['mowed_after_resume_m'],
+                                                     cov['recut_after_resume_m'])))
     for k, v in C['h']['stats'].items():
         print('   cross-track %-13s n %5d  median %.3f  p90 %.3f  p99 %.3f  max %.3f' % (
             k, v['n'], v['median'], v['p90'], v['p99'], v['max']))

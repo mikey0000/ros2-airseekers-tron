@@ -127,7 +127,9 @@ def main(bagdir, out):
                     except ValueError:
                         continue
                     D['progress'].append([t, s.get('state'), s.get('sub_path'),
-                                          s.get('sub_paths'), s.get('blade_on')])
+                                          s.get('sub_paths'), s.get('blade_on'),
+                                          s.get('percent'), s.get('mowed_area_percent'),
+                                          s.get('area')])
     for k in D:
         D[k].sort(key=lambda r: r[0])
     with open(out, 'w') as fh:

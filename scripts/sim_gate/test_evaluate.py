@@ -74,3 +74,29 @@ def test_rtk_handling_hold_resume():
     assert not E.rtk_handling(win, loc, bt, cut, [150.0])[0]['ok']     # excursion
     quiet, = E.rtk_handling(win, [[90.0, 'ok']], [], cut, [])
     assert quiet['ok'] and 'no hold needed' in quiet['note']
+
+
+def test_coverage_report_ground_truth_cut_and_recut_after_a_resume():
+    lawn = [(0.0, 0.0), (4.0, 0.0), (4.0, 1.0), (0.0, 1.0)]
+    gt, states = [], []
+    # base_link 0.23 m behind the blade; row y 0.5 x 0 -> 3, STOP, back to x 2 then on to 3.5
+    xs = [0.05 * k for k in range(61)] + [3.0 - 0.05 * k for k in range(21)] + \
+        [2.0 + 0.05 * k for k in range(31)]
+    for k, x in enumerate(xs):
+        t = 0.1 * k
+        yaw = 0.0
+        gt.append([t, x - 0.23, 0.5, yaw, 0.0, 0.0])
+        states.append((t, 'MOWING' if k < 61 or k >= 81 else 'IDLE'))
+    status = [[t, False, False, 0, s == 'MOWING', False] for t, s in states]
+    T = [t for t, _ in states]
+
+    def st(t):
+        import bisect
+        return states[max(0, bisect.bisect_right(T, t) - 1)][1]
+    progress = [[10.0, 'MOWING', 0, 1, True, 80.0, 25.0, 0]]
+    cov = E.coverage_report(gt, status, progress, st, lawn, 0.0)
+    assert cov['mission_percent'] == 25.0 and cov['plan_percent'] == 80.0
+    assert 16.0 < cov['gt_percent'] < 21.0       # ~3.5 x 0.22 of 4 m2 (4 cell rows at 5 cm)
+    assert cov['stop_t'] == 6.1 and cov['resume_t'] == 8.1
+    assert 0.9 <= cov['recut_after_resume_m'] <= 1.1          # x 2 -> 3 again
+    assert 1.4 <= cov['mowed_after_resume_m'] <= 1.6
