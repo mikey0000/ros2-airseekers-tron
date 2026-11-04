@@ -4,6 +4,14 @@ Field mow on 2026-11-04 (UTC 23:17 to 00:08, bag 20261103-231722), area 3 "furth
 lawn". The owner approved all three fixes on the condition that they pass the sim.
 Branch `ws/fix1104`, from master 41e61e3.
 
+**Status (2026-11-05).** Fixes 2 and 3 are ready to merge.
+
+Fix 1 (costmap edge detour) is built and unit-tested but **off by default**
+(`nogo_edge_costmap: false`). On the area-3 scenario, with the branch in a lap-0 corner,
+the detour worked in 2 of 4 runs and once took base_link 0.16 m outside. With it off,
+mission_node takes no costmap at all and an edge-lap collision abort skips as on master.
+Before it is enabled it needs a mid-edge scenario plus several seeds.
+
 ## 1. Edge lap: an obstacle that exists only in the costmap
 
 ### Field evidence
@@ -35,7 +43,7 @@ The abort path already tries the edge detour before it skips (master
 detection. A costmap-only obstacle produces neither, so `_nogo_edge_detour` returns
 False and `_edge_skip` runs. The mission had no input from the costmap at all.
 
-### Fix (commit 26bf0e3)
+### Fix (commit 26bf0e3; off by default since 996f331)
 
 This extends the existing detour trigger. It adds no new FSM guard, so owner rule A6
 needs no matching removal.
@@ -290,10 +298,11 @@ Tests changed on purpose:
   - behavior_server served a spin in the middle of the outage.
   - The detour-geometry WARN never fired.
   - It did not recur in 9 later branch runs.
-- **Pre-existing on master, not changed here.** `boundary.py:775`
-  `_hb_resume_in_next` reads the removed param `hard_boundary_back_speed_mps`. The tick
-  raises AttributeError after some boundary recoveries; it is in the field log of
-  2026-11-04 23:30 too.
+- **Pre-existing on master, fixed separately (9802139).** `boundary.py:775`
+  `_hb_resume_in_next` read the removed param `hard_boundary_back_speed_mps`, so the tick
+  raised AttributeError after some boundary recoveries. It is in the field log of
+  2026-11-04 23:30 too. It now reads `slow_maneuver_mps`, like the other call sites
+  fa723cd changed. The new test raises on the old code.
 
 ### Runs (one at a time, performance profile, load5 < 3 at start, bags pruned)
 
@@ -322,6 +331,24 @@ where master passed: `-d -s 1` e 0.151, then a 0.101 on d77e45c; `-l -x 3 -s 1` 
 | branch-scen8 (41fe18f) | back up, detour, merge x2, no rejoin trip; back-up took base_link 0.137 m out | pivot done before the hold | same plan | STUCK in master's `_try_detour` |
 | branch-scen9 (098ce0c, final) | detour aborted after 15 s (base_link 0.16 m out of a lap-0 corner), skip, then wedged at the branch | pivot 214 deg, hold, 156 deg rest redone | "1 pending keepout left out", same plan, cursor (2, 0) | TRANSIT timeout |
 
+| branch-scen10-off (9802139, detour off, shipped config) | as master: `edge blocked: skip 2.0 m`, then wedged at the branch; 11 sub-paths NOT mowed | pivot -93 deg cut by the hold, -47 deg rest redone after the resume | "1 pending keepout left out", `resuming (0/6 sub-paths done, cursor (5, 0))`, same plan | TRANSIT timeout |
+
+How branch-scen10-off compares with master-scen2:
+
+| Criterion | master-scen2 | branch-scen10-off | |
+|---|---|---|---|
+| a | 0.071 | 0.077 | PASS both |
+| b | 0 | 0 | PASS both |
+| d | 0 / 12 / 56 | 0 / 11 / 71 | FAIL both |
+| h | 0.246 | 0.145 | FAIL both |
+| i | 0.282 | 0.116 | FAIL both |
+| k | PASS | PASS | |
+| e | PASS 0.077 | FAIL 0.354 | see below |
+
+The e failure is the first dock-to-area route transit corner (-18.49, -0.58) -89 deg,
+before any mowing, where no fix acts. In this run the controller loop's p10 fell to 8 Hz;
+every other run held 20 Hz.
+
 (ii) and (iii) pass in every branch run where they fire (k PASS each time). (i) is the
 weak point:
 
@@ -334,5 +361,5 @@ weak point:
 Late-run trips and STUCK endings come from master's interior-swath `_try_detour` at the
 branch. Master never reaches that point (wedged), so there is nothing to compare.
 
-CI (`scripts/ci_test.sh`, 098ce0c): colcon PASS (3802 cases, 0 failed), scripts PASS,
+CI (`scripts/ci_test.sh`, 9802139): colcon PASS (3804 cases, 0 failed), scripts PASS,
 replay PASS.
