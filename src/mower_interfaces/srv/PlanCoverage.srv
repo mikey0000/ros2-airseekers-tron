@@ -33,6 +33,9 @@ string  edge_layout ""                    # soft | hard: stock-style laps / row 
 string  row_link_mode ""                  # transit | snake | auto: row changes no turn joins (edge layout; "" = node param,
                                           # auto = snake only with turn_mode != pivot); docs/analysis/2026-11-03_turns.md
 int32   edge_laps 3                       # edge layout: number of edge laps (area edge_laps); rows move with them
+float64 blade_offset_m -1.0               # base_link -> blade centre along x [m] (URDF blade_link, from /tf_static):
+                                          # soft row ends / turns are planned for this point; < 0 = unknown
+                                          # (base_link-referenced, the pre-2026-11-05 rows)
 ---
 bool   success
 string message

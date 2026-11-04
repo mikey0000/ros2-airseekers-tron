@@ -320,9 +320,12 @@ double longestEdgeAngle(const f2c::types::Cell& cell) {
 // vertex) are merged back into one segment. If the clip comes back empty —
 // numerical noise on a swath that lies exactly on the recorded line — the
 // swath is returned unclipped rather than silently dropping coverage.
+// reach > 0 (blade-referenced row ends): each merged piece is shortened by reach at both
+// ends, so the point reach ahead of base_link in either drive direction stays in `drivable`;
+// a piece no longer than 2 reach is dropped.
 std::vector<std::pair<Point2D, Point2D>> clipSwathToDrivable(
     const f2c::types::Cells& drivable, const Point2D& p0, const Point2D& p1,
-    bool keep_if_outside = true) {
+    bool keep_if_outside = true, double reach = 0.0) {
   const double dx = p1.first - p0.first;
   const double dy = p1.second - p0.second;
   const double len = std::hypot(dx, dy);
@@ -375,11 +378,12 @@ std::vector<std::pair<Point2D, Point2D>> clipSwathToDrivable(
   std::vector<std::pair<Point2D, Point2D>> out;
   out.reserve(merged.size());
   for (const auto& sp : merged) {
-    if (sp.second - sp.first < 1e-9) {
+    const double t0 = sp.first + reach, t1 = sp.second - reach;
+    if (t1 - t0 < 1e-9) {
       continue;
     }
-    out.push_back({{p0.first + sp.first * ux, p0.second + sp.first * uy},
-                   {p0.first + sp.second * ux, p0.second + sp.second * uy}});
+    out.push_back({{p0.first + t0 * ux, p0.second + t0 * uy},
+                   {p0.first + t1 * ux, p0.second + t1 * uy}});
   }
   return out;
 }
@@ -1241,10 +1245,68 @@ GeomPtr holeKeepoutRegion(const f2c::types::Cell& field, double grow, double fil
   return (cleaned && !cleaned->IsEmpty()) ? std::move(cleaned) : std::move(out);
 }
 
-// Footprint swept by the whole plan.
-GeomPtr planFootprint(const CoveragePlan& plan, double hw) {
+// The blade centre's path while base_link drives `run` (pivoting in place at every vertex)
+// with the blade `offset` ahead: each leg shifted offset along the way the robot faces (a
+// pose reached in reverse: against the travel), joined by the pivot arc (the shorter way)
+// around the vertex between them.
+std::vector<Point2D> bladePath(const std::vector<TurnPose>& run, double offset) {
+  std::vector<Point2D> out;
+  bool have = false;
+  double prev = 0.0;
+  for (size_t k = 0; k + 1 < run.size(); ++k) {
+    const Point2D& a = run[k].p;
+    const Point2D& b = run[k + 1].p;
+    if (dist(a, b) < 1e-6) continue;
+    const double f = std::atan2(b.second - a.second, b.first - a.first) +
+                     (run[k + 1].reverse ? M_PI : 0.0);
+    const double d = have ? std::remainder(f - prev, 2.0 * M_PI) : 0.0;
+    const int n = std::max(1, static_cast<int>(std::ceil(std::fabs(d) / (M_PI / 18.0))));
+    for (int j = have ? 1 : n; j <= n; ++j) {
+      const double y = f - d + d * j / n;
+      out.emplace_back(a.first + offset * std::cos(y), a.second + offset * std::sin(y));
+    }
+    out.emplace_back(b.first + offset * std::cos(f), b.second + offset * std::sin(f));
+    prev = f;
+    have = true;
+  }
+  return out;
+}
+
+// Blade footprint of the swaths: one blade path per blade-on run (swath, turn poses or a
+// straight connector <= kTransitGapM, next swath, ...), buffered by hw.
+void addBladeSwathFootprint(const CoveragePlan& plan, double hw, double offset,
+                            OGRMultiPolygon* mp) {
+  std::vector<TurnPose> run;
+  auto flush = [&]() {
+    const std::vector<Point2D> path = bladePath(run, offset);
+    if (path.size() >= 2) addPolys(mp, polylineBuffer(path, hw));
+    run.clear();
+  };
+  for (size_t i = 0; i < plan.swaths.size(); ++i) {
+    const Seg& s = plan.swaths[i];
+    const bool joined =
+        i > 0 && ((i < plan.turns.size() && !plan.turns[i].poses.empty()) ||
+                  dist(plan.swaths[i - 1].second, s.first) <= kTransitGapM);
+    if (!joined) flush();
+    if (joined && i < plan.turns.size()) {
+      run.insert(run.end(), plan.turns[i].poses.begin(), plan.turns[i].poses.end());
+    }
+    run.push_back({s.first, false});
+    run.push_back({s.second, false});
+  }
+  flush();
+}
+
+// Footprint swept by the whole plan. blade_offset > 0: the swaths and their connectors sweep
+// the blade's path (bladePath), the rings base_link's (on a lap the blade runs on base_link's
+// line; only its corners differ).
+GeomPtr planFootprint(const CoveragePlan& plan, double hw, double blade_offset = 0.0) {
   auto* mp = new OGRMultiPolygon();
   for (const auto& ring : plan.rings) addPolys(mp, polylineBuffer(ring, hw));
+  if (blade_offset > 0.0) {
+    addBladeSwathFootprint(plan, hw, blade_offset, mp);
+    return unionAll(mp);
+  }
   for (size_t i = 0; i < plan.swaths.size(); ++i) {
     const Seg& s = plan.swaths[i];
     addPolys(mp, segRect(s.first, s.second, hw));
@@ -1388,12 +1450,13 @@ bool bestFillPass(const OGRGeometry* gap, double hw, double swath_angle,
 }
 
 void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
-              CoveragePlan* plan, const OGRGeometry* centre = nullptr) {
+              CoveragePlan* plan, const OGRGeometry* centre = nullptr,
+              double blade_offset = 0.0) {
   const double hw = op_width / 2.0;
   // centre: where a fill pass's centreline may run (edge layout: the row region, so a fill
   // pass obeys the row-end inset); default the target shrunk by half a swath.
   GeomPtr centre_region(centre ? centre->clone() : target->Buffer(-hw, kBufQuadSegs));
-  GeomPtr covered = planFootprint(*plan, hw);
+  GeomPtr covered = planFootprint(*plan, hw, blade_offset);
   GeomPtr unc = evaluate(target, covered.get(), min_gap, plan);
   plan->coverage_fraction_before_fill = plan->coverage_fraction;
   if (!centre_region || geomArea(centre_region.get()) <= 0.0) return;
@@ -1428,8 +1491,6 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
                                                               : plan->rings.back().back())
                                        : plan->swaths.back().second;
     std::vector<bool> used(fills.size(), false);
-    auto* mp = new OGRMultiPolygon();
-    addPolys(mp, covered.release());
     for (size_t step = 0; step < fills.size(); ++step) {
       size_t pick = 0;
       double pd = std::numeric_limits<double>::max();
@@ -1441,16 +1502,12 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
       used[pick] = true;
       Seg s = fills[pick];
       if (dist(cur, s.second) < dist(cur, s.first)) std::swap(s.first, s.second);
-      if (!plan->swaths.empty() && dist(plan->swaths.back().second, s.first) <= kTransitGapM) {
-        addPolys(mp, polylineBuffer({plan->swaths.back().second, s.first}, hw));
-      }
       plan->swaths.push_back(s);
       if (!plan->turns.empty()) plan->turns.push_back(SwathTurn{});
-      addPolys(mp, segRect(s.first, s.second, hw));
       ++plan->fill_swaths;
       cur = s.second;
     }
-    covered = unionAll(mp);
+    covered = planFootprint(*plan, hw, blade_offset);
     unc = evaluate(target, covered.get(), min_gap, plan);
   }
   if (plan->fill_swaths > 0 && plan->swaths_first && !plan->rings.empty()) {
@@ -1473,10 +1530,11 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
 }  // namespace
 
 void verifyCoverage(const f2c::types::Cell& field, double op_width, double target_inset,
-                    double hole_margin, double min_gap_area_m2, CoveragePlan* plan) {
+                    double hole_margin, double min_gap_area_m2, CoveragePlan* plan,
+                    double blade_offset) {
   try {
     GeomPtr target = buildTarget(field, target_inset, hole_margin);
-    GeomPtr covered = planFootprint(*plan, op_width / 2.0);
+    GeomPtr covered = planFootprint(*plan, op_width / 2.0, blade_offset);
     evaluate(target.get(), covered.get(), min_gap_area_m2, plan);
   } catch (const std::exception&) {
     plan->drops.push_back("coverage verification failed");
@@ -1490,7 +1548,8 @@ void verifyAndFill(const f2c::types::Cell& field, double op_width, double border
                                                  : std::max(0.0, border_inset - op_width / 2.0);
   const double hole = route.hole_margin >= 0.0 ? route.hole_margin : border_inset;
   if (!route.fill_gaps || mode != PathMode::kZigzag) {
-    verifyCoverage(field, op_width, inset, hole, route.min_gap_area_m2, plan);
+    verifyCoverage(field, op_width, inset, hole, route.min_gap_area_m2, plan,
+                   route.blade_offset);
     plan->coverage_fraction_before_fill = plan->coverage_fraction;
     return;
   }
@@ -1501,7 +1560,8 @@ void verifyAndFill(const f2c::types::Cell& field, double op_width, double border
       centre = buildTarget(field, route.row_end_inset,
                            std::max(0.0, route.hole_inset) + route.row_end_inset);
     }
-    fillGaps(target.get(), op_width, route.min_gap_area_m2, plan, centre.get());
+    fillGaps(target.get(), op_width, route.min_gap_area_m2, plan, centre.get(),
+             route.blade_offset);
   } catch (const std::exception&) {
     plan->drops.push_back("gap fill failed");
   }
@@ -1830,8 +1890,11 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
   // A degenerate (zero-area / invalid) region cannot be clipped against —
   // GEOS raises a TopologyException and F2C then dereferences a null result —
   // so such a field keeps its unclipped swaths and says so in `drops`.
+  // Blade-referenced row ends (soft): the clip region is where the blade point stops
+  // (row_end_inset - blade_offset) and clipSwathToDrivable keeps it blade_offset ahead.
+  const double row_reach = layout ? std::max(0.0, route.blade_offset) : 0.0;
   const f2c::types::Cells drivable =
-      layout ? inset(hl_field, route.row_end_inset)
+      layout ? inset(hl_field, route.row_end_inset - row_reach)
              : ((border_inset > 0.0) ? hl.generateHeadlands(field_cells, border_inset)
                                      : field_cells);
   const bool clip_swaths = drivable.size() > 0 && drivable.area() > 1e-9 &&
@@ -1870,7 +1933,8 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
       const Point2D a{p0.getX(), p0.getY()};
       const Point2D b{p1.getX(), p1.getY()};
       const std::vector<Seg> clipped =
-          clip_swaths ? clipSwathToDrivable(drivable, a, b, !layout) : std::vector<Seg>{{a, b}};
+          clip_swaths ? clipSwathToDrivable(drivable, a, b, !layout, row_reach)
+                      : std::vector<Seg>{{a, b}};
       for (const auto& piece : clipped) {
         const double len = dist(piece.first, piece.second);
         // edge layout (round 4): rows shorter than kLayoutMinRowM in narrow pockets were driven
@@ -2096,8 +2160,8 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
 }
 }  // namespace
 
-bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* route,
-                     int edge_laps) {
+bool applyEdgeLayout(const std::string& name, double op_width, double blade_offset,
+                     RouteOptions* route, int edge_laps) {
   if (name.empty() || name == "legacy") {
     return true;
   }
@@ -2109,13 +2173,17 @@ bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* rou
   route->lap_offsets.clear();
   double first = 0.0;  // where the outermost pass (a lap, else a row) runs
   if (name == "soft") {
-    // laps 0 / 0.15 / 0.30 / ... (stock), rows one lap spacing inside the last lap
+    // laps 0 / 0.15 / 0.30 / ... (stock), rows one lap spacing inside the last lap. Row ends
+    // and turns are blade-referenced (2026-11-05): stock plans its rows for cutter_link, so
+    // its 0.45 is the blade; base_link stops blade_offset further in. The sides stay: the
+    // blade is on the centreline, so a row's blade runs where base_link does.
     constexpr double kSpacing = 0.15;
     for (int k = 0; k < n; ++k) route->lap_offsets.push_back(kSpacing * k);
     const double rows = kSpacing * n;
+    route->blade_offset = std::max(0.0, blade_offset);
     route->row_side_inset = rows;
-    route->row_end_inset = rows;
-    route->turn_inset = rows;
+    route->row_end_inset = rows + route->blade_offset;
+    route->turn_inset = rows + route->blade_offset;
     // obstacles are hard (owner 2026-10-23): base_link >= body half width 0.235 + 0.10 from
     // them, and no tighter than the 0.40 drivable arc, which their rounded outline is driven on
     route->hole_inset = kLayoutHoleKeepoutM;
@@ -2131,6 +2199,7 @@ bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* rou
     const int nh = std::max(1, n);
     for (int k = 0; k <= nh; ++k) route->lap_offsets.push_back(kStart + kSpacing * k);
     const double band = kStart + kSpacing * nh;
+    route->blade_offset = 0.0;  // base_link-referenced: the whole body is bounded
     route->row_side_inset = band + 0.11;
     route->row_end_inset = std::max(0.745, band + 0.09);
     route->turn_inset = 0.745;

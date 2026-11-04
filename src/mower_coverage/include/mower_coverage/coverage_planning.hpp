@@ -122,11 +122,18 @@ struct RouteOptions {
   // ignored for the outer field): one ring per offset, rows laterally from row_side_inset,
   // row ends (and gap-fill passes) row_end_inset inside, swath-to-swath turns kept
   // turn_inset inside, holes grown by hole_inset before any of that.
+  // blade_offset > 0 (soft layout, 2026-11-05): row ends are blade-referenced. The blade
+  // point blade_offset ahead of base_link along the row (either drive direction) stays
+  // row_end_inset - blade_offset inside, so base_link stops row_end_inset inside where the
+  // row meets the line square-on and row_end_inset - blade_offset (1 - cos) less at an angle;
+  // the coverage footprint of the rows and their connectors is then the blade's path (each
+  // leg blade_offset ahead, the pivot arcs between). 0: base_link-referenced (hard, legacy).
   std::vector<double> lap_offsets;
   bool edge_layout = false;      // set by applyEdgeLayout (also with no laps: edge_laps 0)
   double row_side_inset = 0.45;
   double row_end_inset = 0.45;
   double turn_inset = 0.45;
+  double blade_offset = 0.0;     // base_link -> blade centre, forward [m]
   double hole_inset = 0.30;
   // edge layout: corners a grown hole cuts into the region (where it meets the line, or
   // another hole) are filleted to this radius so the laps drive past them on arcs
@@ -138,27 +145,36 @@ struct RouteOptions {
 
 // Edge layouts (PlanCoverage edge_layout / area setting edge_mode):
 //   "soft"  stock layout: laps at 0 / 0.15 / 0.30 (the first with base_link ON the line, the
-//           sides overhang up to the half width), rows fill the 0.45-eroded field (row ends
-//           0.45 in: nose ~0.15 past, a pivot there sweeps it ~0.195 past), turns >= 0.45 in.
+//           sides overhang up to the half width), rows from 0.45 laterally, row ends
+//           blade-referenced (2026-11-05): the blade point (blade_offset ahead, the URDF
+//           base_link -> blade_link) stops 0.45 in, so base_link stops 0.45 + blade_offset
+//           (0.68) in square-on (nose ~0.08 inside, a pivot there sweeps the front corners
+//           ~0.04 inside and the blade disc to 0.34 from the line); turns >= 0.45 +
+//           blade_offset in. blade_offset 0: the 2026-10-21 base_link-referenced row ends
+//           (0.45 in: nose ~0.15 past, a pivot sweeps it ~0.195 past).
 //           Holes (obstacles) are HARD: grown 0.40 with round joins (body half width 0.235 +
 //           0.10, and the tightest drivable arc 0.40), their corners filleted 0.40; row ends
-//           and turns stay 0.40 + 0.45 = 0.85 from them (pivot sweep 0.645 + 0.10 = 0.745).
+//           keep the blade point 0.40 + 0.45 = 0.85 from them, turns 0.85 + blade_offset.
 //           An obstacle nearer the line than 0.40 merges with the outside: lap 0 detours
 //           inward around it and the gap stays uncut.
 //   "hard"  the whole body inside plus 0.10: laps 0.45 / 0.63 / 0.81 (+ 0.99), rows from 1.10,
 //           row ends 1.08 in (pivot room ahead), turns >= 0.745 in (pivot swing 0.645 + 0.10).
+//           base_link-referenced (blade_offset is not used: the body bound already holds).
 //   "" / "legacy"  unchanged (headland rings at border_inset).
 // edge_laps (area setting, default 3 = the above): the number of edge laps; the rows move
-// with them. soft: laps at 0, 0.15, ... (edge_laps of them), rows (sides, ends, turns) one
-// lap spacing inside the last lap = 0.15 x edge_laps (0 laps: rows from the line). hard:
+// with them. soft: laps at 0, 0.15, ... (edge_laps of them), rows one lap spacing inside the
+// last lap = 0.15 x edge_laps laterally (0 laps: rows from the line), the blade point at a
+// row end the same, base_link blade_offset more. hard:
 // laps at 0.45, 0.63, ... (edge_laps of them) plus the band-closing lap one spacing further
 // (b = 0.45 + 0.18 x edge_laps), rows from b + 0.11 laterally, row ends b + 0.09 in, never
 // under 0.745 (pivot swing 0.645 + 0.10); at least 1 lap (0 = 1: rows are clipped by
 // erosion, >= 0.745 in sideways too, so a lapless band would stay uncut).
+// blade_offset: base_link -> blade centre along x [m] (mower_coverage_node: the request's
+// blade_offset_m, from /tf_static); < 0 is taken as 0.
 // Returns false for an unknown name or edge_laps < 0 (route untouched).
 constexpr int kDefaultEdgeLaps = 3;
-bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* route,
-                     int edge_laps = kDefaultEdgeLaps);
+bool applyEdgeLayout(const std::string& name, double op_width, double blade_offset,
+                     RouteOptions* route, int edge_laps = kDefaultEdgeLaps);
 
 bool parseRouteOrder(const std::string& name, RouteOrder* order);  // "" = boustrophedon
 // kRacetrack half-block k for a turn radius: smallest k with (k-1)*w >= 2r, >= 2.
@@ -214,9 +230,11 @@ struct CoveragePlan {
   size_t fill_swaths = 0;                 // extra passes appended to `swaths`
 };
 
-// Recompute the coverage fields of `plan` (no filling).
+// Recompute the coverage fields of `plan` (no filling). blade_offset > 0: the swaths and
+// their connectors sweep the blade's path (RouteOptions::blade_offset), else base_link's.
 void verifyCoverage(const f2c::types::Cell& field, double op_width, double target_inset,
-                    double hole_margin, double min_gap_area_m2, CoveragePlan* plan);
+                    double hole_margin, double min_gap_area_m2, CoveragePlan* plan,
+                    double blade_offset = 0.0);
 
 // Path pattern of one plan (per-area mowing setting `path_mode`). The
 // mission-level modes `cross` (two zigzag plans 90 deg apart) and `alternate`

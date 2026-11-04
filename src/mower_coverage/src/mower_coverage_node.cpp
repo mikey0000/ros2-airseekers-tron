@@ -218,7 +218,15 @@ class MowerCoverageNode : public rclcpp::Node {
     route.fill_gaps = true;
     route.min_gap_area_m2 = 0.01;
     route.target_inset = boundary_inset;  // blade edge; holes keep the ring keep-out
-    if (!mower_coverage::applyEdgeLayout(request->edge_layout, op_width, &route,
+    // soft layout: row ends for the blade point (base_link -> blade_link, which the bridge
+    // reads from /tf_static); unknown (< 0): base_link-referenced, the pre-2026-11-05 rows
+    const bool blade_known = request->blade_offset_m >= 0.0;
+    if (!blade_known && request->edge_layout == "soft") {
+      RCLCPP_WARN(get_logger(), "soft layout without blade_offset_m: row ends planned for "
+                                "base_link (no base_link -> blade_link transform yet?)");
+    }
+    if (!mower_coverage::applyEdgeLayout(request->edge_layout, op_width,
+                                         blade_known ? request->blade_offset_m : 0.0, &route,
                                          static_cast<int>(request->edge_laps))) {
       response->success = false;
       response->message = "unknown edge_layout '" + request->edge_layout +

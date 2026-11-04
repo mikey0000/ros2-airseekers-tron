@@ -13,9 +13,12 @@
 
 #include "mower_coverage/coverage_planning.hpp"
 
+#include <ogr_geometry.h>
+
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -27,6 +30,9 @@ namespace {
 constexpr double kOpWidth = 0.5;
 constexpr double kHeadlandWidth = 0.20;
 constexpr double kMinSwath = 0.15;
+// base_link -> blade_link x of the URDF (config/urdf/mower.urdf.xacro cutter_xyz), what the
+// bridge forwards as PlanCoverage blade_offset_m
+constexpr double kBlade = 0.23;
 
 std::vector<Point2D> square(double x0, double y0, double side) {
   return {{x0, y0}, {x0 + side, y0}, {x0 + side, y0 + side}, {x0, y0 + side}};
@@ -1302,7 +1308,7 @@ CoveragePlan planLayout(const std::string& layout, double w, double h,
   route.min_turn_radius = 0.5;
   route.min_drivable_turn_radius = 0.40;
   route.fill_gaps = true;
-  EXPECT_TRUE(mower_coverage::applyEdgeLayout(layout, 0.18, &route));
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout(layout, 0.18, kBlade, &route));
   return mower_coverage::planCoverage(
       field({{0, 0}, {w, 0}, {w, h}, {0, h}}), 0.18, 0.20, 2, 0.14, 0.0, 0.15,
       mower_coverage::PathMode::kZigzag, true, route);
@@ -1344,9 +1350,9 @@ double minInset(const CoveragePlan& plan, double w, double h, bool swaths, bool 
 
 TEST(EdgeLayout, UnknownNameIsRejectedLegacyIsANoOp) {
   mower_coverage::RouteOptions r;
-  EXPECT_FALSE(mower_coverage::applyEdgeLayout("wobbly", 0.18, &r));
-  EXPECT_TRUE(mower_coverage::applyEdgeLayout("", 0.18, &r));
-  EXPECT_TRUE(mower_coverage::applyEdgeLayout("legacy", 0.18, &r));
+  EXPECT_FALSE(mower_coverage::applyEdgeLayout("wobbly", 0.18, kBlade, &r));
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout("", 0.18, kBlade, &r));
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout("legacy", 0.18, kBlade, &r));
   EXPECT_TRUE(r.lap_offsets.empty());
 }
 
@@ -1355,13 +1361,14 @@ TEST(EdgeLayout, SoftLapsOnTheLineThenStockInsetsRowsAt045) {
   const CoveragePlan plan = planLayout("soft", w, h);
   expectRingInsets(plan, {0.0, 0.15, 0.30}, w, h);
   ASSERT_FALSE(plan.swaths.empty());
-  // row ends (and fill passes) never closer than 0.45 to the line; the first row at 0.45
+  // rows (and fill passes) never closer than 0.45 to the line; the first row at 0.45 (sides)
   EXPECT_GE(minInset(plan, w, h, true, false), 0.45 - 0.01);
   EXPECT_LE(minInset(plan, w, h, true, false), 0.45 + 0.01);
-  // swath-to-swath turns stay >= 0.45 inside (no arcs out to the edge)
-  if (!plan.turns.empty()) EXPECT_GE(minInset(plan, w, h, false, true), 0.45 - 0.02);
-  // the blade (0.18 + overlap) reaches the whole field: lap 0 covers to the line
-  EXPECT_GT(plan.coverage_fraction, 0.995);
+  // swath-to-swath turns stay >= 0.45 + kBlade inside (no arcs out to the edge)
+  if (!plan.turns.empty()) EXPECT_GE(minInset(plan, w, h, false, true), 0.68 - 0.02);
+  // blade footprint: lap 0 covers to the line; the blade-referenced row ends leave slivers
+  // between the departing rows and the inner lap (base_link-referenced rows: 0.989 here)
+  EXPECT_GT(plan.coverage_fraction, 0.97);
 }
 
 TEST(EdgeLayout, HardKeepsTheBodyInsideWithMargin) {
@@ -1387,7 +1394,7 @@ TEST(EdgeLayout, HardKeepsTheBodyInsideWithMargin) {
 TEST(EdgeLayout, SoftHoleIsClearedByTheBodySides) {
   const double w = 8.0, h = 6.0;
   mower_coverage::RouteOptions route;
-  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &route));
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, kBlade, &route));
   const std::vector<Point2D> hole = {{3, 2}, {4, 2}, {4, 3}, {3, 3}};
   const CoveragePlan plan = mower_coverage::planCoverage(
       mower_coverage::makeFieldCell({{0, 0}, {w, 0}, {w, h}, {0, h}}, {hole}), 0.18, 0.20, 2,
@@ -1424,7 +1431,7 @@ TEST(EdgeLayout, SoftLapsOneDirectionLap0SharpNoSliverFills) {
   route.fill_gaps = true;
   route.min_gap_area_m2 = 0.01;
   route.target_inset = 0.05;
-  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &route));
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, kBlade, &route));
   const CoveragePlan plan = mower_coverage::planCoverage(
       field(area), 0.18, 0.18, 2, 0.14, -1.0, 0.15, mower_coverage::PathMode::kZigzag, true,
       route);
@@ -1461,7 +1468,9 @@ TEST(EdgeLayout, SoftLapsOneDirectionLap0SharpNoSliverFills) {
               0.30 - 1e-6);
   }
   EXPECT_LE(plan.fill_swaths, 6u);
-  EXPECT_GT(plan.coverage_fraction, 0.94);   // round 4: rows < 1.2 m dropped (-0.5 %)
+  // round 4: rows < 1.2 m dropped (-0.5 %); 2026-11-05 blade-referenced row ends and the
+  // blade footprint: 0.905 (base_link-referenced rows were > 0.94 on the base_link footprint)
+  EXPECT_GT(plan.coverage_fraction, 0.90);
 }
 
 // Round 2: the lap -> lap hand-offs (every lap's start) sit on a straight stretch, >= 0.6 m
@@ -1488,9 +1497,9 @@ TEST(EdgeLayout, EdgeLapsMoveTheRows) {
   const double w = 8.0, h = 6.0;
   struct Case { const char* mode; int laps; std::vector<double> rings; double side, end; };
   const std::vector<Case> cases = {
-      {"soft", 0, {}, 0.0, 0.0},
-      {"soft", 1, {0.0}, 0.15, 0.15},
-      {"soft", 3, {0.0, 0.15, 0.30}, 0.45, 0.45},
+      {"soft", 0, {}, 0.0, 0.23},                  // row ends: blade point + kBlade
+      {"soft", 1, {0.0}, 0.15, 0.38},
+      {"soft", 3, {0.0, 0.15, 0.30}, 0.45, 0.68},
       {"hard", 0, {0.45, 0.63}, 0.74, 0.745},     // hard needs a lap: 0 = 1
       {"hard", 1, {0.45, 0.63}, 0.74, 0.745},
       {"hard", 3, {0.45, 0.63, 0.81, 0.99}, 1.10, 1.08},
@@ -1501,7 +1510,7 @@ TEST(EdgeLayout, EdgeLapsMoveTheRows) {
     route.min_turn_radius = 0.5;
     route.min_drivable_turn_radius = 0.40;
     route.fill_gaps = true;
-    ASSERT_TRUE(mower_coverage::applyEdgeLayout(c.mode, 0.18, &route, c.laps));
+    ASSERT_TRUE(mower_coverage::applyEdgeLayout(c.mode, 0.18, kBlade, &route, c.laps));
     EXPECT_TRUE(route.edge_layout);
     EXPECT_NEAR(route.row_side_inset, c.side, 1e-9) << c.mode << " " << c.laps;
     EXPECT_NEAR(route.row_end_inset, c.end, 1e-9) << c.mode << " " << c.laps;
@@ -1519,10 +1528,10 @@ TEST(EdgeLayout, EdgeLapsMoveTheRows) {
   }
   // the default is the stock 3 laps; negative counts are refused
   mower_coverage::RouteOptions a, b;
-  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &a));
-  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &b, 3));
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, kBlade, &a));
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, kBlade, &b, 3));
   EXPECT_EQ(a.lap_offsets, b.lap_offsets);
-  EXPECT_FALSE(mower_coverage::applyEdgeLayout("soft", 0.18, &a, -1));
+  EXPECT_FALSE(mower_coverage::applyEdgeLayout("soft", 0.18, kBlade, &a, -1));
 }
 
 // Round 3 (owner option (a), 2026-10-22): lap starts / hand-offs on a stretch with <= 10 deg of
@@ -1676,7 +1685,7 @@ CoveragePlan planSoft(const std::vector<Point2D>& outer, const std::vector<Point
   route.min_drivable_turn_radius = 0.40;
   route.fill_gaps = true;
   route.target_inset = 0.15;
-  EXPECT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &route));
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, kBlade, &route));
   return mower_coverage::planCoverage(mower_coverage::makeFieldCell(outer, {hole}), 0.18, 0.20,
                                       0, 0.24, angle_rad, 0.15,
                                       mower_coverage::PathMode::kZigzag, true, route);
@@ -1932,7 +1941,7 @@ CoveragePlan planLayoutWithLine(const std::string& layout, const std::vector<Poi
   route.min_turn_radius = 0.5;
   route.min_drivable_turn_radius = 0.40;
   route.fill_gaps = true;
-  EXPECT_TRUE(mower_coverage::applyEdgeLayout(layout, 0.18, &route, 3));
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout(layout, 0.18, kBlade, &route, 3));
   return mower_coverage::planCoverage(
       mower_coverage::makeFieldCell(kRect10x6, {lineBand(line, band / 2.0)}), 0.18, 0.20, 2,
       0.14, 0.0, 0.15, mower_coverage::PathMode::kZigzag, true, route);
@@ -2115,7 +2124,7 @@ TEST(CoverageTurnMode, PlannedTurnsStayInsideTheArea) {
     route.min_turn_radius = 0.5;
     route.min_drivable_turn_radius = 0.40;
     route.fill_gaps = true;
-    ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &route));
+    ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, kBlade, &route));
     route.turn_mode = mode;
     const auto p = mower_coverage::planCoverage(
         field({{0, 0}, {w, 0}, {w, h}, {0, h}}), 0.18, 0.20, 2, 0.14, 0.0, 0.15,
@@ -2193,7 +2202,7 @@ mower_coverage::CoveragePlan rowLinkPlan(mower_coverage::RowLinkMode link,
   route.min_turn_radius = 0.5;
   route.min_drivable_turn_radius = 0.40;
   route.fill_gaps = true;
-  EXPECT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &route));
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, kBlade, &route));
   route.turn_mode = turn;
   route.row_link_mode = link;
   return mower_coverage::planCoverage(field(kRun5Area1), 0.18, 0.20, 2, 0.05, -1.0, 0.15,
@@ -2247,4 +2256,215 @@ TEST(CoverageRowLink, SnakePlanReplacesTransits) {
   // auto with turn_mode auto (edge band enabled) links the same way snake does
   const auto autob = rowLinkPlan(RowLinkMode::kAuto, TurnMode::kAuto);
   EXPECT_GT(autob.snake_links, 0u);
+}
+
+// Blade-referenced soft row ends (2026-11-05): stock plans its rows for cutter_link, so its
+// 0.45 row-end inset is the blade. The blade point (kBlade ahead of base_link along the row)
+// stops 0.45 in, base_link 0.45 + kBlade = 0.68 square-on; the sides stay at 0.45 (the blade
+// is on the centreline).
+namespace {
+
+CoveragePlan planSoft(const std::vector<Point2D>& poly, double angle_deg, double blade,
+                      double op_width = 0.20) {
+  mower_coverage::RouteOptions route;
+  route.fill_gaps = true;
+  route.min_gap_area_m2 = 0.01;
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout("soft", op_width, blade, &route));
+  return mower_coverage::planCoverage(field(poly), op_width, 0.20, 2, 0.14,
+                                      angle_deg * M_PI / 180.0, 0.15,
+                                      mower_coverage::PathMode::kZigzag, true, route);
+}
+
+const std::vector<Point2D> kRect86 = {{0, 0}, {8, 0}, {8, 6}, {0, 6}};
+
+}  // namespace
+
+TEST(EdgeLayout, SoftRowEndInsetIsTheBladePointPlusTheBladeOffset) {
+  mower_coverage::RouteOptions soft, hard, unknown;
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.20, kBlade, &soft));
+  EXPECT_NEAR(soft.blade_offset, kBlade, 1e-12);
+  EXPECT_NEAR(soft.row_side_inset, 0.45, 1e-12);   // sides: the blade runs on base_link's line
+  EXPECT_NEAR(soft.row_end_inset, 0.68, 1e-12);    // ends: blade 0.45 + offset 0.23
+  EXPECT_NEAR(soft.turn_inset, 0.68, 1e-12);
+  EXPECT_EQ(soft.lap_offsets, (std::vector<double>{0.0, 0.15, 0.30}));   // laps unchanged
+  // hard is base_link-referenced whatever the blade offset
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("hard", 0.20, kBlade, &hard));
+  EXPECT_EQ(hard.blade_offset, 0.0);
+  EXPECT_NEAR(hard.row_end_inset, 1.08, 1e-12);
+  // no blade offset known (< 0): the 2026-10-21 base_link-referenced row ends
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.20, -1.0, &unknown));
+  EXPECT_EQ(unknown.blade_offset, 0.0);
+  EXPECT_NEAR(unknown.row_end_inset, 0.45, 1e-12);
+}
+
+TEST(EdgeLayout, SoftSquareOnRowEndsStopBaseLink068In) {
+  const double w = 8.0, h = 6.0;
+  const CoveragePlan plan = planSoft(kRect86, 0.0, kBlade);   // rows along x
+  ASSERT_FALSE(plan.swaths.empty());
+  double lateral = 1e9;
+  for (size_t i = 0; i < plan.swaths.size() - plan.fill_swaths; ++i) {
+    const auto& s = plan.swaths[i];
+    for (const auto& p : {s.first, s.second}) {
+      const double ahead = std::min(p.first, w - p.first);
+      EXPECT_NEAR(ahead, 0.68, 0.01);
+      // nose 0.60 ahead: 0.08 inside; the pivot there swings the front corners (0.644 from
+      // base_link) to 0.036 inside, the blade disc (0.23 + 0.11) to 0.34 from the line
+      EXPECT_GE(ahead - 0.60, 0.08 - 0.01);
+      EXPECT_GE(ahead - std::hypot(0.60, 0.235), 0.03);
+      lateral = std::min(lateral, std::min(p.second, h - p.second));
+    }
+  }
+  EXPECT_NEAR(lateral, 0.45, 0.01);   // the outermost rows: 0.45 from the side lines
+}
+
+TEST(EdgeLayout, SoftAngledRowEndsKeepTheBladePoint045In) {
+  const double w = 8.0, h = 6.0;
+  for (double angle : {30.0, 60.0}) {
+    const CoveragePlan plan = planSoft(kRect86, angle, kBlade);
+    ASSERT_FALSE(plan.swaths.empty());
+    double tight = 1e9;
+    for (size_t i = 0; i < plan.swaths.size() - plan.fill_swaths; ++i) {
+      const auto& s = plan.swaths[i];
+      const double len = std::hypot(s.second.first - s.first.first,
+                                    s.second.second - s.first.second);
+      const double ux = (s.second.first - s.first.first) / len;
+      const double uy = (s.second.second - s.first.second) / len;
+      // each end, faced outwards along the row (the robot arrives there facing so)
+      for (int e = 0; e < 2; ++e) {
+        const Point2D p = e ? s.second : s.first;
+        const double sx = e ? ux : -ux, sy = e ? uy : -uy;
+        const Point2D blade{p.first + kBlade * sx, p.second + kBlade * sy};
+        const Point2D nose{p.first + 0.60 * sx, p.second + 0.60 * sy};
+        EXPECT_GE(rectInset(blade, w, h), 0.45 - 0.01) << angle;
+        EXPECT_GE(rectInset(p, w, h), 0.45 - 0.01) << angle;
+        EXPECT_GE(rectInset(nose, w, h), 0.08 - 0.01) << angle;
+        tight = std::min(tight, rectInset(blade, w, h));
+      }
+    }
+    EXPECT_NEAR(tight, 0.45, 0.01) << angle;   // the blade point reaches 0.45, no further
+  }
+}
+
+TEST(Coverage, BladeFootprintSweepsAheadOfBaseLink) {
+  // one swath (0, 0) -> (2, 0); the target is a 0.2 m square just past its end: base_link
+  // never gets there, the blade (0.23 ahead, disc radius 0.10) cuts most of it
+  CoveragePlan plan;
+  plan.swaths = {{{0.0, 0.0}, {2.0, 0.0}}};
+  const auto target = field({{2.05, -0.10}, {2.25, -0.10}, {2.25, 0.10}, {2.05, 0.10}});
+  CoveragePlan axle = plan, blade = plan;
+  mower_coverage::verifyCoverage(target, 0.20, 0.0, 0.0, 0.001, &axle);
+  mower_coverage::verifyCoverage(target, 0.20, 0.0, 0.0, 0.001, &blade, kBlade);
+  EXPECT_LT(axle.coverage_fraction, 0.01);
+  EXPECT_GT(blade.coverage_fraction, 0.70);
+  // a straight connector to the next swath: the pivot arcs sweep the blade round the corner
+  plan.swaths.push_back({{2.0, 0.2}, {0.0, 0.2}});
+  const auto corner = field({{2.15, 0.0}, {2.30, 0.0}, {2.30, 0.20}, {2.15, 0.20}});
+  CoveragePlan turned = plan;
+  mower_coverage::verifyCoverage(corner, 0.20, 0.0, 0.0, 0.001, &turned, kBlade);
+  EXPECT_GT(turned.coverage_fraction, 0.90);
+}
+
+namespace {
+
+// Uncovered pieces of `b` that `a` does not have (both plans' listed gaps, >= 0.01 m2), each
+// as {longest extent, deepest point from the rectangle's lines, area}.
+struct NewGap { double extent, depth, area; };
+std::vector<NewGap> newGaps(const CoveragePlan& a, const CoveragePlan& b, double w, double h) {
+  auto unionOf = [](const CoveragePlan& p) {
+    OGRMultiPolygon mp;
+    for (const auto& g : p.gaps) {
+      auto* poly = new OGRPolygon();
+      auto* r = new OGRLinearRing();
+      for (const auto& q : g) r->addPoint(q.first, q.second);
+      r->closeRings();
+      poly->addRingDirectly(r);
+      mp.addGeometryDirectly(poly);
+    }
+    return std::unique_ptr<OGRGeometry>(mp.UnionCascaded());
+  };
+  std::vector<NewGap> out;
+  auto ua = unionOf(a), ub = unionOf(b);
+  if (!ub) return out;
+  std::unique_ptr<OGRGeometry> d(ua ? ub->Difference(ua.get()) : ub->clone());
+  std::vector<const OGRPolygon*> polys;
+  if (auto* c = dynamic_cast<const OGRGeometryCollection*>(d.get())) {
+    for (int i = 0; i < c->getNumGeometries(); ++i) {
+      if (auto* p = dynamic_cast<const OGRPolygon*>(c->getGeometryRef(i))) polys.push_back(p);
+    }
+  } else if (auto* p = dynamic_cast<const OGRPolygon*>(d.get())) {
+    polys.push_back(p);
+  }
+  for (const OGRPolygon* p : polys) {
+    if (p->get_Area() < 0.005 || p->getExteriorRing() == nullptr) continue;
+    OGREnvelope e;
+    p->getEnvelope(&e);
+    double depth = 0.0;
+    const OGRLinearRing* r = p->getExteriorRing();
+    for (int i = 0; i < r->getNumPoints(); ++i) {
+      depth = std::max(depth, rectInset({r->getX(i), r->getY(i)}, w, h));
+    }
+    out.push_back({std::hypot(e.MaxX - e.MinX, e.MaxY - e.MinY), depth, p->get_Area()});
+  }
+  return out;
+}
+
+}  // namespace
+
+// The coverage-gap check on the blade footprint, blade- vs base_link-referenced row ends
+// (both plans measured with the blade footprint).
+TEST(Coverage, SquareOnBladeReferencedRowEndsLeaveNoBand) {
+  const double w = 8.0, h = 6.0;
+  CoveragePlan axle = planSoft(kRect86, 0.0, 0.0);
+  mower_coverage::verifyCoverage(field(kRect86), 0.20, 0.0, 0.30, 0.01, &axle, kBlade);
+  const CoveragePlan blade = planSoft(kRect86, 0.0, kBlade);
+  // within 0.5 points; what is new is slivers next to the departing rows (and where the
+  // shortened corner rows end), each under 0.6 m: no band (one would run along the 6-8 m edge)
+  EXPECT_GE(blade.coverage_fraction, axle.coverage_fraction - 0.005);
+  for (const auto& g : newGaps(axle, blade, w, h)) {
+    EXPECT_LT(g.extent, 0.60) << "area " << g.area;
+    EXPECT_LT(g.area, 0.07);
+  }
+}
+
+// Where rows meet the line obliquely (60 deg off its normal) the rows leaving that end start
+// their blade 0.45 + 2 x 0.23 cos(60) = 0.68 in and no pivot sweeps the strip below them: a
+// row of scallops 0.40-0.50 from the line, about 0.6 m long, one per row pair (the 30 deg
+// ends are covered), plus pieces up to 1.25 m in the corners where the shortened rows end.
+// The planner's gap check reports them; this pins their size and the cost (rect 8 x 6: -2.1
+// points at 30 and 60 deg) so a change that grows them into a band shows here. See docs/analysis/2026-10-21_stock_firmware_findings.md
+// (decision 2026-11-05).
+TEST(Coverage, AngledBladeReferencedRowEndsLeaveScallopsNotABand) {
+  const double w = 8.0, h = 6.0;
+  for (double angle : {30.0, 60.0}) {
+    SCOPED_TRACE(angle);
+    CoveragePlan axle = planSoft(kRect86, angle, 0.0);
+    mower_coverage::verifyCoverage(field(kRect86), 0.20, 0.0, 0.30, 0.01, &axle, kBlade);
+    const CoveragePlan blade = planSoft(kRect86, angle, kBlade);
+    EXPECT_GE(blade.coverage_fraction, axle.coverage_fraction - 0.025);
+    const std::vector<NewGap> gaps = newGaps(axle, blade, w, h);
+    EXPECT_FALSE(gaps.empty());
+    for (const auto& g : gaps) {
+      EXPECT_LT(g.extent, 1.30) << "area " << g.area;
+      EXPECT_LT(g.area, 0.25);
+    }
+  }
+}
+
+// Moving the row sides in as well (rows 0.68 from the side lines) leaves a band 0.40-0.58
+// from the side lines uncut: the sides stay at 0.45, and the check catches such a band.
+TEST(Coverage, MovingTheRowSidesInLeavesABand) {
+  const double w = 8.0, h = 6.0;
+  const CoveragePlan blade = planSoft(kRect86, 0.0, kBlade);
+  mower_coverage::RouteOptions route;
+  route.fill_gaps = true;
+  route.min_gap_area_m2 = 0.01;
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.20, kBlade, &route));
+  route.row_side_inset = route.row_end_inset;
+  const CoveragePlan moved = mower_coverage::planCoverage(
+      field(kRect86), 0.20, 0.20, 2, 0.14, 0.0, 0.15, mower_coverage::PathMode::kZigzag, true,
+      route);
+  double longest = 0.0;
+  for (const auto& g : newGaps(blade, moved, w, h)) longest = std::max(longest, g.extent);
+  EXPECT_GT(longest, 4.0);
+  EXPECT_LT(moved.coverage_fraction, blade.coverage_fraction - 0.01);
 }
