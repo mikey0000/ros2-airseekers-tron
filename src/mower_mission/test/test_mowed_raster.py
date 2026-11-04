@@ -272,7 +272,8 @@ def test_resume_skips_a_sub_path_the_raster_shows_mowed():
     # row 0 cut up to x 3.0 only; cut the rest and drop the progress from the cursor
     ac.raster.stamp_segment(2.9, 1.0, 4.5, 1.0, 0.11)
     ac.completed, ac.done_fps, ac.resume_index = set(), set(), 0
-    h = Harness(cursor=cur)
+    text = cur.dumps()
+    h = Harness(cursor=ResumeCursor.loads(text))
     start_until_planning(h)
     mk = h.mark()
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0.5, 1.0, 4.5, 1.0, 41),
@@ -282,6 +283,14 @@ def test_resume_skips_a_sub_path_the_raster_shows_mowed():
     assert h.fsm.cursor.areas[0].completed == {0}
     assert (m.sub_i, m.start_local) == (1, 0)
     assert any('1 of them by the mowed raster' in t for t in logs(h, mk))
+    # before /tf_static gave the blade offset the raster is not read: the cursor decides
+    h = Harness(cursor=ResumeCursor.loads(text))
+    h.fsm.inputs.blade_offset = None
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0.5, 1.0, 4.5, 1.0, 41),
+                                            line(4.5, 2.0, 0.5, 2.0, 41),
+                                            line(0.5, 3.0, 4.5, 3.0, 41)]))
+    assert h.fsm.cursor.areas[0].completed == set() and h.fsm.mission.sub_i == 0
 
 
 def test_resume_starts_after_the_mowed_lead_in_never_before_the_cursor():
