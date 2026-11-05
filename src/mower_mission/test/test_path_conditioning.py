@@ -1288,3 +1288,25 @@ def test_tangent_approach_off_aligned_or_no_room_keeps_the_route():
     route = [(-0.7, 0.1 * k, math.pi / 2) for k in range(31)]
     assert h.fsm._route_tangent(list(route)) == route
     assert m.tangent is None
+
+
+@pytest.mark.parametrize('near_y', [0.15, 0.85])
+def test_spur_about_turn_overhang_is_the_way_round_that_stays_inside(near_y):
+    # a pocket spur along a 1 m strip, 0.15 from one long side: in to x 7, about-turn, out.
+    # Swinging the nose across the strip sweeps the body 0.11 past the near side; the other
+    # way 0.49. The cusp's sign is float noise; the mission pivots the inside way
+    # (_pivot_way), so the corner's overhang is that way's, under the limit (no K-turn / cut).
+    poly = [(0, 0), (8, 0), (8, 1), (0, 1)]
+    path = [(2.0 + 0.1 * i, near_y) for i in range(51)] + \
+        [(6.98 - 0.1 * i, near_y) for i in range(50)]
+    p = pc.Params(body_limit_m=0.26)
+    res = pc.condition(path, [poly], p)
+    assert res.valid, res.errors
+    c = corner_at(res, (7.0, near_y))
+    assert c.choice == 'pivot' and abs(abs(c.turn) - math.pi) < 0.05
+    assert c.body_m <= 0.26
+    # the wrong way round really is over: it is the inside way that keeps it under
+    br = pc.BodyRegion([poly], (7.0, near_y), 50.0, p)
+    ways = sorted(br.sweep(7.0, near_y, 0.0, d) for d in (math.pi, -math.pi))
+    assert ways[0] <= 0.15 and ways[1] > 0.4
+
