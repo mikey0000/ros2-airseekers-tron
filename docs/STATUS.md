@@ -1662,3 +1662,57 @@ lawn", the sim's owner_far Area 6) inside the third lap. Analysis, gap table and
   artefacts. Isolated cells are the raster's 2.5 cm disc quantisation.
 
 `mission.yaml` and the planner parameters are unchanged (A6).
+
+## Row weave: heading check and FTC row controller (2026-11-05, branch ws/ftc1105, unit + sim; not field tested)
+
+Details: `analysis/2026-11-05_row_weave_ftc.md`.
+
+**Phase 1: the heading estimate is not the cause.** Field bags 10-28 (60 straights, 380 m) and
+11-04 (34, 123 m) were checked against the heading implied by the RTK track:
+- The fused yaw is the gyro integral to 0.1-0.3 deg in the 2.5-20 s band, against 3.4-4.0 deg
+  of real heading weave.
+- Coherence with the track heading is 0.94-0.98 at the weave peak.
+- The fused yaw leads the track by 0.35 s (fix latency plus track lag). That is in-loop lag,
+  not an estimator error.
+- The remaining 1.8-1.9 deg (an upper bound) drives at most 30 % of the lateral amplitude
+  through the loop.
+- The sim weaves with a 0.01 deg heading error.
+- MPPI acts like `w = -3.5..4.7 lat - 0.85 yaw` before and after B13-1: the heading damping is
+  missing.
+
+No localisation change.
+
+**Phase 2: `mowgli_nav2_plugins::FTCRowController`** is now the plugin of the
+`FollowCoveragePathMPPI` controller id.
+- **Row law:** OpenMower's FTC carrot law (ported from open_mower_ros `ftc_local_planner`,
+  GPLv3, `ftc_row_law.hpp`), with Tron gains: kp_lat 2.5, kp_ang 1.2, kp_lon 1.2.
+- **Where it drives:** only on straight rows, close to the line and with the footprint clear.
+- **Inner MPPI:** configured under the same name, so the mission, its parameters and the live
+  `vx_max` are unchanged. It runs every cycle and drives every bend, fillet, swath turn, path
+  end and blocked row; its exceptions propagate as before. Pivots and reverse legs are
+  unchanged.
+- **Row speed:** `vx_max`, i.e. the cut speed. Under MPPI the rows ran at about 0.2 m/s.
+- **New parameters:** 12 under `FollowCoveragePathMPPI.FTC`; none could be retired (A6, note
+  2.2).
+- **Revert:** the `plugin:` line back to `nav2_mppi_controller::MPPIController`.
+
+Sim, `-l -x 3 -s 1`, master -> branch:
+
+| | real_run5 | owner_far |
+|---|---|---|
+| Row XTE p90 (cm) | 2.79 -> 1.87 | 2.66 -> 1.89 |
+| In-band lateral rms (cm) | 0.84 -> 0.45 | 0.96 -> 0.47 |
+| w band rms | 0.031 -> 0.016 | 0.033 -> 0.013 |
+| e | pass | fail -> pass |
+| Arc p99 (m) | 0.050 -> 0.073 | 0.048 -> 0.067 |
+| Cut | 97.0 -> 96.8 % | 99.2 -> 99.5 % |
+| MOWING (s) | 777 -> 676 | 3238 -> 2613 |
+| b / STUCK | 0 / 0 | 0 / 0 |
+| Pivots | 28 -> 29 | 94 -> 93 |
+
+- **real_run5 h-line fails** (p99 0.109 m). The cause is one MPPI-only leg into a pivot vertex
+  (no row episode there).
+- **i fails** as on master.
+
+**Next:** a field A/B (procedure in note 2.5). If the arcs come out wider in the field, the
+next step is to slow the carrot before the hand-off (upstream `speed_slow`).
