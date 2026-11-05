@@ -188,8 +188,16 @@ keep the old behaviour for a client that leaves them alone: `int32 headland_ring
   vertices (F2C `Cells::buffer` mitres; the round-1 r 0.7 rounding never rounded). Lap
   starts / hand-offs sit >= 0.6 m from a vertex, so a ring-to-ring step is -90 / 0.15 / +90
   mid-edge instead of a large pivot at a corner.
-* Soft fill passes must be >= 0.30 m long and add >= 35 % new area (round 1 stacked ~20
-  sliver passes 0.02 m apart, which drove the -174 deg "hairpins").
+* Fill passes (gap fill, after the rows) must be >= 1.0 m long and add >= 35 % new area
+  (round 1 stacked ~20 sliver passes 0.02 m apart, which drove the -174 deg "hairpins"; round
+  3-4 raised the length from 0.30). Rows under 1.2 m are dropped.
+* Pocket spurs (2026-11-05): a pocket inside the inner lap that no row and no such fill pass
+  reaches gets in-and-out passes, if the part of it the blade fits into is >= 0.03 m2:
+  forward along a line of the row region (base_link >= 0.45 in) into the pocket, pivot about
+  at its end (the sweep of a row end, body <= 0.195 past the line), back out on the same line.
+  Each is >= 0.5 m long. In the path a spur is two swaths, the out leg starting 0.02 m short
+  of the in leg's end. Two spurs into one tip draw a "V". See
+  `docs/analysis/2026-11-05_corner_pockets.md`.
 * Mission side (`mower_mission/path_conditioning.py`): every corner's fillet / pivot sweep
   is checked with the body (planning limit soft 0.26, hard 0.0); a convex corner over the
   limit tries fillets up to r 2.0, then (turn >= 60 deg) a K-turn: forward to

@@ -1604,3 +1604,61 @@ while the sim reports cutting:
   unpersisted, ungated paint (then retire that paint).
 - A resume scenario with a changed plan in the sim.
 - A field mow.
+
+## Corner pockets: pocket spurs in the gap fill (2026-11-05, branch ws/corner1105, unit + sim; not field tested)
+
+Field (b4437d0): the owner saw an uncut triangle in the west lobe of area 3 ("further backyard
+lawn", the sim's owner_far Area 6) inside the third lap. Analysis, gap table and PNG method:
+`analysis/2026-11-05_corner_pockets.md`.
+
+**Cause.**
+- Rows under 1.2 m are dropped, and the lobe is too narrow for longer ones.
+- A fill pass must be at least 1.0 m long and add 35 % new area.
+- The fill search picked the best pass by gain and only then applied those limits. When the
+  best pass failed them, the search gave up on the pocket.
+- On the live polygon a fill pass happens to cross the lobe, but fill passes run after every
+  row. At 59 % the mower had not reached it yet. On the owner_far copy there is none: the
+  sim ground truth leaves 0.633 m2 there.
+
+**Change (`mower_coverage` `fillGaps`, edge layout only).**
+- The fill search picks the best pass among those that meet the limits.
+- A pocket no fill pass fits gets in-and-out **pocket spurs** if the blade fits into at least
+  0.03 m2 of it:
+  - forward along a line of the row region (base_link at least 0.45 in) into the pocket;
+  - pivot about at the end: the sweep of a row end, at most 0.195 m past the line;
+  - back out on the same line, or straight to the next spur's mouth (a "V").
+- A spur is at least 0.5 m long and adds 35 % of its strip.
+- A spur is planned path: two swaths for the bridge. The mission sees ordinary pivots.
+- No new parameters.
+
+**Tests.**
+- Unit: `EdgeLayoutSpurs.LobePocketsGetSpurs` (synthetic lobe) and `OwnerFarPocketsShrink`
+  (owner_far Area 6 and heart). Both fail on master. They also check the body outline at
+  every spur end through the about-turn (at most 0.26 out).
+- Offline chain (planner, bridge splitter, mission conditioning, idealised drive, blade
+  raster), blade-fit patches:
+  - owner_far Area 6 0.635 m2 to none;
+  - heart 0.133 to none;
+  - real_run5 unchanged 0.063 (that lobe has no inner laps).
+
+**Sim gate (-l -x 3 -s 1).**
+- real_run5: a 0.089, e 0.091, h PASS, i FAIL 0.086 (master 0.112). Ground truth 97.0 %
+  (master 96.4 %), MOWING 777 s (master 740 s).
+- owner_far: a 0.079, h PASS, b 0, no STUCK. Ground truth 99.2 % (master 97.0 %), MOWING
+  3238 s (master 3122 s, +3.7 %).
+- owner_far (e) FAIL 0.181 is at a sub-path identical to master's: drift noise, shown by
+  re-evaluating sub-paths 0-5. (i) fails as on master. Over the spur legs, nose / sweep over
+  plan is 0.12 / 0.15.
+- real_run5 -d -s 1 -x 1: a 0.087, b 0, no STUCK, ground truth 96.0 %. (e) 0.155 is at a
+  TRANSIT route corner, not a spur. (e), (h) and (i) fail here run to run on master too.
+
+**Not fixed (next levers, owner's call).**
+- Inner laps opened by `lap_corner_radius` 0.7 vanish in features narrower than about 2 m.
+  The real_run5 SW lobe, live Area 5 north and live Area 4 have only lap 0. Area 4, a strip
+  about 1 m wide, has no rows and cuts 42 % offline.
+- Acute lobe tips that the row region does not reach: live closer backyard lawn, 0.273 m2.
+- The thin seams in the field raster are real tracking or localisation offsets between rows
+  driven at different times, against the 0.04 m nominal overlap. They are not sampling
+  artefacts. Isolated cells are the raster's 2.5 cm disc quantisation.
+
+`mission.yaml` and the planner parameters are unchanged (A6).
