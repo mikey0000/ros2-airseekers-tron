@@ -1780,3 +1780,46 @@ Sim, `-l -x 3 -s 1`, master -> branch:
 
 **Next:** a field A/B (procedure in note 2.5). If the arcs come out wider in the field, the
 next step is to slow the carrot before the hand-off (upstream `speed_slow`).
+
+## Row weave: MPPI heading damping and latency compensation (2026-11-06, branch ws/damp1106, unit + sim; not field tested)
+
+Details: `analysis/2026-11-06_mppi_damping.md`. The coverage MPPI (`FollowCoveragePathMPPI`,
+plain MPPI while FTCRowController stays off) gets more heading damping from its own critic,
+`PathAlignAheadCritic`:
+- **Values:** `control_point_x` 0.25 -> 0.30 m and `trim_tau_s` 5 -> 20 s. The 5 s trim integral
+  sat in the ~8 s weave band and cost about 20 % of the heading damping. The roll feed-forward
+  is unchanged.
+- **Latency projection:** a new key, `latency_s: 0.2`. Each rollout is scored as if it started
+  from the pose 0.2 s ahead at the measured (v, w): the 0.1 s fix latency plus the field's
+  ~0.1 s track lag. The projection is in this critic only. Collision (CostCritic), the trim
+  and the other critics keep the real pose.
+- **A6:** `use_path_orientations` is removed from PathAlignAheadCritic (always false; the
+  2026-10-28 retune 6a1). The transit block keeps `latency_s` 0.
+- **Tried, not kept:** PathAngleCritic and PathFollow weights (no row effect / slower rows,
+  offline emulation), and `wz_std` 0.15 (lower fitted gains, a failed).
+- **Revert:** the three values (0.25, 5, 0), each independent.
+
+Sim, `-l -x 3 -s 1`, master -> branch (FTC for reference). Fitted gains are the diagnosis's
+`fit.py` (`w = -Ky e - Kpsi psi`):
+
+| | real_run5 | owner_far |
+|---|---|---|
+| Fitted Ky / Kpsi | 3.22 / 1.13 -> 2.79 / 1.36 | 3.23 / 1.13 -> 2.73 / 1.31 |
+| MPPI residual r (rad/s) | 0.0147 -> 0.0093 | 0.0167 -> 0.0110 |
+| In-band lateral rms (cm) | 0.84 -> 0.60 (FTC 0.45) | 0.96 -> 0.66 (FTC 0.47) |
+| w band rms | 0.031 -> 0.016 | 0.033 -> 0.019 |
+| Row XTE p90 (cm) | 2.79 -> 2.38 | 2.66 -> 2.12 |
+| e max (m) | 0.091 -> 0.125 | 0.181 FAIL -> 0.139 |
+| Arc p99 (m) | 0.050 -> 0.055 | 0.048 -> 0.044 |
+| Row speed (m/s) | 0.21 -> 0.20 | 0.21 -> 0.21 |
+| Verdict | FAIL (i) -> FAIL (i) | FAIL (e, i) -> PASS |
+
+- **b / STUCK:** 0 / 0 everywhere.
+- **Cut:** 97.0 -> 97.7 % and 99.2 -> 99.4 %.
+- **MOWING time:** +3-4 %, all from the newer plan's extra sub-path / pivots. The row speed is
+  unchanged.
+
+**Next:**
+1. Deploy, mow once, and run `fit.py` on the bag: fitted Kpsi above about 1.3 (11-04: 1.08)
+   and r below 0.026. Compare the `wheel_cal.py` weave p90 against 11-04's 1.91 cm.
+2. Then the FTC A/B against this as the baseline. FTC's inner MPPI reads the same values.
