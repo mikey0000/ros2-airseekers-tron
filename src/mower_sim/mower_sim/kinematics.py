@@ -44,6 +44,14 @@ shows the ground does not turn the robot about base_link (the axle):
 
 The wheels (and so the sim's wheel odometry) never see this lateral motion.
 
+Turf slip in the field model (``with_field_slip``, 2026-11-06,
+docs/analysis/2026-11-06_field_weave_diagnosis.md): on straight rows the field body yaws
+0.026-0.028 rad/s rms (0.05-0.6 Hz) more than the command explains; the ideal drive of a
+``-l`` run 0.002. That residual is flat up to about 0.4 Hz and is what the field row loop
+mostly answers to. Per-wheel slip noise of std 0.05 with a 0.3 s correlation time (the
+``disturb_slip_*`` process above) reproduces its level and spectrum, so the field model turns
+it on when a run sets no slip of its own.
+
 Terrain (optional, ``World.terrain``, mower_sim/terrain.py, 2026-11-03): on a slope region
 the ground speed loses a slip fraction (worst reversing), pivots lose some yaw rate and the
 body creeps downhill while the wheels turn. ``wheel_odom`` integrates the wheel (encoder)
@@ -59,7 +67,7 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import List, Optional
 
 from mower_common import geometry as rgeo
@@ -109,6 +117,15 @@ class DriveParams:
     def disturbed(self) -> bool:
         return (self.disturb_wheel_bias != 0.0 or self.disturb_slip_std > 0.0
                 or self.disturb_pivot_eff != 1.0)
+
+
+def with_field_slip(p: DriveParams, std: float, tau_s: float, seed: int) -> DriveParams:
+    """``p`` with the field model's turf slip (per-wheel slip noise ``std``, correlation time
+    ``tau_s``, seeded): unchanged when ``p`` already has slip of its own (``sim_gate.sh -d``)
+    or ``std`` is 0."""
+    if p.disturb_slip_std > 0.0 or std <= 0.0:
+        return p
+    return replace(p, disturb_slip_std=std, disturb_slip_tau_s=tau_s, disturb_seed=seed)
 
 
 @dataclass

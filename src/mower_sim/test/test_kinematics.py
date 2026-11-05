@@ -6,7 +6,7 @@ import math
 import pytest
 
 from mower_sim import world as W
-from mower_sim.kinematics import DiffDrive, DriveParams, wheel_speeds, wrap
+from mower_sim.kinematics import DiffDrive, DriveParams, wheel_speeds, with_field_slip, wrap
 
 DT = 0.02
 
@@ -337,3 +337,38 @@ def test_track_lag_shifts_a_turn_by_the_lead_times_the_heading_change():
     assert dpsi == pytest.approx(ref.pose.yaw, abs=1e-9)
     lat = -(d.pose.x - ref.pose.x) * math.sin(dpsi / 2) + (d.pose.y - ref.pose.y) * math.cos(dpsi / 2)
     assert lat == pytest.approx(-0.081 * dpsi, rel=0.05)
+
+
+# ------------------------------------------------ field model turf slip (2026-11-06)
+
+def test_field_slip_fills_in_only_when_the_run_has_none():
+    p = with_field_slip(DriveParams(), 0.05, 0.3, 4)
+    assert (p.disturb_slip_std, p.disturb_slip_tau_s, p.disturb_seed) == (0.05, 0.3, 4)
+    assert p.disturbed() and p.disturb_wheel_bias == 0.0 and p.disturb_pivot_eff == 1.0
+    own = DriveParams(disturb_slip_std=0.05, disturb_slip_tau_s=1.0, disturb_seed=9)   # -d
+    assert with_field_slip(own, 0.05, 0.3, 4) is own
+    ideal = DriveParams()
+    assert with_field_slip(ideal, 0.0, 0.3, 4) is ideal
+
+
+def test_field_slip_yaw_noise_matches_the_field_rows():
+    """Open loop at the 0.21 m/s row speed: the ground yaw rate the slip adds has the field's
+    level (rows: 0.026-0.028 rad/s rms of unexplained yaw rate, 0.05-0.6 Hz; per-wheel std
+    0.05 -> 0.05 x 0.21 x sqrt 2 / 0.39 = 0.038 rad/s broadband) and a 0.3 s correlation
+    time; the encoders do not see it."""
+    d = DiffDrive(_world(start={'x': 0.0, 'y': 0.0, 'yaw': 0.0}),
+                  with_field_slip(DriveParams(wheel_tau_s=0.0), 0.05, 0.3, 3))
+    _run(d, 0.21, 0.0, 1.0)
+    w = []
+    for _ in range(int(400 / DT)):
+        d.command(0.21, 0.0)
+        d.step(DT, 0.0)
+        w.append(d.w)
+    rms = math.sqrt(sum(x * x for x in w) / len(w))
+    assert rms == pytest.approx(0.05 * 0.21 * math.sqrt(2) / 0.39, rel=0.2)
+    k = int(round(0.3 / DT))
+    mean = sum(w) / len(w)
+    var = sum((x - mean) ** 2 for x in w) / len(w)
+    r = sum((w[i] - mean) * (w[i + k] - mean) for i in range(len(w) - k)) / (len(w) - k) / var
+    assert 0.2 < r < 0.55                         # exp(-1) = 0.37 at one correlation time
+    assert d.wheel_odom.yaw == 0.0                # slip is invisible to the encoders

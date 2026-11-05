@@ -69,7 +69,7 @@ from mowgli_interfaces.msg import Emergency
 from mower_interfaces.srv import ChargingControl, CutterControl, SetCutterHeight
 
 from .ctrl_rate import CtrlRateKeeper
-from .kinematics import DiffDrive, DriveParams
+from .kinematics import DiffDrive, DriveParams, with_field_slip
 from .loc_drift import LocDrift
 from .loc_drift import params_for as loc_params_for
 from .detections import DetectionSource, DetParams, disc_base
@@ -201,6 +201,12 @@ class SimNode(Node):
         # the field's 6.4 s period (3.2 s without); docs/simulation.md "Localisation drift"
         d('field_slip_lead_m', 0.055)
         d('field_fix_latency_s', 0.1)
+        # turf slip (2026-11-06): per-wheel slip noise, std / correlation time; the field rows'
+        # unexplained yaw rate (0.026-0.028 rad/s rms) needs it, the ideal drive has 0.002.
+        # Seeded with loc_drift_seed; a run that sets disturb_slip_std (-d) keeps its own.
+        # 0 = off. docs/analysis/2026-11-06_field_weave_diagnosis.md
+        d('field_slip_std', 0.05)
+        d('field_slip_tau_s', 0.3)
         # RTK degradation (mower_sim/rtk.py): extra events 't0:dur:kind' on top of the world's
         # ``rtk:`` block (sim_gate.sh --rtk-loss writes them into a run world instead)
         d('rtk_loss', [''])
@@ -216,7 +222,7 @@ class SimNode(Node):
         drift_on = self.loc_sim and bool(gp('loc_drift').value)
         loc_model = str(gp('loc_model').value).strip().lower()
         field = drift_on and loc_model == 'field'
-        self.drive = DiffDrive(self.world, DriveParams(
+        drive_p = DriveParams(
             linear_max=float(gp('linear_max').value), angular_max=float(gp('angular_max').value),
             min_wheel_speed=float(gp('min_wheel_speed_mps').value),
             wheel_tau_s=float(gp('wheel_tau_s').value),
@@ -227,7 +233,12 @@ class SimNode(Node):
             disturb_pivot_eff=float(gp('disturb_pivot_eff').value),
             disturb_seed=int(gp('disturb_seed').value),
             rot_centre_x_m=float(gp('field_rot_centre_x_m').value) if field else 0.0,
-            slip_lead_m=float(gp('field_slip_lead_m').value) if field else 0.0))
+            slip_lead_m=float(gp('field_slip_lead_m').value) if field else 0.0)
+        if field:
+            drive_p = with_field_slip(drive_p, float(gp('field_slip_std').value),
+                                      float(gp('field_slip_tau_s').value),
+                                      int(gp('loc_drift_seed').value))
+        self.drive = DiffDrive(self.world, drive_p)
         if self.drive.p.disturbed():
             self.get_logger().warn(
                 'ground disturbance ON: wheel bias %+.3f, slip std %.3f (tau %.1f s), pivot '

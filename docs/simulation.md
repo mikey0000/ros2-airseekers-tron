@@ -384,6 +384,7 @@ the robot, which lowers the damping of the controller's lateral mode. `loc_model
 | GNSS fix latency | 0.07-0.12 s (velocity match against odom / MCU) | map position = antenna 0.1 s ago (`field_fix_latency_s`) minus the navsat lever along the *current* yaw |
 | rotation centre | pivots circle the antenna at 0.072 m, navsat removes 0.098 | the drive turns about a point 0.026 m ahead of base_link (`field_rot_centre_x_m`; kinematics `rot_centre_x_m`), at any speed |
 | track lag | the unexplained 0.055 m of heading-proportional lag | lateral ground velocity -0.055 m x w at speed (`field_slip_lead_m`, faded in by v / 0.1 m/s) |
+| turf slip (2026-11-06) | on the rows the body yaws 0.026-0.028 rad/s rms (0.05-0.6 Hz) more than the command explains, flat to about 0.4 Hz (`analysis/2026-11-06_field_weave_diagnosis.md`) | per-wheel slip noise std 0.05, correlation time 0.3 s (`field_slip_std`, `field_slip_tau_s`; kinematics `with_field_slip`), only when the run sets no `disturb_slip_std` of its own (`-d` keeps 0.05 / 1 s); `-- field_slip_std:=0.0` gives the ideal drive of earlier `-l` runs |
 | RTK jumps | not in the bag | off (`jump_rate_hz` 0) |
 | odometry | 6.3 % short before `odom_linear_scale` | 1 % scale error; forward motion only (no lateral slip) |
 
