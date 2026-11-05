@@ -15,8 +15,8 @@ void PathAlignAheadCritic::initialize()
   getParam(offset_from_furthest_, "offset_from_furthest", 20);
   getParam(params_.trajectory_point_step, "trajectory_point_step", 4);
   getParam(threshold_to_consider_, "threshold_to_consider", 0.5f);
-  getParam(params_.use_path_orientations, "use_path_orientations", false);
   getParam(params_.control_point_x, "control_point_x", 0.0f);
+  getParam(latency_s_, "latency_s", 0.0f);
   getParam(trim_.enabled, "trim_enabled", false);
   getParam(trim_.tau_s, "trim_tau_s", 5.0f);
   getParam(trim_.max_m, "trim_max_m", 0.10f);
@@ -46,8 +46,8 @@ void PathAlignAheadCritic::initialize()
     imu_sub_ ? roll_topic.c_str() : "unused");
   RCLCPP_INFO(
     logger_, "PathAlignAheadCritic: weight %.1f power %u, control point %.3f m ahead, "
-    "step %d, offset_from_furthest %zu", weight_, power_, params_.control_point_x,
-    params_.trajectory_point_step, offset_from_furthest_);
+    "step %d, offset_from_furthest %zu, latency compensation %.2f s", weight_, power_,
+    params_.control_point_x, params_.trajectory_point_step, offset_from_furthest_, latency_s_);
 }
 
 void PathAlignAheadCritic::score(CriticData & data)
@@ -74,8 +74,15 @@ void PathAlignAheadCritic::score(CriticData & data)
       return;
     }
   }
-  const size_t n_path = mowgli_nav2_plugins::path_align_ahead::pathPointsUsed(
-    data.path.x, data.path.y, furthest, valid.size(), params_.control_point_x);
+  namespace paa = mowgli_nav2_plugins::path_align_ahead;
+  const auto & pose0 = data.state.pose.pose;
+  const paa::Projection proj = paa::projection(
+    static_cast<float>(pose0.position.x), static_cast<float>(pose0.position.y),
+    static_cast<float>(tf2::getYaw(pose0.orientation)),
+    static_cast<float>(data.state.speed.linear.x), static_cast<float>(data.state.speed.angular.z),
+    latency_s_);
+  const size_t n_path = paa::pathPointsUsed(
+    data.path.x, data.path.y, furthest, valid.size(), params_.control_point_x + proj.arc);
   const xt::xtensor<float, 1> * px = &data.path.x;
   const xt::xtensor<float, 1> * py = &data.path.y;
   if (trim_.enabled) {
@@ -110,9 +117,9 @@ void PathAlignAheadCritic::score(CriticData & data)
       logger_, *clock_, 5000, "PathAlignAheadCritic trim: e %+.3f m, integral (%+.3f, %+.3f), "
       "ff (%+.3f, %+.3f)", ct.signed_m, trim_state_.ox, trim_state_.oy, fx, fy);
   }
-  mowgli_nav2_plugins::path_align_ahead::scoreBatch(
-    data.trajectories.x, data.trajectories.y, data.trajectories.yaws, *px,
-    *py, data.path.yaws, valid, n_path, params_, cost_);
+  paa::scoreBatch(
+    data.trajectories.x, data.trajectories.y, data.trajectories.yaws, *px, *py, valid, n_path,
+    params_, cost_, proj);
   const size_t batch = std::min(cost_.size(), static_cast<size_t>(data.costs.shape(0)));
   for (size_t t = 0; t < batch; ++t) {
     const float c = cost_[t] * weight_;
