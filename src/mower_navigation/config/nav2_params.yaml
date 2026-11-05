@@ -447,15 +447,6 @@ controller_server:
         # latency projection: rollouts scored from the pose 0.2 s ahead at the measured (v, w)
         # (0.1 s fix latency + ~0.1 s field track lag); this critic only, 0 = off
         latency_s: 0.2
-        # slope (2026-11-06 slope world, docs/analysis/2026-11-06_mppi_damping.md section 7):
-        # at a fresh body tilt (roll and pitch) >= slope_tilt_deg (= mission.yaml
-        # slope_caution_roll_deg, test_params_yaml keeps them equal) the pre-11-06 values
-        # apply: control point 0.25, no latency projection, trim tau 5 s. Removes the 1.4 cm
-        # downhill row offset of the 0.30 lever + 20 s trim; the slope pivots still do worse
-        # than master (note section 7).
-        slope_tilt_deg: 8.0
-        slope_control_point_x: 0.25
-        slope_trim_tau_s: 5.0
         # path trim (2026-11-03 slope sim, mowgli_nav2_plugins path_trim.hpp): MPPI has no
         # integral action, a steady downhill creep became a steady cross-track offset. A slow
         # integral of the cross-track error (tau 20 s, |trim| <= 0.10 m, winds only on the

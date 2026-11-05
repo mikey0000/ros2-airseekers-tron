@@ -83,28 +83,6 @@ TEST(PathTrim, PersistentErrorWindsWithTauAndClamps)
   EXPECT_EQ(s.oy, o);
 }
 
-TEST(PathTrim, ExplicitTauWindsWithThatTau)
-{
-  pt::Params p = on();
-  p.tau_s = 20.0f;
-  p.leak_tau_s = 0.0f;
-  pt::CrossTrack ct;
-  ct.ok = true;
-  ct.ey = ct.signed_m = -0.02f;
-  pt::State fast, slow, dflt;
-  for (int k = 0; k < 40; ++k) {   // 2 s
-    pt::update(fast, ct, 0.2f, 0.05f, p, 5.0f);
-    pt::update(slow, ct, 0.2f, 0.05f, p, 20.0f);
-    pt::update(dflt, ct, 0.2f, 0.05f, p);
-  }
-  EXPECT_NEAR(fast.oy, 0.02f * 2.0f / 5.0f, 1e-5f);
-  EXPECT_NEAR(slow.oy, 0.02f * 2.0f / 20.0f, 1e-5f);
-  EXPECT_EQ(dflt.oy, slow.oy);     // the 5-argument update winds with p.tau_s
-  pt::State none;
-  pt::update(none, ct, 0.2f, 0.05f, p, 0.0f);   // tau 0: no integral
-  EXPECT_EQ(none.oy, 0.0f);
-}
-
 TEST(PathTrim, ZeroMeanWeaveAveragesOut)
 {
   pt::State s;

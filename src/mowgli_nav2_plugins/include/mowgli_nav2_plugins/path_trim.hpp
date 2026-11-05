@@ -14,8 +14,6 @@
 //
 // The applied shift of each path point is the component of (o + ff) along that point's
 // path normal. Flat ground: roll 0, no persistent error -> o ~ 0, the critic is unchanged.
-// The caller may wind with another time constant than tau_s (PathAlignAheadCritic's side-slope
-// values, path_align_ahead_critic.hpp tuningAt).
 #ifndef MOWGLI_NAV2_PLUGINS__PATH_TRIM_HPP_
 #define MOWGLI_NAV2_PLUGINS__PATH_TRIM_HPP_
 
@@ -84,9 +82,8 @@ CrossTrack crossTrack(const Arr & px, const Arr & py, size_t n, float x, float y
   return best;
 }
 
-// One control cycle of the integral, winding with time constant tau_s.
-inline void update(
-  State & s, const CrossTrack & ct, float v, float dt, const Params & p, float tau_s)
+// One control cycle of the integral.
+inline void update(State & s, const CrossTrack & ct, float v, float dt, const Params & p)
 {
   if (!p.enabled || dt <= 0.0f) {return;}
   if (p.leak_tau_s > 0.0f) {
@@ -95,9 +92,9 @@ inline void update(
     s.oy *= k;
   }
   if (ct.ok && std::fabs(ct.signed_m) <= p.max_err_m && std::fabs(v) >= p.min_speed &&
-    tau_s > 0.0f)
+    p.tau_s > 0.0f)
   {
-    const float g = dt / tau_s;
+    const float g = dt / p.tau_s;
     s.ox -= ct.ex * g;
     s.oy -= ct.ey * g;
   }
@@ -106,12 +103,6 @@ inline void update(
     s.ox *= p.max_m / m;
     s.oy *= p.max_m / m;
   }
-}
-
-// One control cycle of the integral with tau_s.
-inline void update(State & s, const CrossTrack & ct, float v, float dt, const Params & p)
-{
-  update(s, ct, v, dt, p, p.tau_s);
 }
 
 // Feed-forward toward the robot's left (world frame) for roll (rad), yaw (rad), speed v.

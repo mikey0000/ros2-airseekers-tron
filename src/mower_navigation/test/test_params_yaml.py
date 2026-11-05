@@ -646,13 +646,6 @@ def test_mppi_coverage_controllers():
     # (tau 5 s cost about 20 % of the heading damping); the latency projection covers the
     # 0.1 s fix latency + the ground-track lag, not more (docs/analysis/2026-11-06_mppi_damping.md)
     assert pa["trim_tau_s"] >= 10.0
-    # side slope: the pre-11-06 lever and trim, from the mission's slope-caution roll
-    # (2026-11-06 slope world)
-    assert pa["slope_control_point_x"] < pa["control_point_x"]
-    assert 0.0 < pa["slope_trim_tau_s"] <= 5.0
-    with open(MISSION) as f:
-        mp = yaml.safe_load(f)["behavior_tree_node"]["ros__parameters"]
-    assert pa["slope_tilt_deg"] == mp["slope_caution_roll_deg"]
     assert 0.0 <= pa.get("latency_s", 0.0) <= 0.5
     r = _ctl("FollowCoveragePathReverseMPPI")
     assert r["vx_max"] == 0.0 and -0.15 <= r["vx_min"] < 0.0      # backwards only, slow
