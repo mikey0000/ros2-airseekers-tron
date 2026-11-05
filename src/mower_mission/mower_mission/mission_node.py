@@ -129,7 +129,6 @@ TOPIC_DEFAULTS = {
     'coverage_server_node': '/coverage_server',        # set_parameters target (bridge)
     'controller_server_node': '/controller_server',    # set_parameters target (Nav2)
     'obstacle_guard_node': '/obstacle_guard',          # set_parameters: obstacle_detection
-    'cmd_vel_slew_node': '/cmd_vel_slew',              # set_parameters: pivot_max_radps
     'det_range_node': '/det_range',                    # set_parameters: publish_obstacle_points
     # Nav2 "observation buffer has not been updated" WARNs -> 'sensor stale' sub_state
     # ('' = off). Taken raw and byte-searched on the 10 Hz tick (no deserialisation).
@@ -447,8 +446,7 @@ class MissionNode(Node):
         for key, pname in ((fsm_mod.PARAM_NODE_COVERAGE, 'coverage_server_node'),
                            (fsm_mod.PARAM_NODE_CONTROLLER, 'controller_server_node'),
                            (fsm_mod.PARAM_NODE_OBSTACLE_GUARD, 'obstacle_guard_node'),
-                           (fsm_mod.PARAM_NODE_DET_RANGE, 'det_range_node'),
-                           (fsm_mod.PARAM_NODE_SLEW, 'cmd_vel_slew_node')):
+                           (fsm_mod.PARAM_NODE_DET_RANGE, 'det_range_node')):
             srv_name = p[pname].rstrip('/') + '/set_parameters'
             self._param_clients[key] = (cli(SetParameters, srv_name, callback_group=self._cb),
                                         srv_name)

@@ -231,7 +231,8 @@ behavior_tree_node:
     # moved past it (START never re-runs the same pivot first).
     # 2026-10-20 error budget: a pivot Spin is sent this much short (rad) so the robot comes to
     # rest on the angle after the stop latency (0.04 left 1.3 deg over in the ideal sim). Revert: 0.0.
-    pivot_stop_lead_rad: 0.06
+    # 0.10 (2026-11-06): the Spin stops from 0.4 rad/s (was 0.35), more coast. Was 0.06.
+    pivot_stop_lead_rad: 0.10
     # Task 0.4 (d), run 3 (owner: "in sharp corners it could reverse and turn rather than
     # overshoot"): the route is split at every corner sharper than this (rad, also below
     # route_split_turn_deg), and before a route leg (transit or dock route) starting within
@@ -546,11 +547,9 @@ behavior_tree_node:
     # coverage pivot on a side slope (|roll| > pivot_creep_roll_deg, 0 = off): pivot to face
     # upslope, drive up by the expected pivot creep, then pivot onto the leg
     pivot_creep_roll_deg: 6.0
-    pivot_rate_flat_rad_s: 0.35            # cmd_vel_slew pivot_max_radps below the roll above
-    pivot_rate_slope_rad_s: 0.3            # ... and on a side slope (0.3 = turn-shaper pivot floor)
     pivot_creep_mps: 0.045                 # downhill creep while pivoting at pivot_creep_ref_deg
     pivot_creep_ref_deg: 10.0
-    pivot_creep_spin_rps: 0.3              # = behavior_server Spin max_rotational_vel
+    pivot_creep_spin_rps: 0.6              # mean Spin rate incl. ramps (max 0.7, 2026-11-06)
     pivot_creep_drive_gain: 1.3            # forward slip of the upslope drive
     pivot_creep_max_m: 0.2
     pivot_creep_share: 0.5                 # share of the expected creep driven up first

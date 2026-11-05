@@ -270,7 +270,7 @@ class TestMcuNode(unittest.TestCase):
 
     def test_defaults_are_event_driven_and_clamped_to_vendor_limits(self):
         self.assertFalse(self.node.get_parameter('speed_stream_enabled').value)
-        self.assertEqual((self.node.linear_max, self.node.angular_max), (0.3, 0.3))
+        self.assertEqual((self.node.linear_max, self.node.angular_max), (0.3, 0.7))
         self.assertEqual((self.node.stop_frames, self.node.stop_frame_spacing), (3, 0.1))
         for gone in ('brake_gain', 'pid_enabled', 'brake_deadband_linear', 'linear_kp'):
             self.assertNotIn(gone, self.node._params)

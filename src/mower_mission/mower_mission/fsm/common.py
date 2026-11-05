@@ -128,7 +128,6 @@ SRV_POWEROFF = 'request_poweroff'             # /base_keys/request_poweroff (hos
 PARAM_NODE_COVERAGE = 'coverage_server'
 PARAM_NODE_CONTROLLER = 'controller_server'
 PARAM_NODE_OBSTACLE_GUARD = 'obstacle_guard'   # mower_vision: obstacle_detection level
-PARAM_NODE_SLEW = 'cmd_vel_slew'               # pivot_max_radps (roll-aware pivot rate)
 PARAM_NODE_DET_RANGE = 'det_range'             # publish_obstacle_points (costmap marks)
 
 # Per-area mowing settings (mower_map area_settings.py BUILTIN_DEFAULTS; used
@@ -881,7 +880,10 @@ class Params:
     # left a 1.3 deg median overshoot in the ideal sim (b4784b0), so 0.06 (calibrated at 0.25;
     # the pivot now ends at 0.3 rad/s, ~0.05 rad in 0.15-0.2 s: re-check in the field).
     # 0 = the old behaviour. Calibrate on the robot (error budget doc, field check).
-    pivot_stop_lead_rad: float = 0.06
+    # 0.10 (2026-11-06, fast pivots): Spin now stops from min_rotational_vel 0.4 rad/s (was
+    # 0.35/0.3): slew decel 0.4 -> 0.3 then the floor step to 0 plus the 0.15 s wheel lag
+    # coast ~0.09-0.1 rad (step model: lead 0.10 lands +0.5..1 deg at 45-180 deg).
+    pivot_stop_lead_rad: float = 0.10
     # Task 0.4 (d), run 3 (owner: "in sharp corners it could reverse and turn rather than
     # overshoot the corner, the turn itself looks good"): the route is also split at every
     # corner sharper than this (rad), and before any route leg (transit or dock route) whose
@@ -1237,15 +1239,11 @@ class Params:
     # No extra rotation is ever added. Skipped when the drive would put the body past the
     # edge-mode limit or the distance is under 0.03 m. 0 = off.
     pivot_creep_roll_deg: float = 6.0
-    # roll-aware pivot rate (2026-11-03): cmd_vel_slew pivot_max_radps = flat below
-    # pivot_creep_roll_deg, slope above (Spin runs at its max_rotational_vel 0.35). The
-    # turn shaper's pivot floor 2 x 0.06 / 0.40 = 0.3 rad/s lifts any slower pure rotation
-    # back to 0.3, so the slope rate is 0.3 in effect. 0 = leave the slew cap alone.
-    pivot_rate_flat_rad_s: float = 0.35
-    pivot_rate_slope_rad_s: float = 0.3
     pivot_creep_mps: float = 0.045
     pivot_creep_ref_deg: float = 10.0
-    pivot_creep_spin_rps: float = 0.3
+    # mean pivot rate incl. the ramps (2026-11-06 Spin 0.7 / 0.4 / 1.0: 90 deg ~2.6 s, 180
+    # deg ~4.8 s; was 0.3 = the old flat Spin rate)
+    pivot_creep_spin_rps: float = 0.6
     pivot_creep_drive_gain: float = 1.3
     pivot_creep_max_m: float = 0.2
     pivot_creep_share: float = 0.5
