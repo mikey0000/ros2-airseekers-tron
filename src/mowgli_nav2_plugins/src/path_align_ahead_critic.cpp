@@ -19,6 +19,10 @@ void PathAlignAheadCritic::initialize()
   getParam(latency_s_, "latency_s", 0.0f);
   getParam(trim_.enabled, "trim_enabled", false);
   getParam(trim_.tau_s, "trim_tau_s", 5.0f);
+  getParam(trim_.slope_tau_s, "trim_slope_tau_s", 0.0f);
+  float slope_roll_deg = 0.0f;
+  getParam(slope_roll_deg, "trim_slope_roll_deg", 0.0f);
+  trim_.slope_roll_rad = slope_roll_deg * static_cast<float>(M_PI / 180.0);
   getParam(trim_.max_m, "trim_max_m", 0.10f);
   getParam(trim_.max_err_m, "trim_max_err_m", 0.30f);
   getParam(trim_.min_speed, "trim_min_speed", 0.05f);
@@ -41,8 +45,9 @@ void PathAlignAheadCritic::initialize()
       });
   }
   RCLCPP_INFO(
-    logger_, "PathAlignAheadCritic: trim %s (tau %.1f s, max %.2f m, k_roll %.2f, roll %s)",
-    trim_.enabled ? "on" : "off", trim_.tau_s, trim_.max_m, trim_.k_roll,
+    logger_, "PathAlignAheadCritic: trim %s (tau %.1f s, %.1f s at |roll| >= %.1f deg, max %.2f m, "
+    "k_roll %.2f, roll %s)", trim_.enabled ? "on" : "off", trim_.tau_s, trim_.slope_tau_s,
+    slope_roll_deg, trim_.max_m, trim_.k_roll,
     imu_sub_ ? roll_topic.c_str() : "unused");
   RCLCPP_INFO(
     logger_, "PathAlignAheadCritic: weight %.1f power %u, control point %.3f m ahead, "
@@ -100,10 +105,13 @@ void PathAlignAheadCritic::score(CriticData & data)
     const float v = static_cast<float>(data.state.speed.linear.x);
     const size_t n_ct = std::min(data.path.x.shape(0), furthest + 10);
     const pt::CrossTrack ct = pt::crossTrack(data.path.x, data.path.y, n_ct, x, y);
-    pt::update(trim_state_, ct, v, dt, trim_);
+    const bool roll_fresh = imu_sub_ && now.seconds() - roll_t_.load() <= roll_timeout_s_;
+    const float roll = roll_.load();
+    const float tau = pt::integralTau(trim_, roll, roll_fresh);
+    pt::update(trim_state_, ct, v, dt, trim_, tau);
     float fx = 0.0f, fy = 0.0f;
-    if (imu_sub_ && now.seconds() - roll_t_.load() <= roll_timeout_s_) {
-      pt::feedForward(roll_.load(), yaw, v, trim_, fx, fy);
+    if (roll_fresh) {
+      pt::feedForward(roll, yaw, v, trim_, fx, fy);
     }
     const float sx = trim_state_.ox + fx, sy = trim_state_.oy + fy;
     if (sx != 0.0f || sy != 0.0f) {
@@ -115,7 +123,7 @@ void PathAlignAheadCritic::score(CriticData & data)
     }
     RCLCPP_INFO_THROTTLE(
       logger_, *clock_, 5000, "PathAlignAheadCritic trim: e %+.3f m, integral (%+.3f, %+.3f), "
-      "ff (%+.3f, %+.3f)", ct.signed_m, trim_state_.ox, trim_state_.oy, fx, fy);
+      "ff (%+.3f, %+.3f), tau %.0f s", ct.signed_m, trim_state_.ox, trim_state_.oy, fx, fy, tau);
   }
   paa::scoreBatch(
     data.trajectories.x, data.trajectories.y, data.trajectories.yaws, *px, *py, valid, n_path,

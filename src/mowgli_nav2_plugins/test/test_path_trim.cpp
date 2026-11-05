@@ -83,6 +83,37 @@ TEST(PathTrim, PersistentErrorWindsWithTauAndClamps)
   EXPECT_EQ(s.oy, o);
 }
 
+TEST(PathTrim, SlopeScheduleWindsFasterOnASideSlope)
+{
+  pt::Params p = on();
+  p.tau_s = 20.0f;
+  // no schedule: tau_s on every roll
+  EXPECT_EQ(pt::integralTau(p, 0.2f, true), 20.0f);
+  p.slope_tau_s = 5.0f;
+  p.slope_roll_rad = static_cast<float>(8.0 * M_PI / 180.0);
+  EXPECT_EQ(pt::integralTau(p, 0.0f, true), 20.0f);                   // flat
+  EXPECT_EQ(pt::integralTau(p, 0.10f, true), 20.0f);                  // 5.7 deg
+  EXPECT_EQ(pt::integralTau(p, 0.17f, true), 5.0f);                   // 9.7 deg, right down
+  EXPECT_EQ(pt::integralTau(p, -0.17f, true), 5.0f);                  // left down
+  EXPECT_EQ(pt::integralTau(p, 0.17f, false), 20.0f);                 // stale roll: flat value
+  // the same persistent offset winds 4x faster at the slope tau
+  pt::CrossTrack ct;
+  ct.ok = true;
+  ct.ey = ct.signed_m = -0.02f;
+  p.leak_tau_s = 0.0f;
+  pt::State flat, slope;
+  for (int k = 0; k < 40; ++k) {   // 2 s
+    pt::update(flat, ct, 0.2f, 0.05f, p, pt::integralTau(p, 0.0f, true));
+    pt::update(slope, ct, 0.2f, 0.05f, p, pt::integralTau(p, 0.17f, true));
+  }
+  EXPECT_NEAR(flat.oy, 0.02f * 2.0f / 20.0f, 1e-5f);
+  EXPECT_NEAR(slope.oy, 0.02f * 2.0f / 5.0f, 1e-5f);
+  // the 5-argument update is the flat-ground tau_s
+  pt::State s5;
+  for (int k = 0; k < 40; ++k) {pt::update(s5, ct, 0.2f, 0.05f, p);}
+  EXPECT_EQ(s5.oy, flat.oy);
+}
+
 TEST(PathTrim, ZeroMeanWeaveAveragesOut)
 {
   pt::State s;

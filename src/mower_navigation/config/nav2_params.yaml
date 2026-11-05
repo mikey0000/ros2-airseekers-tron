@@ -454,6 +454,12 @@ controller_server:
         # target upslope. Flat ground: roll 0, no persistent error -> no shift.
         trim_enabled: true
         trim_tau_s: 20.0   # was 5: a 5 s integral sat in the ~8 s weave band (2026-11-06)
+        # slope schedule: at a fresh |roll| >= trim_slope_roll_deg the integral winds with the
+        # old 5 s again. With control_point_x 0.30 + the latency projection the side-slope
+        # crab is a standing downhill offset; 20 s left it in place (slope world, 2026-11-06).
+        # The roll is mission.yaml slope_caution_roll_deg (test_params_yaml keeps them equal).
+        trim_slope_tau_s: 5.0
+        trim_slope_roll_deg: 8.0
         trim_max_m: 0.10
         trim_max_err_m: 0.30
         trim_min_speed: 0.05

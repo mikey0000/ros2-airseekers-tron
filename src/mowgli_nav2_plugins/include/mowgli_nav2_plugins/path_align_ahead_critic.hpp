@@ -203,8 +203,9 @@ protected:
   float weight_{0};
   std::vector<float> cost_;
 
-  // path trim (path_trim.hpp): trim_enabled, trim_tau_s, trim_max_m, trim_max_err_m,
-  // trim_min_speed, trim_leak_tau_s, k_roll, roll_topic (sensor_msgs/Imu), roll_timeout_s
+  // path trim (path_trim.hpp): trim_enabled, trim_tau_s, trim_slope_tau_s,
+  // trim_slope_roll_deg, trim_max_m, trim_max_err_m, trim_min_speed, trim_leak_tau_s, k_roll,
+  // roll_topic (sensor_msgs/Imu, also the slope schedule's roll), roll_timeout_s
   mowgli_nav2_plugins::path_trim::Params trim_;
   mowgli_nav2_plugins::path_trim::State trim_state_;
   rclcpp::Clock::SharedPtr clock_;
