@@ -1781,7 +1781,7 @@ Sim, `-l -x 3 -s 1`, master -> branch:
 **Next:** a field A/B (procedure in note 2.5). If the arcs come out wider in the field, the
 next step is to slow the carrot before the hand-off (upstream `speed_slow`).
 
-## Row weave: MPPI heading damping and latency compensation (2026-11-06, branch ws/damp1106, unit + sim; not field tested; slope world not passed)
+## Row weave: MPPI heading damping and latency compensation (2026-11-06, branch ws/damp1106, unit + sim; not field tested)
 
 Details: `analysis/2026-11-06_mppi_damping.md`. The coverage MPPI (`FollowCoveragePathMPPI`,
 plain MPPI while FTCRowController stays off) gets more heading damping from its own critic,
@@ -1819,38 +1819,41 @@ Sim, `-l -x 3 -s 1`, master -> branch (FTC for reference). Fitted gains are the 
 - **MOWING time:** +3-4 %, all from the newer plan's extra sub-path / pivots. The row speed is
   unchanged.
 
-**Slope world (`real_run5_slope -d -s 2 -x 3`, note section 7): V2 regressed, partly fixed,
-not merge-ready.**
+**Slope world (`real_run5_slope -d -s 2 -x 3`, note section 7): V2 regressed; cause found and
+fixed in the mission.**
 - **What V2 did.** It tripped the hard boundary once, with 1 fallback nav and 3 emergency
   ticks. It had 1462 samples > 0.10 m outside against master's 349; a master-equivalent
-  rerun gave 426.
-- **Cause.** The slope-side pivots start 0.16 m off their vertex on average against master's
-  0.08 m, and an off-vertex pivot drifts downhill out of the area. The 20 s trim only adds a
-  1.4 cm downhill offset on the slope rows. It is not the cause of the excursions.
-- **Fix on the branch (V2d, af5aeec).** At a body tilt (roll and pitch) >= `slope_tilt_deg`
-  (8, = mission.yaml `slope_caution_roll_deg`), PathAlignAheadCritic uses the pre-11-06
-  values: `slope_control_point_x` 0.25, no latency projection, `slope_trim_tau_s` 5. These are
-  3 new keys, with no A6 removal left in the block.
-- **Result:**
+  rerun gave 426. The slope-side pivots started 0.16 m off their vertex (master 0.08 m), and
+  an off-vertex pivot drifts downhill out of the area.
+- **Cause (note 7.6).** The mission stamped each FollowPath path with its send time.
+  controller_server transforms the goal into odom with that stamp on every cycle, so the goal
+  checker judged the vertex where map -> odom put it at the send time, for up to 10 s (the TF
+  buffer). On the slope odom slides 0.15-0.2 m off map within a leg: the robot drove over the
+  vertex (0.005-0.065 m) and the leg ended 0.2-0.47 m past it on the passed-wide rule. MPPI
+  restamps the path itself, so only the checker was stale. Master has the same bug; V2's
+  steeper crossings after a drifted pivot made the miss longer. Found with one logged run.
+- **Fix:** `mission_node._path` stamps the path 0 (tf2: latest transform). The V2d slope
+  schedule (3 keys, `tuningAt`) is removed again (A6): with the fix it was not needed.
+- **Result** (one run each):
 
-| | master | V2 | V2d |
-|---|---|---|---|
-| slope a max / samples | 0.210 / 349 | 0.287 / 1462 | 0.313 / 975 |
-| slope b / d fallback / f | 0 / 0 / 0 | 1 / 1 / 3 | 0 / 0 / 0 |
-| slope h p99 line / arc | 0.419 / 0.633 | 0.569 / 0.673 | 0.412 / 0.652 |
-| slope i side / nose / sweep | 0.343 / 0.368 / 0.372 | 0.463 / 0.486 / 0.497 | 0.318 / 0.382 / 0.387 |
-| real_run5 band rms (cm) / verdict | 0.84 / FAIL (i) | 0.60 / FAIL (i) | 0.55 / PASS |
+| | master | V2 | V2d | **V2 + fix** |
+|---|---|---|---|---|
+| slope a max / samples | 0.210 / 349 (master-eq 0.214 / 426) | 0.287 / 1462 | 0.313 / 975 (rerun 0.233 / 520) | **0.197 / 490** |
+| slope b / d fallback / f | 0 / 0 / 0 | 1 / 1 / 3 | 0 / 0 / 0 | **0 / 0 / 0** |
+| slope-side pivot start, mean (m) | 0.085 | 0.158 | 0.151 | **0.066** |
+| slope h p99 line / arc | 0.419 / 0.633 | 0.569 / 0.673 | 0.412 / 0.652 | **0.408 / 0.610** |
+| slope i side / nose / sweep | 0.343 / 0.368 / 0.372 | 0.463 / 0.486 / 0.497 | 0.318 / 0.382 / 0.387 | **0.409 / 0.385 / 0.368** |
+| real_run5 band rms (cm) / verdict | 0.84 / FAIL (i) | 0.60 / FAIL (i) | 0.55 / PASS | **0.74 / FAIL (i)** |
+| owner_far band rms (cm) / verdict | 0.96 / FAIL (e, i) | 0.66 / PASS | - | **0.68 / FAIL (e 0.155, i)** |
 
-- **Still open.** The hand-offs stay worse with the slope values in force. In V2d the
-  overshooting leg ran entirely at master's values, so the difference is carried in from the
-  flat-ground values upstream. Not isolated (note 7.5).
-- **owner_far:** not rerun. V2d is V2 on a flat world.
+- **Open (owner's call):** two single-run misses. Slope a samples 490 against 349-426 (the
+  unchanged V2d code spread 520-975 across two runs). real_run5 band rms 0.74 against V2's
+  0.60, with V2's fitted gains and owner_far's weave equal to V2's (0.68 / 0.66): read as
+  spread, not rerun.
 
 **Next:**
-1. Decide (note 7.5):
-   - one diagnostic master-eq / V2d pair with per-cycle logging over sub-path 0; or
-   - merge V2d accepting the slope-world a regression; or
-   - ship master's values with the V2d code off.
+1. Merge (the stamp fix also stands alone and helps master on slopes); optionally one
+   real_run5 rerun first.
 2. Deploy, mow once, and run `fit.py` on the bag: fitted Kpsi above about 1.3 (11-04: 1.08)
    and r below 0.026. Compare the `wheel_cal.py` weave p90 against 11-04's 1.91 cm.
 3. Then the FTC A/B against this as the baseline. FTC's inner MPPI reads the same values.

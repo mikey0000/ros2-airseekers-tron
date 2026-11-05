@@ -17,14 +17,20 @@ critics and (2) compensating the in-loop pose latency?
 - **Cost:** one +111 deg fillet on `real_run5` runs 3-4 cm wider (e 0.091 -> 0.125, limit
   0.15). That matches the extra control-point offset on a bend. The owner_far corners do not
   show it.
-- **Slope world: V2 regresses, and the cause is not fully fixed (section 7).** V2 had a
-  hard-boundary trip, a fallback nav, 3 emergency ticks and 4x master's samples outside. The
-  slow trim explains only a 1.4 cm downhill row offset. The excursions come from the
-  slope-side pivots, which V2 starts 0.16 m off their vertex on average (master 0.08 m). The
-  branch now switches to the pre-11-06 values at a body tilt of 8 deg or more (V2d). That
-  clears b, d and f, and real_run5 keeps the weave gain and PASSES. a is still worse than
-  master (0.313 m / 975 samples against 0.21 / 349-426).
-- **Recommendation (revised): not merge-ready on the slope bar.** Section 7.5.
+- **Slope world: the regression came from a stale leg goal, now fixed (section 7.6).** V2 had a
+  hard-boundary trip, a fallback nav, 3 emergency ticks and 4x master's samples outside, from
+  slope-side pivots that started 0.16 m off their vertex (master 0.08 m). Cause: the mission
+  stamped each FollowPath path with its send time, so controller_server's goal checker judged
+  the vertex where map -> odom put it when the leg was sent. On the slope odom slides
+  0.15-0.2 m off map within a leg; the robot drove over the vertex, the checker's goal was
+  elsewhere, and the leg ended 0.2-0.5 m past it. V2's steeper recovery crossings made that
+  miss longer. Fix: stamp the path 0 (latest transform). With the fix, V2 (no slope keys)
+  starts slope pivots 0.066 m from the vertex, a 0.197 m / 490 samples, b / d / f 0. The V2d
+  slope schedule is removed again (it did not help with the fix: 0.349 m / 765, one trip).
+- **Recommendation (revised again): merge-ready with one caveat** (section 7.6): a's sample
+  count, 490, is just above master's two runs (349 / 426) while its max is lower; a rerun of
+  unchanged V2d code moved a from 975 to 520 samples, so that is within the slope world's
+  run-to-run spread.
 - **Earlier recommendation, flat ground only:** merge V2 as the plain-MPPI default and keep
   FTC for the field A/B, run against V2 as the new baseline (section 6).
 
@@ -382,6 +388,9 @@ The scripts are in the session scratchpad, `slope1106/`:
 
 ### 7.3 Variants
 
+V2b-V2d were removed again after the cause was found (7.6); the final code is V2 plus the
+mission stamp fix.
+
 | | slope values (at the threshold) | threshold |
 |---|---|---|
 | V2b (8b1e0b9) | trim tau 5 s | fresh \|roll\| >= 8 deg |
@@ -439,7 +448,7 @@ Slope world, `-d -s 2 -x 3`:
 - owner_far was not rerun. V2d is not merge-ready on the slope bar (7.5), and on a flat world
   it is V2, which PASSED owner_far (section 5).
 
-### 7.5 Verdict
+### 7.5 Verdict (before the cause was found; superseded by 7.6)
 
 - **Bar:** not worse than master on b, a, d, f, h and i on the slope world.
 - **V2d meets it on b, d and f** (all 0, as master).
@@ -463,4 +472,122 @@ Options:
 3. **Ship master's values and keep V2d's code off** (`latency_s` 0, `control_point_x` 0.25,
    `trim_tau_s` 5, `slope_tilt_deg` 0). The slope schedule and the projection stay available
    for the FTC A/B.
+
+### 7.6 Cause: a stale leg goal in odom; fix and results
+
+**Finding the cause.** One V2d slope run with temporary per-cycle logging in LegGoalChecker
+and PathAlignAheadCritic (`v2d-dbg-slope`, not committed). The scripts are in the session
+scratchpad, `slope1106/` (`minapp.py`, `late.py`, `chain.py`).
+
+- **The robot reached the vertex; the checker did not see it.** In every far hand-off of
+  every V2 run, the stack's own pose (`/odometry/filtered_map`) came within 0.005-0.065 m of
+  the vertex, and the leg went on for 1-10 s and ended 0.2-0.47 m past it:
+
+  | vertex | master | master-eq | V2 | V2b | V2c | V2d |
+  |---|---|---|---|---|---|---|
+  | (-5.27, -0.31): closest / hand-off (m) | 0.011 / 0.072 | 0.016 / 0.117 | 0.005 / 0.235 | 0.065 / 0.323 | 0.050 / 0.198 | 0.053 / 0.327 |
+  | (-5.03, -0.12): closest / hand-off (m) | 0.061 / 0.095 | 0.039 / 0.064 | 0.164 / 0.176 | 0.005 / 0.275 | 0.201 / 0.242 | 0.008 / 0.469 |
+
+- **The checker's goal was frozen.** The logged goal of the leg into (-5.27, -0.31) stayed at
+  the same odom coordinates (to the millimetre) for 10 s, while the robot, in odom, passed
+  0.218 m from it. In map coordinates the same pass was 0.07 m from the vertex. After 10 s
+  the goal jumped 0.21 m to where the vertex then was, and the passed-wide rule ended the
+  leg 0.39 m away.
+- **Why.** controller_server (Jazzy 1.3.13) transforms the goal into odom on every
+  `isGoalReached` with the path's header stamp. The mission stamped each FollowPath path with
+  its send time (`mission_node._path`), so tf2 used map -> odom at the send time for the
+  whole leg. Once the stamp left the 10 s TF buffer, the lookup fell back to the latest
+  transform: that is the jump. MPPI restamps the path and goal with the robot pose's time
+  (`PathHandler::transformPath` / `getTransformedGoal`), so the robot followed the true path
+  while the checker judged the stale goal.
+- **Why the slope.** On flat ground map -> odom moves millimetres within a leg. On the 10 deg
+  slope the downhill slide during a pivot and a crossing is not in the wheel odometry, so
+  odom moves 0.15-0.2 m off map during one leg. The legs that suffer are the short ones that
+  start off-line after a drifted pivot.
+- **Why V2 more than master.** Both have the bug (master-eq's (-5.27, -0.31) leg ended 2 s
+  late as well). After a drifted pivot the leg starts 0.2-0.27 m off the line, and MPPI
+  crosses the vertex at a steep angle: master at about 55 deg to the leg, V2 variants at
+  75-90 deg. Steeper crossings move nearly parallel to the checker's plane, so after the
+  miss the robot travelled further before the passed-wide rule fired, and the next pivot
+  (up to 123 deg) drifted further downhill. That is the a excursion. The crossing angle
+  depends on the start offset and on run-to-run noise as much as on the values: V2c / V2d
+  had master's values on that leg and still crossed at 76-92 deg. The flat-value state
+  carried into the slope (trim integral, warm start) is not it: the trim integral at the leg
+  start matched master-eq's within 1 cm, and MPPI's warm start is reset at every leg end.
+
+**Fix (mower_mission, `mission_node._path`).** The FollowPath path and its poses are
+stamped 0, which tf2 reads as "latest". controller_server then re-transforms the goal with
+the current map -> odom on every cycle, as LegGoalChecker's header already assumed
+(`new_goal_jump` handles the per-cycle drift). MPPI is unchanged (it restamps). It applies to
+every FollowPath goal the mission sends (coverage chunks, corner legs, routes). Test:
+`test_mission_path_stamp.py`.
+
+**The slope schedule is removed again (A6).** With the fix, V2 needs no slope keys.
+`slope_tilt_deg`, `slope_control_point_x`, `slope_trim_tau_s`, `tuningAt` / `tiltAngle` and
+the `path_trim::update` time-constant overload are gone, back to the V2 code (798cc0c). With
+the fix, V2d did worse than V2 (one run each, below).
+
+**Gate results** (fix = the stamp fix; `v2d-dbg` is V2d unchanged, rerun with logging).
+Slope world, `-d -s 2 -x 3`:
+
+| | master | master-eq | V2d | V2d rerun (dbg) | V2d + fix | **V2 + fix** |
+|---|---|---|---|---|---|---|
+| a max / > 0.10 m samples | 0.210 / 349 | 0.214 / 426 | 0.313 / 975 | 0.233 / 520 | 0.349 / 765 | **0.197 / 490** |
+| b / d fallback / f | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 1 / 0 / 0 | **0 / 0 / 0** |
+| slope-side hand-off mean / max (m) | 0.085 / 0.33 | 0.079 / 0.12 | 0.151 / 0.47 | 0.174 / 0.53 | 0.104 / 0.43 | **0.066 / 0.12** |
+| e corners > 0.15 m (max) | 6 of 22 (0.678) | 7 of 22 (0.686) | 6 of 21 (0.692) | 5 of 21 (0.691) | 8 of 22 (0.698) | **6 of 22 (0.654)** |
+| h p99 line / arc | 0.419 / 0.633 | 0.420 / 0.641 | 0.412 / 0.652 | 0.435 / 0.652 | 0.462 / 0.653 | **0.408 / 0.610** |
+| i side / nose / sweep | 0.343 / 0.368 / 0.372 | 0.325 / 0.373 / 0.378 | 0.318 / 0.382 / 0.387 | 0.329 / 0.384 / 0.385 | 0.390 / 0.427 / 0.490 | **0.409 / 0.385 / 0.368** |
+| lawn cut | 96.6 % | 96.4 % | 96.4 % | 97.1 % | 97.1 % | **97.1 %** |
+
+- **V2 + fix:** the slope-side hand-offs are now closer than master's (0.066 m mean, none
+  over 0.12 m). a max is below master's, its sample count 490 just above master-eq's 426: the
+  extra samples are the pivot at (-5.15, -0.03) (+67 deg against master's +37-46 deg, 0.21 m
+  drift) and two short episodes near (-5.4, -0.4). h is at or below master's; i side is 0.07
+  over master-eq, nose / sweep inside master's spread.
+- **V2d + fix** tripped the boundary once on a slope row (west edge, 334 s, trim integral at
+  its cap after a 0.16 m cross-track error), with the slope values in force. One run, so it
+  does not show the schedule hurts; it does show the schedule is not needed.
+- **Spread.** The unchanged V2d code gave a 0.313 / 975 and, rerun, 0.233 / 520. One run per
+  variant on this world separates 2x effects, not 20 %.
+
+Flat ground, final candidate (V2 + fix), `-l -x 3 -s 1`:
+
+| | master | V2 | V2d | **V2 + fix** |
+|---|---|---|---|---|
+| real_run5 fitted Ky / Kpsi, r | 3.22 / 1.13, 0.0147 | 2.79 / 1.36, 0.0093 | 2.67 / 1.31, 0.0109 | **2.70 / 1.27, 0.0101** |
+| real_run5 band rms (weave.py / fit.py, cm) | 0.84 / 0.77 | 0.60 / 0.49 | 0.55 / 0.47 | **0.74 / 0.62** |
+| real_run5 XTE p90 / detrended p90 (cm) | 2.79 / 1.82 | 2.38 / 1.38 | 2.84 / 1.22 | **2.57 / 1.59** |
+| real_run5 e max / h line / arc | 0.091 / 0.085 / 0.050 | 0.125 / 0.083 / 0.055 | 0.107 / 0.075 / 0.049 | **0.118 / 0.079 / 0.055** |
+| real_run5 i side / nose / sweep | 0.086 / 0.055 / 0.119 | 0.089 / 0.072 / 0.102 | 0.077 / 0.058 / 0.083 | **0.093 / 0.073 / 0.109** |
+| real_run5 verdict | FAIL (i) | FAIL (i) | PASS | **FAIL (i)** |
+| owner_far band rms (weave.py / fit.py, cm) | 0.96 / - | 0.66 / - | - | **0.68 / 0.55** |
+| owner_far fitted Ky / Kpsi, r | 3.23 / 1.13, 0.0167 | 2.73 / 1.31, 0.0110 | - | **2.67 / 1.30, 0.0112** |
+| owner_far XTE p90 / detrended p90 (cm) | 2.66 / 2.40 | 2.12 / 1.72 | - | **2.10 / 1.70** |
+| owner_far e (max) / h line / arc | 1 of 84 (0.181) / 0.068 / 0.048 | 0 of 86 (0.139) / 0.064 / 0.044 | - | **1 of 86 (0.155) / 0.074 / 0.064** |
+| owner_far i side / nose / sweep | 0.096 / 0.119 / 0.153 FAIL | 0.083 / 0.057 / 0.084 | - | **0.106 / 0.127 / 0.143 FAIL** |
+| owner_far verdict | FAIL (e, i) | PASS | - | **FAIL (e, i)** |
+
+- **real_run5 band rms 0.74 cm is over the 0.62 bar**, but the fitted gains and r are V2's,
+  and on owner_far (53 straights, 402 m against real_run5's 12 / 47 m) the weave is V2's to
+  the hundredth (0.68 against 0.66, XTE p90 2.10 against 2.12). The fix only changes where
+  the goal checker sees a leg's end, not the rows. The fit attributes the real_run5 rise to
+  the pose-noise term (0.52 against 0.43 cm), which is localisation noise. I read it as
+  run-to-run spread on a short sample, not a regression; it was not rerun (sim budget).
+- **owner_far e and i** flip to FAIL at 0.155 m (limit 0.15) and 0.106 / 0.127 / 0.143, both
+  inside master's own values there (e 0.181, i 0.096 / 0.119 / 0.153) and the ±0.05 flip of
+  earlier runs (the first V2 owner_far run had an e corner at 0.152).
+
+### 7.7 Verdict (with the fix)
+
+- **Slope bar:** b, d, f at 0 as master; a max below master's, a samples 490 against
+  349-426 (inside the spread one unchanged-code rerun showed); h at or below master; i
+  within about 0.07 of master-eq.
+- **Flat:** the weave gain holds on owner_far (band -29 % against master); real_run5's band
+  rms came out at 0.74 in this run (V2 0.60, V2d 0.55).
+- **Merge-ready, owner's call on the two single-run misses** (a samples on the slope,
+  real_run5 band rms). A real_run5 rerun of the final code would settle the second one.
+- **The fix stands on its own** and helps master as well: any FollowPath leg on a surface
+  where odom slides off map (slopes, wet turf) was judged against a stale goal. It can be
+  cherry-picked without the V2 values.
 
