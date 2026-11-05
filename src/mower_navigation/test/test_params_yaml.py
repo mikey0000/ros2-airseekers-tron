@@ -580,7 +580,9 @@ def test_mppi_feasibility_critic_everywhere():
     sc = _shaper_constants()
     for name in MPPI_IDS:
         c = _ctl(name)
-        assert c["plugin"] == "nav2_mppi_controller::MPPIController", name
+        # FTCRowController wraps an MPPIController configured from the same block
+        assert c["plugin"] in ("nav2_mppi_controller::MPPIController",
+                               "mowgli_nav2_plugins::FTCRowController"), name
         assert c["motion_model"] == "DiffDrive", name
         assert "WheelFloorCritic" in c["critics"], name
         wf = c["WheelFloorCritic"]
@@ -836,3 +838,26 @@ def test_retry_clears_keep_det_and_bumper_marks(cm, frame):
     assert gp["obstacle_layer"].get("clearable", True) is True
     assert "bumper" not in gp["obstacle_layer"]["observation_sources"].split()
     assert gp["plugins"].index("bumper_layer") < gp["plugins"].index("inflation_layer")
+
+
+def test_coverage_rows_ftc():
+    """2026-11-05 row weave study (docs/analysis/2026-11-05_row_weave_ftc.md): the coverage
+    controller is FTCRowController (FTC carrot law on straight rows, inner MPPI from the same
+    block elsewhere); transit and reverse legs stay plain MPPI."""
+    c = _ctl("FollowCoveragePathMPPI")
+    assert c["plugin"] == "mowgli_nav2_plugins::FTCRowController"
+    assert _ctl("FollowPath")["plugin"] == "nav2_mppi_controller::MPPIController"
+    assert _ctl("FollowCoveragePathReverseMPPI")["plugin"] == \
+        "nav2_mppi_controller::MPPIController"
+    f = c["FTC"]
+    # carrot lead vx_max / kp_lon within the 0.15-0.4 m that damps the row (row model)
+    assert 0.15 <= c["vx_max"] / f["kp_lon"] <= 0.4
+    assert 0.0 < f["kp_lat"] <= 5.0 and 0.0 < f["kp_ang"] <= 3.0
+    assert f["ki_lat"] >= 0.0 and f["ki_lat_max"] > 0.0
+    # MPPI gets the bend with more room than its 0.3 m goal / path critic zones
+    assert 0.3 <= f["handoff_distance"] <= 1.0
+    assert 0.0 < f["straight_tolerance"] <= 0.02
+    assert 0.0 < f["max_lateral_error"] <= 0.2 and 0.0 < f["max_angle_error"] <= 0.5
+    xml = os.path.join(HERE, "..", "..", "mowgli_nav2_plugins", "ftc_row_controller_plugin.xml")
+    if os.path.exists(xml):
+        assert 'type="mowgli_nav2_plugins::FTCRowController"' in open(xml).read()

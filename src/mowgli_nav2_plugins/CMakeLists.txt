@@ -108,8 +108,37 @@ target_link_libraries(mowgli_mppi_critics
 )
 ament_target_dependencies(mowgli_mppi_critics nav2_mppi_controller)
 
+# ---------------------------------------------------------------------------
+# FTCRowController (2026-11-05, row weave study): FTC row law (ported from OpenMower's
+# ftc_local_planner, GPLv3) on straight coverage rows, an inner MPPIController (loaded through
+# pluginlib under the same name) everywhere else. Own library: it does not link MPPI.
+# ---------------------------------------------------------------------------
+
+add_library(mowgli_ftc_row_controller SHARED
+  src/ftc_row_controller.cpp
+)
+target_include_directories(mowgli_ftc_row_controller
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(mowgli_ftc_row_controller
+  ${rclcpp_TARGETS}
+  ${rclcpp_lifecycle_TARGETS}
+  ${nav2_core_TARGETS}
+  ${nav2_costmap_2d_TARGETS}
+  ${nav2_util_TARGETS}
+  ${nav_msgs_TARGETS}
+  ${geometry_msgs_TARGETS}
+  ${pluginlib_TARGETS}
+  ${tf2_TARGETS}
+  ${tf2_ros_TARGETS}
+  ${tf2_geometry_msgs_TARGETS}
+)
+
 # pluginlib needs the export macro defined.
 pluginlib_export_plugin_description_file(nav2_core goal_checker_plugin.xml)
+pluginlib_export_plugin_description_file(nav2_core ftc_row_controller_plugin.xml)
 pluginlib_export_plugin_description_file(nav2_mppi_controller mppi_critics_plugin.xml)
 
 # ---------------------------------------------------------------------------
@@ -122,14 +151,14 @@ install(
 )
 
 install(
-  TARGETS ${PROJECT_NAME} mowgli_mppi_critics
+  TARGETS ${PROJECT_NAME} mowgli_mppi_critics mowgli_ftc_row_controller
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(
-  FILES goal_checker_plugin.xml mppi_critics_plugin.xml
+  FILES goal_checker_plugin.xml mppi_critics_plugin.xml ftc_row_controller_plugin.xml
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -166,6 +195,12 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_path_trim mowgli_mppi_critics)
 
+  # FTC row law (2026-11-05): path geometry, carrot, PID, row gate, closed loop.
+  ament_add_gtest(test_ftc_row_law
+    test/test_ftc_row_law.cpp
+  )
+  target_include_directories(test_ftc_row_law PRIVATE include)
+
   ament_add_gtest(test_leg_goal_checker
     test/test_leg_goal_checker.cpp
   )
@@ -179,7 +214,7 @@ endif()
 # ---------------------------------------------------------------------------
 
 ament_export_include_directories(include)
-ament_export_libraries(${PROJECT_NAME} mowgli_mppi_critics)
+ament_export_libraries(${PROJECT_NAME} mowgli_mppi_critics mowgli_ftc_row_controller)
 ament_export_dependencies(
   rclcpp
   rclcpp_lifecycle

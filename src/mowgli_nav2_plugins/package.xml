@@ -5,8 +5,9 @@
   <version>0.1.0</version>
   <description>
     Nav2 plugins for the Airseekers Tron: LegGoalChecker (coverage turn legs and pivot
-    corners) and the MPPI WheelFloorCritic and PathAlignAheadCritic. The MowgliNext FTC controller port was deleted
-    on 2026-10-23 (MPPI is the only tracker).
+    corners), the MPPI WheelFloorCritic and PathAlignAheadCritic, and FTCRowController
+    (2026-11-05: OpenMower's FTC law on straight coverage rows around an inner MPPI). The
+    MowgliNext FTC controller port was deleted on 2026-10-23.
   </description>
   <maintainer email="cedric@mowgli.dev">Cedric</maintainer>
   <license>GPL-3.0</license>
@@ -38,6 +39,7 @@
   <export>
     <build_type>ament_cmake</build_type>
     <nav2_core plugin="${prefix}/goal_checker_plugin.xml"/>
+    <nav2_core plugin="${prefix}/ftc_row_controller_plugin.xml"/>
     <nav2_mppi_controller plugin="${prefix}/mppi_critics_plugin.xml"/>
   </export>
 </package>

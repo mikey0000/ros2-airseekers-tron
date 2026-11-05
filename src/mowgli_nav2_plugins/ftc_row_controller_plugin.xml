@@ -1,0 +1,11 @@
+<library path="mowgli_ftc_row_controller">
+  <class
+    type="mowgli_nav2_plugins::FTCRowController"
+    base_class_type="nav2_core::Controller">
+    <description>
+      Straight coverage rows with OpenMower's FTC (follow the carrot) law, everything else
+      (bends, path ends, blocked rows) with an inner MPPIController configured under the same
+      name and parameters.
+    </description>
+  </class>
+</library>

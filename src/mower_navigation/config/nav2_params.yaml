@@ -380,8 +380,14 @@ controller_server:
     #     the drive's track lag and the ~0.1 s GNSS fix latency (the field weave, docs/analysis/
     #     2026-10-29_localisation_wander.md section 6). control_point_x 0 = PathAlignCritic;
     #     revert: "PathAlignCritic" in critics and rename the block.
+    #   * FTCRowController (mowgli_nav2_plugins, 2026-11-05 row weave study,
+    #     docs/analysis/2026-11-05_row_weave_ftc.md): straight rows are driven by OpenMower's
+    #     FTC carrot law (FTC block below); bends, fillets, swath turns, path ends and blocked
+    #     rows by an inner MPPIController that reads every MPPI parameter of this block. The
+    #     mission's live vx_max (cut speed) is the row speed. A/B (one line): plugin
+    #     "nav2_mppi_controller::MPPIController" = plain MPPI, the FTC block is then ignored.
     FollowCoveragePathMPPI:
-      plugin: "nav2_mppi_controller::MPPIController"
+      plugin: "mowgli_nav2_plugins::FTCRowController"
       motion_model: "DiffDrive"
       time_steps: 40
       model_dt: 0.05
@@ -474,6 +480,26 @@ controller_server:
         track_width: 0.40   # MCU wheel split (2026-10-20, was 0.48)
         min_wheel_speed: 0.06
         allow_pivots: true
+      # FTCRowController row law (ftc_row_law.hpp). w = kp_ang ang + kp_lat lat (+ ki / kd
+      # terms) on the carrot's pose in base_link; v = kp_lon lon. The carrot runs along the row
+      # at vx_max, so it leads base_link by vx_max / kp_lon (0.25 m at 0.3 m/s): the lead plus
+      # kp_ang give the row heading damping (row model, note section 2). kd 0: the 10 Hz map
+      # pose steps make difference terms noisy. Gate: rows straight to straight_tolerance;
+      # MPPI takes over handoff_distance before a bend / the path end, or beyond
+      # max_lateral_error / max_angle_error (entry needs half of each).
+      FTC:
+        kp_lon: 1.2
+        kp_lat: 2.5
+        ki_lat: 0.0
+        ki_lat_max: 0.1
+        kd_lat: 0.0
+        kp_ang: 1.2
+        kd_ang: 0.0
+        acceleration: 0.3
+        straight_tolerance: 0.01
+        handoff_distance: 0.4
+        max_lateral_error: 0.15
+        max_angle_error: 0.35
 
     # Reverse legs of reverse-then-curve swath turns under MPPI. The leg's poses face against the travel, so the
     # box is backwards-only (vx_max 0) and PathAngleCritic has no direction preference;
