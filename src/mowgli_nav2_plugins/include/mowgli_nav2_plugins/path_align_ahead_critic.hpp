@@ -25,11 +25,11 @@
 // CostCritic / collision checks, the trim's cross-track and the other critics keep the real
 // pose. latency_s 0 = no projection.
 //
-// Side slope (2026-11-06 slope world, note section 7): the longer lever (control_point_x 0.30
-// plus the projection) handed the robot to the slope-side pivots 0.2-0.4 m off their vertex,
-// and the pivots then drifted downhill out of the area; the slow trim also left the uphill
-// crab's downhill offset in place. While the fresh body tilt (roll and pitch: legs along the
-// fall line count too) is >= slope_tilt_deg the critic uses slope_control_point_x, no
+// Slope (2026-11-06 slope world, note section 7): on a side slope the uphill crab times the
+// longer lever (0.30 + the projection) is a standing downhill offset (+1.4 cm), which the
+// 20 s trim leaves in place, and the slope-side pivot hand-offs were worse than master's.
+// While the fresh body tilt (roll and pitch: legs along the fall line count too) is >=
+// slope_tilt_deg the critic uses the pre-11-06 values: slope_control_point_x, no
 // projection and slope_trim_tau_s (tuningAt). slope_tilt_deg 0 = off.
 //
 // Jazzy loads critics as "mppi::critics::" + <name in the critics list>; parameters are

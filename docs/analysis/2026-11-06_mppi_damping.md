@@ -17,8 +17,16 @@ critics and (2) compensating the in-loop pose latency?
 - **Cost:** one +111 deg fillet on `real_run5` runs 3-4 cm wider (e 0.091 -> 0.125, limit
   0.15). That matches the extra control-point offset on a bend. The owner_far corners do not
   show it.
-- **Recommendation: both.** Merge V2 as the plain-MPPI default, and keep FTC for the field
-  A/B, run against V2 as the new baseline (section 6).
+- **Slope world: V2 regresses, and the cause is not fully fixed (section 7).** V2 had a
+  hard-boundary trip, a fallback nav, 3 emergency ticks and 4x master's samples outside. The
+  slow trim explains only a 1.4 cm downhill row offset. The excursions come from the
+  slope-side pivots, which V2 starts 0.16 m off their vertex on average (master 0.08 m). The
+  branch now switches to the pre-11-06 values at a body tilt of 8 deg or more (V2d). That
+  clears b, d and f, and real_run5 keeps the weave gain and PASSES. a is still worse than
+  master (0.313 m / 975 samples against 0.21 / 349-426).
+- **Recommendation (revised): not merge-ready on the slope bar.** Section 7.5.
+- **Earlier recommendation, flat ground only:** merge V2 as the plain-MPPI default and keep
+  FTC for the field A/B, run against V2 as the new baseline (section 6).
 
 ## 1. Method
 
@@ -229,8 +237,7 @@ What the runs show:
 - **The latency value.** The sim's track lag is 0.08 m, the field's fit 0.04-0.05 m. 0.2 s is
   set for the field; the sim under-compensates.
 - **The trim on slopes.** A 20 s trim takes a side-slope offset out four times more slowly.
-  The roll feed-forward is unchanged. The slope world was not rerun (the run budget went to
-  V3 and owner_far).
+  The roll feed-forward is unchanged. The slope world was run afterwards (section 7).
 
 ## 5. owner_far, `-l -x 3 -s 1 -t 4800` (V2)
 
@@ -297,3 +304,163 @@ What a field mow on V2 can tell:
   is the lever.
 - If Kpsi does move, but r stays at the field's level, the residual is MPPI's sampling, and
   FTC (no sampling) is again the lever.
+
+## 7. Slope world (added 2026-11-06, after V2)
+
+`scripts/sim_gate.sh -d -s 2 -x 3 -w src/mower_sim/worlds/real_run5_slope.yaml` (10 deg slope
+over the Area 1 west edge band, downhill to -x). Runs are in `ros2_stack-wt/simout_damp1106/`
+(bags pruned). Every run held 20 Hz (median and p10), with "desired rate of 60" in
+launch.log and the `performance` profile.
+
+### 7.1 V2 against master
+
+`master-slope` is a6da6b7, which is 9cf3331 (this branch's base) plus a bag_recorder change.
+`mastereq-slope` is this branch with every value back at master's (`control_point_x` 0.25,
+`latency_s` 0, `trim_tau_s` 5, slope schedule off). That is code-equivalent to master and
+reproduces it (a 0.214 / 426, b-d-f clean), so master's slope result is not a lucky draw.
+
+V2 failed b, d and f, where master passes. All three come from one chain at the sub-path 4
+vertex (-5.25, 0.92):
+
+1. The pivot drifted downhill twice (spin-drift guard).
+2. The third pivot was aborted, and the back-up stalled ("wheels spinning").
+3. The stuck escape left the robot off the route graph, so transit went through the costmap
+   planner (d).
+4. That transit tripped the boundary (b), and the footprint recovery gave the 3 emergency
+   ticks (f).
+
+Master drifts twice at the same vertex and gets out. The other a excursions are the
+sub-path 0 pivots at the SW slope corner.
+
+### 7.2 What the data says about the cause
+
+| Measure (slope world) | master | master-eq | V2 | V2b | V2c | V2d |
+|---|---|---|---|---|---|---|
+| downhill row offset, mean / p90 (cm) | +0.7 / 6.8 | +0.7 / 6.2 | **+2.1** / 8.8 | +0.6 / 7.0 | +1.3 / 6.9 | +0.6 / 7.0 |
+| slope-side pivot hand-off: mean distance to vertex (m) | 0.085 | 0.079 | **0.158** | 0.171 | 0.135 | 0.151 |
+| ... hand-offs >= 0.20 m | 1 of 10 | 0 of 9 | 3 of 10 | 4 of 10 | 3 of 9 | 2 of 9 |
+| other pivots: mean distance (m) | 0.058 | 0.058 | 0.054 | 0.054 | 0.058 | 0.055 |
+
+The scripts are in the session scratchpad, `slope1106/`:
+
+- `downhill.py`: gt against the plan in MOWING, moving, |roll| > 7 deg. + = downhill.
+- `arrive.py`: gt distance to the vertex when each coverage pivot starts. Slope side means
+  vertex x < -4.6.
+
+**Not the trim time constant.**
+
+- With 20 s, the integral reaches the same 0.10 m cap as with 5 s after each slope pivot
+  (critic log). That is because the post-pivot errors are 0.13-0.27 m.
+- What the slow trim leaves is a steady downhill offset on the slope rows: +2.1 cm against
+  +0.7. That matches the uphill crab (about 9 deg) times the lever increase: 0.30 + 0.2 s x
+  0.15 m/s against 0.25, so 0.08 m x 0.16 rad = 1.3 cm.
+- V2b (5 s trim on the slope) removes the offset (+0.6 cm), but not the excursions:
+  a 0.423 m.
+
+**The slope-side pivot hand-offs.**
+
+- Every V2 variant hands the robot to the slope-side pivots about twice as far from the
+  vertex as master: 0.14-0.17 m mean, with 2-4 hand-offs of 0.20-0.47 m.
+- On flat ground the same pivots match master (0.054-0.058 m).
+- An off-vertex pivot on the slope drifts downhill 0.15-0.31 m (spin-drift guard). That is
+  where every a excursion and the V2 trip start.
+- Typical case, the leg into (-5.27, -0.31) after the drifted (-5.20, -0.82) pivot:
+  - master turns to 43-46 deg and stops on the vertex;
+  - V2, V2b and V2d keep turning right to 12-31 deg, cross the vertex and are declared
+    reached by the corner checker's "passed wide" rule 0.24-0.35 m east of it.
+
+**Not the lever on the slope legs either.**
+
+- V2c and V2d run the pre-11-06 values (0.25, no projection, 5 s) on the slope.
+- In V2d that leg ran entirely at tilt >= 9.9 deg, so with master's values, and it still
+  overshot.
+- What V2d still differs in is upstream: the flat-ground values before the slope, and the
+  state they leave (pose and heading at the slope entry, the MPPI warm start, the trim
+  integral).
+- The mechanism is not isolated. With one seed per variant, two master runs against four V2
+  variants is evidence of a systematic effect, not proof.
+
+### 7.3 Variants
+
+| | slope values (at the threshold) | threshold |
+|---|---|---|
+| V2b (8b1e0b9) | trim tau 5 s | fresh \|roll\| >= 8 deg |
+| V2c (37e2576) | control point 0.25, no projection, trim tau 5 s | fresh \|roll\| >= 8 deg |
+| **V2d (af5aeec)** | same as V2c | fresh body tilt (roll and pitch) >= 8 deg |
+
+- **Why V2d moved to the tilt.** In V2c, 3 of the 4 worst hand-offs came off legs along
+  the fall line (roll 0-6 deg, pitch 8-10 deg), which kept the flat values.
+- **Keys:** `slope_tilt_deg` 8.0, `slope_control_point_x` 0.25, `slope_trim_tau_s` 5.0 in
+  the coverage PathAlignAheadCritic block. The transit block has none (off).
+- **The threshold.** `slope_tilt_deg` is mission.yaml `slope_caution_roll_deg`
+  (`test_params_yaml` asserts equality), applied to the full tilt.
+- **A6.** There was nothing left to remove in this block (`use_path_orientations` already
+  paid for `latency_s`). The reason for the three keys: they hold the pre-11-06 values, so
+  slopes keep the behaviour the 2026-11-03 slope work was gated on.
+- **Tests:**
+  - `test_path_align_ahead_critic`: `SlopeUsesTheSlopeValues` and `TiltCountsRollAndPitch`;
+  - `test_path_trim`: `ExplicitTauWindsWithThatTau`;
+  - `test_params_yaml`.
+
+### 7.4 Gate results
+
+Slope world, `-d -s 2 -x 3`:
+
+| | master | master-eq | V2 | V2b | V2c | **V2d** |
+|---|---|---|---|---|---|---|
+| a max / > 0.10 m samples | 0.210 / 349 | 0.214 / 426 | 0.287 / 1462 | 0.423 / 1025 | 0.239 / 677 | **0.313 / 975** |
+| b hard-boundary trips | 0 | 0 | 1 | 0 | 0 | **0** |
+| d STUCK / NOT mowed / fallback | 0/0/0 | 0/0/0 | 0/0/1 | 0/0/0 | 0/0/0 | **0/0/0** |
+| f one-wheel / emergency | 0 | 0 | 3 | 0 | 0 | **0** |
+| e corners > 0.15 m (max) | 6 of 22 (0.678) | 7 of 22 (0.686) | 6 of 21 (0.686) | 7 of 22 (0.653) | 7 of 22 (0.670) | **6 of 21 (0.692)** |
+| h p99 line / arc | 0.419 / 0.633 | 0.420 / 0.641 | 0.569 / 0.673 | 0.400 / 0.613 | 0.434 / 0.627 | **0.412 / 0.652** |
+| i side / nose / sweep | 0.343 / 0.368 / 0.372 | 0.325 / 0.373 / 0.378 | 0.463 / 0.486 / 0.497 | 0.279 / 0.355 / 0.361 | 0.322 / 0.362 / 0.364 | **0.318 / 0.382 / 0.387** |
+| lawn cut | 96.6 % | 96.4 % | 95.8 % | 97.0 % | 96.9 % | **96.4 %** |
+
+`real_run5 -l -x 3 -s 1`. Weave columns are `weave.py`; Ky / Kpsi / r are `fit.py`.
+
+| | master | V2 | **V2d** |
+|---|---|---|---|
+| fitted Ky / Kpsi (R²) | 3.22 / 1.13 (0.85) | 2.79 / 1.36 (0.82) | **2.67 / 1.31 (0.79)** |
+| MPPI residual r (rad/s) | 0.0147 | 0.0093 | **0.0109** |
+| row XTE p50 / p90 / max (cm) | 1.05 / 2.79 / 5.47 | 0.90 / 2.38 / 6.25 | **0.78 / 2.84 / 5.18** |
+| detrended p50 / p90 (cm) | 0.66 / 1.82 | 0.51 / 1.38 | **0.48 / 1.22** |
+| lateral band rms 0.08-0.4 Hz (cm) | 0.84 | 0.60 | **0.55 (-35 %)** |
+| w band rms 0.1-0.3 Hz (rad/s) | 0.0305 | 0.0160 | **0.0179** |
+| e max (+111 deg fillet) | 0.091 | 0.125 | **0.107** |
+| h p99 line / arc | 0.085 / 0.050 | 0.083 / 0.055 | **0.075 / 0.049** |
+| i side / nose / sweep | 0.086 / 0.055 / 0.119 FAIL | 0.089 / 0.072 / 0.102 FAIL | **0.077 / 0.058 / 0.083** |
+| row speed | 0.206 | 0.203 | **0.204** |
+| verdict | FAIL (i) | FAIL (i) | **PASS** |
+
+- On a flat world the tilt is 0, so V2d is V2 there. The differences against V2 are
+  run-to-run spread. XTE p90 2.84 against 2.38 is one such: band rms and detrended p90 are
+  better.
+- owner_far was not rerun. V2d is not merge-ready on the slope bar (7.5), and on a flat world
+  it is V2, which PASSED owner_far (section 5).
+
+### 7.5 Verdict
+
+- **Bar:** not worse than master on b, a, d, f, h and i on the slope world.
+- **V2d meets it on b, d and f** (all 0, as master).
+- **On a, it does not:** 0.313 m / 975 samples against 0.210-0.214 / 349-426.
+- **On h and i, it is within master's own spread** (line 0.412, side 0.318), slightly over
+  on arc (0.652 against 0.633-0.641) and nose / sweep (0.382 / 0.387 against
+  0.368-0.378).
+- **Flat ground:** the weave gain holds (band -35 %, real_run5 PASS).
+- **Not merge-ready as a default** while the slope-side hand-offs stay worse than master's
+  with the V2 values off-slope.
+
+Options:
+
+1. **Find the upstream state.** One master-eq / V2d pair with per-cycle critic and pose
+   logging over sub-path 0 (t 150-200 s), to see where the two first diverge on the leg into
+   (-5.27, -0.31): pose at the slope entry, MPPI warm start, or the trim integral. That is
+   1-2 runs.
+2. **Merge V2d for lawns without a side slope.** The owner's map has the clothesline slope,
+   so this is the owner's call. A field mow on the slope area would show whether the sim's
+   hand-off effect is real.
+3. **Ship master's values and keep V2d's code off** (`latency_s` 0, `control_point_x` 0.25,
+   `trim_tau_s` 5, `slope_tilt_deg` 0). The slope schedule and the projection stay available
+   for the FTC A/B.
+
