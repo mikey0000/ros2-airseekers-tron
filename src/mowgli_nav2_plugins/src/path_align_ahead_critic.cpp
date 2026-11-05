@@ -15,14 +15,16 @@ void PathAlignAheadCritic::initialize()
   getParam(offset_from_furthest_, "offset_from_furthest", 20);
   getParam(params_.trajectory_point_step, "trajectory_point_step", 4);
   getParam(threshold_to_consider_, "threshold_to_consider", 0.5f);
-  getParam(params_.control_point_x, "control_point_x", 0.0f);
-  getParam(latency_s_, "latency_s", 0.0f);
+  getParam(flat_.control_point_x, "control_point_x", 0.0f);
+  getParam(flat_.latency_s, "latency_s", 0.0f);
   getParam(trim_.enabled, "trim_enabled", false);
   getParam(trim_.tau_s, "trim_tau_s", 5.0f);
-  getParam(trim_.slope_tau_s, "trim_slope_tau_s", 0.0f);
+  flat_.trim_tau_s = trim_.tau_s;
   float slope_roll_deg = 0.0f;
-  getParam(slope_roll_deg, "trim_slope_roll_deg", 0.0f);
-  trim_.slope_roll_rad = slope_roll_deg * static_cast<float>(M_PI / 180.0);
+  getParam(slope_roll_deg, "slope_roll_deg", 0.0f);
+  slope_.roll_rad = slope_roll_deg * static_cast<float>(M_PI / 180.0);
+  getParam(slope_.control_point_x, "slope_control_point_x", flat_.control_point_x);
+  getParam(slope_.trim_tau_s, "slope_trim_tau_s", trim_.tau_s);
   getParam(trim_.max_m, "trim_max_m", 0.10f);
   getParam(trim_.max_err_m, "trim_max_err_m", 0.30f);
   getParam(trim_.min_speed, "trim_min_speed", 0.05f);
@@ -33,7 +35,8 @@ void PathAlignAheadCritic::initialize()
   getParam(roll_topic, "roll_topic", std::string("/imu/data"));
   auto node = parent_.lock();
   clock_ = node->get_clock();
-  if (trim_.enabled && trim_.k_roll != 0.0f && !roll_topic.empty()) {
+  const bool want_roll = (trim_.enabled && trim_.k_roll != 0.0f) || slope_.roll_rad > 0.0f;
+  if (want_roll && !roll_topic.empty()) {
     imu_sub_ = node->create_subscription<sensor_msgs::msg::Imu>(
       roll_topic, rclcpp::SensorDataQoS(),
       [this](const sensor_msgs::msg::Imu::ConstSharedPtr msg) {
@@ -45,14 +48,15 @@ void PathAlignAheadCritic::initialize()
       });
   }
   RCLCPP_INFO(
-    logger_, "PathAlignAheadCritic: trim %s (tau %.1f s, %.1f s at |roll| >= %.1f deg, max %.2f m, "
-    "k_roll %.2f, roll %s)", trim_.enabled ? "on" : "off", trim_.tau_s, trim_.slope_tau_s,
-    slope_roll_deg, trim_.max_m, trim_.k_roll,
-    imu_sub_ ? roll_topic.c_str() : "unused");
+    logger_, "PathAlignAheadCritic: trim %s (tau %.1f s, max %.2f m, k_roll %.2f, roll %s); "
+    "side slope at |roll| >= %.1f deg: control point %.3f m, no latency projection, trim tau "
+    "%.1f s", trim_.enabled ? "on" : "off", trim_.tau_s, trim_.max_m, trim_.k_roll,
+    imu_sub_ ? roll_topic.c_str() : "unused", slope_roll_deg, slope_.control_point_x,
+    slope_.trim_tau_s);
   RCLCPP_INFO(
     logger_, "PathAlignAheadCritic: weight %.1f power %u, control point %.3f m ahead, "
     "step %d, offset_from_furthest %zu, latency compensation %.2f s", weight_, power_,
-    params_.control_point_x, params_.trajectory_point_step, offset_from_furthest_, latency_s_);
+    flat_.control_point_x, params_.trajectory_point_step, offset_from_furthest_, flat_.latency_s);
 }
 
 void PathAlignAheadCritic::score(CriticData & data)
@@ -80,19 +84,24 @@ void PathAlignAheadCritic::score(CriticData & data)
     }
   }
   namespace paa = mowgli_nav2_plugins::path_align_ahead;
+  const rclcpp::Time now = clock_->now();
+  const bool roll_fresh = imu_sub_ && now.seconds() - roll_t_.load() <= roll_timeout_s_;
+  const float roll = roll_.load();
+  const paa::Tuning tune = paa::tuningAt(flat_, slope_, roll, roll_fresh);
+  paa::Params params = params_;
+  params.control_point_x = tune.control_point_x;
   const auto & pose0 = data.state.pose.pose;
   const paa::Projection proj = paa::projection(
     static_cast<float>(pose0.position.x), static_cast<float>(pose0.position.y),
     static_cast<float>(tf2::getYaw(pose0.orientation)),
     static_cast<float>(data.state.speed.linear.x), static_cast<float>(data.state.speed.angular.z),
-    latency_s_);
+    tune.latency_s);
   const size_t n_path = paa::pathPointsUsed(
-    data.path.x, data.path.y, furthest, valid.size(), params_.control_point_x + proj.arc);
+    data.path.x, data.path.y, furthest, valid.size(), params.control_point_x + proj.arc);
   const xt::xtensor<float, 1> * px = &data.path.x;
   const xt::xtensor<float, 1> * py = &data.path.y;
   if (trim_.enabled) {
     namespace pt = mowgli_nav2_plugins::path_trim;
-    const rclcpp::Time now = clock_->now();
     float dt = have_last_ ? static_cast<float>((now - last_t_).seconds()) : 0.0f;
     if (dt > 1.0f || dt < 0.0f) {dt = 0.0f;}    // a pause / new leg: no wind-up over the gap
     dt = std::min(dt, 0.2f);
@@ -105,10 +114,7 @@ void PathAlignAheadCritic::score(CriticData & data)
     const float v = static_cast<float>(data.state.speed.linear.x);
     const size_t n_ct = std::min(data.path.x.shape(0), furthest + 10);
     const pt::CrossTrack ct = pt::crossTrack(data.path.x, data.path.y, n_ct, x, y);
-    const bool roll_fresh = imu_sub_ && now.seconds() - roll_t_.load() <= roll_timeout_s_;
-    const float roll = roll_.load();
-    const float tau = pt::integralTau(trim_, roll, roll_fresh);
-    pt::update(trim_state_, ct, v, dt, trim_, tau);
+    pt::update(trim_state_, ct, v, dt, trim_, tune.trim_tau_s);
     float fx = 0.0f, fy = 0.0f;
     if (roll_fresh) {
       pt::feedForward(roll, yaw, v, trim_, fx, fy);
@@ -123,11 +129,12 @@ void PathAlignAheadCritic::score(CriticData & data)
     }
     RCLCPP_INFO_THROTTLE(
       logger_, *clock_, 5000, "PathAlignAheadCritic trim: e %+.3f m, integral (%+.3f, %+.3f), "
-      "ff (%+.3f, %+.3f), tau %.0f s", ct.signed_m, trim_state_.ox, trim_state_.oy, fx, fy, tau);
+      "ff (%+.3f, %+.3f), tau %.0f s, control point %.2f m", ct.signed_m, trim_state_.ox,
+      trim_state_.oy, fx, fy, tune.trim_tau_s, tune.control_point_x);
   }
   paa::scoreBatch(
     data.trajectories.x, data.trajectories.y, data.trajectories.yaws, *px, *py, valid, n_path,
-    params_, cost_, proj);
+    params, cost_, proj);
   const size_t batch = std::min(cost_.size(), static_cast<size_t>(data.costs.shape(0)));
   for (size_t t = 0; t < batch; ++t) {
     const float c = cost_[t] * weight_;

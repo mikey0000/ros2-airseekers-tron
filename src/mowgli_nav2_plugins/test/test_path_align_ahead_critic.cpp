@@ -268,3 +268,35 @@ TEST(PathAlignAhead, LatencyProjectionAddsHeadingNotAlongTrackError)
   EXPECT_NEAR(c1b[1], c0[1], 0.003f);   // a lateral offset: unchanged
   EXPECT_GT(c1b[2], c0[2] + 0.005f);    // a heading error: + about 0.07 m x 0.1 rad
 }
+
+TEST(PathAlignAhead, SideSlopeUsesTheSlopeValues)
+{
+  paa::Tuning flat;
+  flat.control_point_x = 0.30f;
+  flat.latency_s = 0.2f;
+  flat.trim_tau_s = 20.0f;
+  paa::SlopeSchedule slope;
+  slope.control_point_x = 0.25f;
+  slope.trim_tau_s = 5.0f;
+  // schedule off (roll_rad 0): flat on every roll
+  auto t = paa::tuningAt(flat, slope, 0.2f, true);
+  EXPECT_EQ(t.control_point_x, 0.30f);
+  EXPECT_EQ(t.latency_s, 0.2f);
+  EXPECT_EQ(t.trim_tau_s, 20.0f);
+  slope.roll_rad = static_cast<float>(8.0 * M_PI / 180.0);
+  for (float roll : {0.0f, 0.10f, -0.10f}) {      // flat, +-5.7 deg
+    t = paa::tuningAt(flat, slope, roll, true);
+    EXPECT_EQ(t.control_point_x, 0.30f) << roll;
+    EXPECT_EQ(t.latency_s, 0.2f) << roll;
+    EXPECT_EQ(t.trim_tau_s, 20.0f) << roll;
+  }
+  for (float roll : {0.17f, -0.17f}) {            // +-9.7 deg, either side down
+    t = paa::tuningAt(flat, slope, roll, true);
+    EXPECT_EQ(t.control_point_x, 0.25f) << roll;
+    EXPECT_EQ(t.latency_s, 0.0f) << roll;         // no projection on a side slope
+    EXPECT_EQ(t.trim_tau_s, 5.0f) << roll;
+  }
+  t = paa::tuningAt(flat, slope, 0.17f, false);   // stale roll: flat
+  EXPECT_EQ(t.control_point_x, 0.30f);
+  EXPECT_EQ(t.latency_s, 0.2f);
+}

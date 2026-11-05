@@ -25,10 +25,17 @@
 // CostCritic / collision checks, the trim's cross-track and the other critics keep the real
 // pose. latency_s 0 = no projection.
 //
+// Side slope (2026-11-06 slope world, note section 7): the longer lever (control_point_x 0.30
+// plus the projection) handed the robot to the slope-side pivots 0.2-0.4 m off their vertex,
+// and the pivots then drifted downhill out of the area; the slow trim also left the uphill
+// crab's downhill offset in place. While a fresh |roll| >= slope_roll_deg the critic uses
+// slope_control_point_x, no projection and slope_trim_tau_s (tuningAt). slope_roll_deg 0 = off.
+//
 // Jazzy loads critics as "mppi::critics::" + <name in the critics list>; parameters are
 // <controller>.PathAlignAheadCritic.*: cost_weight (10.0), cost_power (1),
 // max_path_occupancy_ratio (0.07), offset_from_furthest (20), trajectory_point_step (4),
-// threshold_to_consider (0.5), control_point_x (0.0, m), latency_s (0.0, s). Nav2's
+// threshold_to_consider (0.5), control_point_x (0.0, m), latency_s (0.0, s), slope_roll_deg
+// (0 = off), slope_control_point_x (m), slope_trim_tau_s (s). Nav2's
 // use_path_orientations is not supported (always false; 2026-10-28 retune 6a1 showed the yaw
 // term trades into standing offsets). Revert: put "PathAlignCritic" back in the critics list
 // (same parameters, without control_point_x / latency_s).
@@ -63,6 +70,36 @@ struct Params
   int trajectory_point_step{4};
   float control_point_x{0.0f};
 };
+
+// The values that change on a side slope.
+struct Tuning
+{
+  float control_point_x{0.0f};
+  float latency_s{0.0f};
+  float trim_tau_s{5.0f};
+};
+
+// Side-slope schedule: at a fresh |roll| >= roll_rad the slope values apply (roll_rad 0 = off).
+struct SlopeSchedule
+{
+  float roll_rad{0.0f};
+  float control_point_x{0.0f};
+  float trim_tau_s{5.0f};
+};
+
+// The tuning at this roll (rad; roll_fresh false = no roll reading): flat unless on a side
+// slope, where the slope control point and trim tau apply and the latency projection is off.
+inline Tuning tuningAt(const Tuning & flat, const SlopeSchedule & slope, float roll, bool roll_fresh)
+{
+  if (slope.roll_rad <= 0.0f || !roll_fresh || std::fabs(roll) < slope.roll_rad) {
+    return flat;
+  }
+  Tuning t;
+  t.control_point_x = slope.control_point_x;
+  t.latency_s = 0.0f;
+  t.trim_tau_s = slope.trim_tau_s;
+  return t;
+}
 
 // Rigid move of a rollout from the real start pose to the projected one:
 // p' = (qx, qy) + R(dyaw) (p - (x0, y0)), yaw' = yaw + dyaw; arc = |v| x latency, the path
@@ -195,7 +232,8 @@ public:
 
 protected:
   mowgli_nav2_plugins::path_align_ahead::Params params_;
-  float latency_s_{0.0f};
+  mowgli_nav2_plugins::path_align_ahead::Tuning flat_;     // control_point_x, latency_s, trim_tau_s
+  mowgli_nav2_plugins::path_align_ahead::SlopeSchedule slope_;
   size_t offset_from_furthest_{0};
   float threshold_to_consider_{0};
   float max_path_occupancy_ratio_{0};
@@ -203,9 +241,9 @@ protected:
   float weight_{0};
   std::vector<float> cost_;
 
-  // path trim (path_trim.hpp): trim_enabled, trim_tau_s, trim_slope_tau_s,
-  // trim_slope_roll_deg, trim_max_m, trim_max_err_m, trim_min_speed, trim_leak_tau_s, k_roll,
-  // roll_topic (sensor_msgs/Imu, also the slope schedule's roll), roll_timeout_s
+  // path trim (path_trim.hpp): trim_enabled, trim_tau_s, trim_max_m, trim_max_err_m,
+  // trim_min_speed, trim_leak_tau_s, k_roll, roll_topic (sensor_msgs/Imu, also the slope
+  // schedule's roll), roll_timeout_s
   mowgli_nav2_plugins::path_trim::Params trim_;
   mowgli_nav2_plugins::path_trim::State trim_state_;
   rclcpp::Clock::SharedPtr clock_;

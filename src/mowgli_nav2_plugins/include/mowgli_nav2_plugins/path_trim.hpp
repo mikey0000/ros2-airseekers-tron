@@ -14,12 +14,8 @@
 //
 // The applied shift of each path point is the component of (o + ff) along that point's
 // path normal. Flat ground: roll 0, no persistent error -> o ~ 0, the critic is unchanged.
-//
-// Slope schedule (2026-11-06, docs/analysis/2026-11-06_mppi_damping.md section 7): a slow
-// tau_s keeps the integral out of the ~8 s weave band on flat ground, but on a side slope the
-// uphill crab times the control-point lever is a standing downhill offset that a slow
-// integral leaves in place. With slope_tau_s > 0 the integral winds with slope_tau_s while
-// a fresh |roll| >= slope_roll_rad, with tau_s otherwise (integralTau).
+// The caller may wind with another time constant than tau_s (PathAlignAheadCritic's side-slope
+// values, path_align_ahead_critic.hpp tuningAt).
 #ifndef MOWGLI_NAV2_PLUGINS__PATH_TRIM_HPP_
 #define MOWGLI_NAV2_PLUGINS__PATH_TRIM_HPP_
 
@@ -35,8 +31,6 @@ struct Params
 {
   bool enabled{false};
   float tau_s{5.0f};
-  float slope_tau_s{0.0f};      // 0 = tau_s on every roll
-  float slope_roll_rad{0.0f};
   float max_m{0.10f};
   float max_err_m{0.30f};
   float min_speed{0.05f};
@@ -90,13 +84,6 @@ CrossTrack crossTrack(const Arr & px, const Arr & py, size_t n, float x, float y
   return best;
 }
 
-// The integral's time constant at this roll (rad; roll_fresh false = no roll reading).
-inline float integralTau(const Params & p, float roll, bool roll_fresh)
-{
-  return p.slope_tau_s > 0.0f && roll_fresh && std::fabs(roll) >= p.slope_roll_rad ?
-         p.slope_tau_s : p.tau_s;
-}
-
 // One control cycle of the integral, winding with time constant tau_s.
 inline void update(
   State & s, const CrossTrack & ct, float v, float dt, const Params & p, float tau_s)
@@ -121,7 +108,7 @@ inline void update(
   }
 }
 
-// One control cycle of the integral at the flat-ground tau_s.
+// One control cycle of the integral with tau_s.
 inline void update(State & s, const CrossTrack & ct, float v, float dt, const Params & p)
 {
   update(s, ct, v, dt, p, p.tau_s);
