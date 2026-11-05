@@ -387,7 +387,11 @@ controller_server:
     #     mission's live vx_max (cut speed) is the row speed. A/B (one line): plugin
     #     "nav2_mppi_controller::MPPIController" = plain MPPI, the FTC block is then ignored.
     FollowCoveragePathMPPI:
-      plugin: "mowgli_nav2_plugins::FTCRowController"
+      # FTC row controller switch (docs/analysis/2026-11-05_row_weave_ftc.md), off until the
+      # field A/B: "nav2_mppi_controller::MPPIController" = plain MPPI (off, unchanged master
+      # behaviour), "mowgli_nav2_plugins::FTCRowController" = FTC law on straight rows (on).
+      # The FTC: block below is read only when on.
+      plugin: "nav2_mppi_controller::MPPIController"
       motion_model: "DiffDrive"
       time_steps: 40
       model_dt: 0.05

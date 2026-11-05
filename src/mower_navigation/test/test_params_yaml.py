@@ -842,10 +842,12 @@ def test_retry_clears_keep_det_and_bumper_marks(cm, frame):
 
 def test_coverage_rows_ftc():
     """2026-11-05 row weave study (docs/analysis/2026-11-05_row_weave_ftc.md): the coverage
-    controller is FTCRowController (FTC carrot law on straight rows, inner MPPI from the same
-    block elsewhere); transit and reverse legs stay plain MPPI."""
+    coverage controller can be FTCRowController (FTC carrot law on straight rows, inner MPPI
+    from the same block elsewhere); it ships off (plain MPPI) until the field A/B. Transit and
+    reverse legs stay plain MPPI."""
     c = _ctl("FollowCoveragePathMPPI")
-    assert c["plugin"] == "mowgli_nav2_plugins::FTCRowController"
+    assert c["plugin"] in ("nav2_mppi_controller::MPPIController",
+                           "mowgli_nav2_plugins::FTCRowController")
     assert _ctl("FollowPath")["plugin"] == "nav2_mppi_controller::MPPIController"
     assert _ctl("FollowCoveragePathReverseMPPI")["plugin"] == \
         "nav2_mppi_controller::MPPIController"

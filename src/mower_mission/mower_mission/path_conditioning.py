@@ -90,6 +90,8 @@ from mower_common import geometry as rgeo
 from . import geometry as geo
 
 LINE, ARC, PIVOT, REVERSE = 'line', 'arc', 'pivot', 'reverse'
+# a vertex pivot within this of 180 deg is a cusp: its overhang is the better way round's
+CUSP_WAY_RAD = math.radians(5.0)
 
 
 @dataclass
@@ -775,6 +777,12 @@ def condition(poses, region, params: Optional[Params] = None, ring=None, turn_si
                                     p.fillet_envelope_margin_m)
             else:
                 simple_ov = br.sweep(v_piv[0], v_piv[1], h_in, turn)
+                if abs(turn) >= math.pi - CUSP_WAY_RAD:
+                    # a cusp (a pocket spur's about-turn): both ways round are about as long,
+                    # and the mission pivots the way whose sweep stays inside best
+                    # (_pivot_way), so that way is the corner's overhang
+                    simple_ov = min(simple_ov, br.sweep(
+                        v_piv[0], v_piv[1], h_in, turn - math.copysign(2.0 * math.pi, turn)))
             c.body_m = simple_ov
             if c.limit_m is None:
                 c.limit_m = lim

@@ -1663,6 +1663,68 @@ lawn", the sim's owner_far Area 6) inside the third lap. Analysis, gap table and
 
 `mission.yaml` and the planner parameters are unchanged (A6).
 
+## Narrow features: lap-band spurs (2026-11-05, branch ws/narrow1105, unit + sim; not field tested)
+
+Follow-up to the corner pockets. Analysis, gap table and the opening-radius experiments:
+`analysis/2026-11-05_narrow_features.md`.
+
+**Cause.**
+- The inner laps are opened by `lap_corner_radius` 0.7. That removes every part of lap 1
+  narrower than 1.7 m and of lap 2 narrower than 2.0 m. The real_run5 SW lobe and live Area 5
+  keep lap 0 only there. Rows and fills stay 0.45 in, so the band 0.11-0.34 m in along those
+  sides is left uncut.
+- Live Area 4 is at most 0.70 m wide, not 1 m. Its 0.45 erosion is empty, so it has no rows
+  and no fills. The 1.2 m row minimum and the fill limits are not the cause.
+- The opening stays. With it at 0, Area 4 cuts 98 %, but new lap corners pivot up to 0.47 m
+  out. A lap-1 fillet keeps the body within 0.26 only from r 0.72.
+
+**Change.**
+- `mower_coverage` `fillGaps`, third tier, edge layout soft only: **lap-band spurs**.
+  - Each is an in-and-out spur entered from the row region (base_link at least 0.45 in).
+  - It runs in the inner laps' band, at least 0.15 in, along a lap line or at 12 deg to an
+    edge.
+  - Its end is pulled back until the about-turn there, the better way round, sweeps the body
+    no farther out than a row-end pivot does (0.194).
+  - No new parameters.
+- `path_conditioning`: a cusp's (within 5 deg of 180) overhang is measured the better way
+  round, the way the mission pivots it (`_pivot_way`). Before, float noise picked the way.
+
+**Tests.**
+- `EdgeLayoutSpurs.NarrowLobeBandsGetLapBandSpurs` fails on master.
+- `LapBandSpursNeedRoomToTurnAbout` guards the trim. The shared spur check now allows an end
+  in the band (at least 0.15 in) when its better-way about-turn stays within 0.194.
+- `test_spur_about_turn_overhang_is_the_way_round_that_stays_inside` fails on master.
+- `SoftLapsOneDirectionLap0SharpNoSliverFills` now allows 8 fill swaths: real_run5 gains a
+  lap-band spur, and each spur is two swaths.
+- Offline (master to branch, cut / blade-fit missed):
+  - live Area 5 (= owner_far Area 5): 63.4 % / 2.35 m2 to 74.6 % / 2.17 m2, +26 m of drive;
+  - real_run5: 96.5 % to 96.8 %;
+  - live closer backyard: 0.273 m2 to none;
+  - Clothesline: 91.2 % to 92.0 %;
+  - Area 4 unchanged at 41.8 %.
+
+  No corner the conditioner logs over the limit is new.
+
+**Sim gate (-l -x 3 -s 1)**, baselines `simout_corner1105` (plan-identical to master):
+- real_run5: every criterion passes. a 0.082, e 0.112, h 0.076 / 0.061, i 0.071 / 0.057 /
+  0.095. Ground truth 97.4 % (baseline 97.0 %), MOWING 793 s (777 s).
+- owner_far: every criterion passes. a 0.076, e 0.144, i 0.088 / 0.050 / 0.075. Ground truth
+  99.3 % (99.2 %), MOWING 3261 s (3238 s). b 0, no STUCK in either run.
+- Neither world mows Area 5. A world with owner_far Area 5 alone, started inside it (no route
+  from the dock, so (c) fails by construction), cuts 73.0 % (master offline 63 %). It fails
+  (i) side 0.157 over plan on a 1.3 m lap-band spur leg, the short-leg tracking already seen
+  on pocket spurs, and (h) line p99 0.102. It has no master baseline.
+
+**Not fixed.**
+- **Area 4.** No point in it is 0.45 from the line. Inner-lap rings with K-turn ends would
+  need conditioner work, or the owner can accept lap 0 there, or redraw the strip.
+- **Lobe ends.** The band across the end of a lobe has nowhere to turn about.
+- **Area 5's north-west pocket.** Its obstacle sits within 0.40 of the line, so the
+  keep-out region excludes the pocket by design.
+- **Drive cost.** Long straight strips take many short spurs. A dog-leg spur would cost less.
+
+`mission.yaml` and the planner parameters are unchanged (A6).
+
 ## Row weave: heading check and FTC row controller (2026-11-05, branch ws/ftc1105, unit + sim; not field tested)
 
 Details: `analysis/2026-11-05_row_weave_ftc.md`.
@@ -1682,8 +1744,10 @@ Details: `analysis/2026-11-05_row_weave_ftc.md`.
 
 No localisation change.
 
-**Phase 2: `mowgli_nav2_plugins::FTCRowController`** is now the plugin of the
-`FollowCoveragePathMPPI` controller id.
+**Phase 2: `mowgli_nav2_plugins::FTCRowController`** can be the plugin of the
+`FollowCoveragePathMPPI` controller id. It is merged OFF (plain MPPI; 2026-11-06): to turn it on
+for the field A/B, set that block's `plugin:` to `"mowgli_nav2_plugins::FTCRowController"` in
+`src/mower_navigation/config/nav2_params.yaml`.
 - **Row law:** OpenMower's FTC carrot law (ported from open_mower_ros `ftc_local_planner`,
   GPLv3, `ftc_row_law.hpp`), with Tron gains: kp_lat 2.5, kp_ang 1.2, kp_lon 1.2.
 - **Where it drives:** only on straight rows, close to the line and with the footprint clear.
