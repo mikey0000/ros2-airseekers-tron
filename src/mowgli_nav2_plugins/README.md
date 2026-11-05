@@ -13,11 +13,17 @@ Nav2 plugins for the Airseekers Tron:
   `FollowCoveragePathMPPI` at 0.25 m. Header comment and
   `docs/analysis/2026-10-29_localisation_wander.md` section 6. Test:
   `test_path_align_ahead_critic`.
+* `mowgli_nav2_plugins::FTCRowController` (2026-11-05, `ftc_row_controller_plugin.xml`): the
+  `FollowCoveragePathMPPI` plugin. Straight rows are driven by OpenMower's FTC carrot law
+  (`ftc_row_law.hpp`, ported from open_mower_ros `ftc_local_planner`, GPLv3), everything else
+  by an inner MPPIController configured under the same name. Revert: that block's `plugin:`
+  back to `nav2_mppi_controller::MPPIController`. Header comment and
+  `docs/analysis/2026-11-05_row_weave_ftc.md`. Test: `test_ftc_row_law`.
 
 The package started as the Jazzy port of MowgliNext's `FTCController` and
 `PathProgressGoalChecker` (`third_party/mowglinext/mowgli_nav2_plugins`). Both, with the
 obstacle deviation and oscillation detector they used, were deleted in the 2026-10-23
-cleanup (`docs/analysis/2026-10-23_code_review.md`, stage 0.1): MPPI is the only tracker.
+cleanup (`docs/analysis/2026-10-23_code_review.md`, stage 0.1).
 The 2026-10-06 FTC ring-drift analysis is in git history (README before that commit).
 
 ## MPPI critic: WheelFloorCritic (2026-10-15)
