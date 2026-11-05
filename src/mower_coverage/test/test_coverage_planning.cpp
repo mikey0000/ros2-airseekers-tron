@@ -1462,7 +1462,8 @@ TEST(EdgeLayout, SoftLapsOneDirectionLap0SharpNoSliverFills) {
     EXPECT_GE(std::hypot(s.second.first - s.first.first, s.second.second - s.first.second),
               0.30 - 1e-6);
   }
-  EXPECT_LE(plan.fill_swaths, 6u);
+  // fill passes plus spurs (in and out legs; 2026-11-05: the SW lobe's lap-band spur)
+  EXPECT_LE(plan.fill_swaths, 8u);
   EXPECT_GT(plan.coverage_fraction, 0.94);   // round 4: rows < 1.2 m dropped (-0.5 %)
 }
 
@@ -2343,29 +2344,44 @@ CoveragePlan planSoft(const std::vector<Point2D>& area, double angle_deg) {
       0.15, mower_coverage::PathMode::kZigzag, true, route);
 }
 
-// Every spur: its end (the pivot about) at least the row-end inset inside the line, the body
-// at the end of the in leg and through the whole about-turn (either way round, 5 deg steps)
-// at most the soft planning limit (0.26, path_conditioning_body_limit_soft_m) out; the side
-// limit 0.35 of the mission's soft body boundary then holds too.
+// Every spur: its mouth at least the row-end inset (0.45) inside the line and the whole spur at
+// least the first inner lap offset (0.15) in (a pocket spur stays in the row region, a lap-band
+// spur runs along the inner laps' band); the body along the in leg at most the soft planning
+// limit (0.26, path_conditioning_body_limit_soft_m) out, and through the about-turn at the end
+// (5 deg steps), the better way round (the mission pivots that way, _pivot_way), no farther out
+// than a pivot at a row end sweeps it: hypot(0.60, 0.235) - 0.45 = 0.194.
 void expectSpursKeepTheBodyIn(const CoveragePlan& plan, const std::vector<Point2D>& area,
                               const std::string& what) {
   for (const Spur& sp : spursOf(plan)) {
     EXPECT_TRUE(pointInPolygon(sp.end, area)) << what;
-    EXPECT_GE(distToOutline(sp.end, area), 0.45 - 0.01) << what;
+    EXPECT_GE(distToOutline(sp.end, area), 0.15 - 0.01) << what;
     EXPECT_GE(distToOutline(sp.mouth, area), 0.45 - 0.01) << what;
     const double yaw = std::atan2(sp.end.second - sp.mouth.second, sp.end.first - sp.mouth.first);
-    double worst = 0.0;
-    for (int k = -36; k <= 36; ++k) {
-      worst = std::max(worst, bodyOutside(sp.end, yaw + k * 5.0 * M_PI / 180.0, area));
+    double way[2] = {0.0, 0.0};
+    for (int k = 0; k <= 36; ++k) {
+      for (int w = 0; w < 2; ++w) {
+        way[w] = std::max(way[w], bodyOutside(sp.end, yaw + (w ? -1 : 1) * k * 5.0 * M_PI / 180.0,
+                                              area));
+      }
     }
-    EXPECT_LE(worst, 0.26) << what << ": spur end (" << sp.end.first << ", " << sp.end.second
-                           << ") about-turn sweeps the body " << worst << " m out";
+    const double worst = std::min(way[0], way[1]);
+    EXPECT_LE(worst, std::hypot(kBodyFront, kBodyHalf) - 0.45 + 1e-3)
+        << what << ": spur end (" << sp.end.first << ", " << sp.end.second
+        << ") about-turn sweeps the body " << worst << " m out";
     for (double t = 0.0; t <= 1.0; t += 0.05) {
       const Point2D q{sp.mouth.first + t * (sp.end.first - sp.mouth.first),
                       sp.mouth.second + t * (sp.end.second - sp.mouth.second)};
+      EXPECT_GE(distToOutline(q, area), 0.15 - 0.01) << what;
       EXPECT_LE(bodyOutside(q, yaw, area), 0.26) << what;
     }
   }
+}
+
+// spurs whose end lies in the inner laps' band (closer to the line than the row region)
+size_t lapBandSpurs(const CoveragePlan& plan, const std::vector<Point2D>& area) {
+  size_t n = 0;
+  for (const Spur& sp : spursOf(plan)) n += distToOutline(sp.end, area) < 0.45 - 0.01 ? 1 : 0;
+  return n;
 }
 
 // owner_far Area 6 (mower_sim/worlds/owner_far_areas.dat area_5) and heart (area_2), the
@@ -2417,3 +2433,32 @@ TEST(EdgeLayoutSpurs, OwnerFarPocketsShrink) {
   EXPECT_LT(maxBladeFitGap(heart, 0.09), 0.03);
   expectSpursKeepTheBodyIn(heart, kOwnerFarHeart, "owner_far heart");
 }
+
+// Narrow features (2026-11-05): the inner laps are opened by lap_corner_radius 0.7, so a feature
+// narrower than about 2 x (offset + 0.7) has lap 0 only, and its rows (>= 1.2 m, 0.45 in) do not
+// reach the band 0.11-0.34 m in along its sides. Lap-band spurs run along that band from the
+// row region (the 0.15 / 0.30 lap lines, or into it at 12 deg to an edge), and turn about where
+// the body sweeps no farther past the line than at a row end.
+// A 0.9 m lobe off a 6 m square, rows across it (90 deg). Master (37589d9): no lap-band spur,
+// plan gaps 2.32 m2, largest blade-fit 2.13 m2 (the lobe's bands); branch 0.78 / 0.31 (the
+// lobe's end band, which no spur reaches: turning about there sweeps the body out).
+TEST(EdgeLayoutSpurs, NarrowLobeBandsGetLapBandSpurs) {
+  const std::vector<Point2D> area = {{0, 0}, {6, 0}, {6, 2.55}, {9, 2.55},
+                                     {9, 3.45}, {6, 3.45}, {6, 6}, {0, 6}};
+  const CoveragePlan plan = planSoft(area, 90.0);
+  EXPECT_GE(lapBandSpurs(plan, area), 2u);
+  EXPECT_LT(plan.gap_area_m2, 1.0);
+  EXPECT_LT(maxBladeFitGap(plan, 0.09), 0.5);
+  expectSpursKeepTheBodyIn(plan, area, "0.9 m lobe");
+}
+
+// A lobe too narrow to turn about in (0.5 m: from a lap line 0.15 in, the far side is 0.35
+// away, under the 0.384 the front corners' 0.644 sweep needs within 0.26): no spur ends there.
+TEST(EdgeLayoutSpurs, LapBandSpursNeedRoomToTurnAbout) {
+  const std::vector<Point2D> area = {{0, 0}, {6, 0}, {6, 2.75}, {9, 2.75},
+                                     {9, 3.25}, {6, 3.25}, {6, 6}, {0, 6}};
+  const CoveragePlan plan = planSoft(area, 90.0);
+  for (const Spur& sp : spursOf(plan)) EXPECT_LT(sp.end.first, 6.0 + 0.2);
+  expectSpursKeepTheBodyIn(plan, area, "0.5 m lobe");
+}
+

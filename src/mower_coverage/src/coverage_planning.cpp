@@ -1089,6 +1089,18 @@ constexpr double kLayoutMinFillEfficiency = 0.35;
 constexpr double kLayoutSpurMinLenM = 0.5;
 constexpr double kLayoutSpurMinPocketM2 = 0.03;
 constexpr double kSpurTurnBackM = 0.02;  // out leg starts this far back from the spur end
+// Lap-band spurs (2026-11-05, narrow features whose inner laps the lap_corner_radius opening
+// drops): where no spur fits the row region, a spur may run in the inner laps' band (base_link
+// at least the first inner lap offset in), entered from the row region, its end pulled back in
+// kLapSpurTrimStepM steps until the about-turn there sweeps the body no farther past the line
+// than a pivot at a row end does. Candidates: the inner lap lines along each edge of the line
+// next to the gap (edges of kLapSpurMinEdgeM or more), and lines over the gap at the row angle,
+// its normal, the gap's long axis and kLapSpurEntryRad to those edges (into the band from the
+// row region at a shallow angle).
+constexpr double kLapSpurTrimStepM = 0.05;
+constexpr int kAboutTurnSteps = 36;  // 5 deg samples of the about-turn sweep
+constexpr double kLapSpurMinEdgeM = 0.3;
+constexpr double kLapSpurEntryRad = 0.21;  // 12 deg
 constexpr int kBufQuadSegs = 8;
 // Rectangles of neighbouring swaths share an edge exactly; widen each side by
 // this so float noise does not leave zero-area slivers between them.
@@ -1345,6 +1357,104 @@ std::vector<Seg> clipLine(const Point2D& a, const Point2D& b, const OGRGeometry*
   return out;
 }
 
+// Lap-band spur geometry (see kLapSpurTrimStepM): `region` is where the spur's centreline may
+// run, `mouth` the row region it is entered from, `line` the recorded outer line (closed loop),
+// the body outline about base_link, and `limit` how far past the line the about-turn may sweep
+// it.
+struct LapSpur {
+  GeomPtr region;
+  const OGRGeometry* mouth = nullptr;
+  std::vector<Point2D> line;
+  std::vector<double> offsets;  // the inner laps' offsets (inside the row region's)
+  double front = 0.0;
+  double rear = 0.0;
+  double half_width = 0.0;
+  double limit = 0.0;
+};
+
+// How far p lies outside the closed loop (0 inside).
+double outsideLoop(const Point2D& p, const std::vector<Point2D>& loop) {
+  if (pointInLoop(p, loop)) return 0.0;
+  double best = std::numeric_limits<double>::max();
+  for (size_t i = 0; i + 1 < loop.size(); ++i) {
+    const Point2D& a = loop[i];
+    const Point2D& b = loop[i + 1];
+    const double dx = b.first - a.first, dy = b.second - a.second;
+    const double l2 = dx * dx + dy * dy;
+    double t = l2 > 0.0 ? ((p.first - a.first) * dx + (p.second - a.second) * dy) / l2 : 0.0;
+    t = std::max(0.0, std::min(1.0, t));
+    best = std::min(best, dist(p, {a.first + t * dx, a.second + t * dy}));
+  }
+  return best;
+}
+
+// A 180 deg pivot at p (heading yaw) one way or the other keeps the body outline (its corners
+// and edge midpoints, as the mission's conditioner samples it) within ls.limit of the line.
+// The mission pivots a cusp the way whose sweep stays inside best (_pivot_way).
+bool aboutTurnClear(const Point2D& p, double yaw, const LapSpur& ls) {
+  const double mid = 0.5 * (ls.front - ls.rear);
+  const Point2D outline[8] = {{ls.front, ls.half_width}, {ls.front, -ls.half_width},
+                              {-ls.rear, ls.half_width}, {-ls.rear, -ls.half_width},
+                              {ls.front, 0.0},           {-ls.rear, 0.0},
+                              {mid, ls.half_width},      {mid, -ls.half_width}};
+  for (const double dir : {1.0, -1.0}) {
+    bool ok = true;
+    for (int k = 0; k <= kAboutTurnSteps && ok; ++k) {
+      const double a = yaw + dir * M_PI * k / kAboutTurnSteps;
+      const double c = std::cos(a), sn = std::sin(a);
+      for (const Point2D& b : outline) {
+        const Point2D q{p.first + c * b.first - sn * b.second,
+                        p.second + sn * b.first + c * b.second};
+        if (outsideLoop(q, ls.line) > ls.limit + 1e-6) {
+          ok = false;
+          break;
+        }
+      }
+    }
+    if (ok) return true;
+  }
+  return false;
+}
+
+// Lap-band spur candidates on a line piece of ls.region: from each end outside the row region
+// back along the piece to the nearest row-region point, or min_len back when that is nearer and
+// still in the row region (the mouth); oriented mouth -> end, the end pulled back until its
+// about-turn is clear, kept when at least min_len long.
+std::vector<Seg> lapSpurPieces(const LapSpur& ls, const Seg& piece, double min_len) {
+  std::vector<Seg> out;
+  const std::vector<Seg> in = clipLine(piece.first, piece.second, ls.mouth);
+  const double plen = dist(piece.first, piece.second);
+  if (plen < min_len) return out;
+  for (const bool from_first : {true, false}) {
+    const Point2D& end = from_first ? piece.first : piece.second;
+    const Point2D& other = from_first ? piece.second : piece.first;
+    auto at = [&](double d) {  // the point d along the piece from `end`
+      return Point2D{end.first + d / plen * (other.first - end.first),
+                     end.second + d / plen * (other.second - end.second)};
+    };
+    // distance from `end` to the nearest row-region point; none when `end` is in it
+    double best = std::numeric_limits<double>::max();
+    for (const Seg& s : in) {
+      best = std::min({best, dist(s.first, end), dist(s.second, end)});
+    }
+    if (in.empty() || best < 1e-3) continue;
+    const double d = std::max(best, min_len);
+    const Point2D mouth = at(d);
+    OGRPoint mp(mouth.first, mouth.second);
+    if (d > plen || mp.Distance(ls.mouth) > 1e-3) continue;
+    const double yaw = std::atan2(end.second - mouth.second, end.first - mouth.first);
+    for (double t = d; t >= min_len; t -= kLapSpurTrimStepM) {
+      const Point2D e{mouth.first + t / d * (end.first - mouth.first),
+                      mouth.second + t / d * (end.second - mouth.second)};
+      if (aboutTurnClear(e, yaw, ls)) {
+        out.push_back({mouth, e});
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 // Best single fill pass for the uncovered polygon `gap`: candidate centerlines
 // along the gap's long axis (and the swath axis / its normal), at lateral
 // offsets that keep the footprint over the gap, clipped to `centre_region`
@@ -1410,13 +1520,88 @@ double openedArea(const OGRGeometry* g, double r) {
   return geomArea(out.get());
 }
 
+// Best lap-band spur for the uncovered polygon `gap` (candidates: see kLapSpurTrimStepM),
+// through lapSpurPieces: the one with the most new area among those at least min_len long that
+// cover at least min_efficiency of their strip. Returned mouth -> end.
+bool bestLapSpur(const OGRGeometry* gap, double hw, double swath_angle, const LapSpur& ls,
+                 double min_len, double min_efficiency, Seg* best_seg, double* best_gain) {
+  *best_gain = 0.0;
+  const double o_max = *std::max_element(ls.offsets.begin(), ls.offsets.end());
+  OGREnvelope env;
+  gap->getEnvelope(&env);
+  const double reach = std::hypot(env.MaxX - env.MinX, env.MaxY - env.MinY) + 2.0;
+  auto tryLine = [&](const Point2D& p, const Point2D& q) {
+    for (const Seg& piece : clipLine(p, q, ls.region.get())) {
+      for (const Seg& sp : lapSpurPieces(ls, piece, min_len)) {
+        const double len = dist(sp.first, sp.second);
+        GeomPtr rect(segRect(sp.first, sp.second, hw));
+        GeomPtr hit(rect->Intersection(gap));
+        const double gain = geomArea(hit.get());
+        if (gain < min_efficiency * len * 2.0 * hw || gain <= *best_gain) continue;
+        *best_gain = gain;
+        *best_seg = sp;
+      }
+    }
+  };
+  // along the line: parallel to each edge near the gap, at the inner lap offsets
+  std::vector<double> angles{swath_angle, swath_angle + M_PI / 2.0};
+  for (size_t i = 0; i + 1 < ls.line.size(); ++i) {
+    const Point2D& a = ls.line[i];
+    const Point2D& b = ls.line[i + 1];
+    const double el = dist(a, b);
+    if (el < kLapSpurMinEdgeM) continue;
+    OGRLineString edge;
+    edge.addPoint(a.first, a.second);
+    edge.addPoint(b.first, b.second);
+    if (edge.Distance(gap) > o_max + 2.0 * hw) continue;
+    const double ux = (b.first - a.first) / el, uy = (b.second - a.second) / el;
+    // ... and into the band from the row region at a shallow angle to the edge
+    for (const double d : {-kLapSpurEntryRad, kLapSpurEntryRad}) {
+      angles.push_back(std::atan2(uy, ux) + d);
+    }
+    for (const double o : ls.offsets) {
+      for (const double side : {1.0, -1.0}) {
+        const double nx = -uy * side * o, ny = ux * side * o;
+        tryLine({a.first + nx - ux * reach, a.second + ny - uy * reach},
+                {b.first + nx + ux * reach, b.second + ny + uy * reach});
+      }
+    }
+  }
+  // across the gap: its long axis, the rows and their normal, the shallow entries, every
+  // half swath over the gap
+  for (const OGRPolygon* p : polygonsOf(gap)) {
+    angles.push_back(longAxisAngle(p));
+    break;
+  }
+  for (const double th : angles) {
+    const double c = std::cos(th), sn = std::sin(th);
+    double t0 = 1e18, t1 = -1e18, n0 = 1e18, n1 = -1e18;
+    for (const OGRPolygon* p : polygonsOf(gap)) {
+      const OGRLinearRing* r = p->getExteriorRing();
+      for (int k = 0; r && k < r->getNumPoints(); ++k) {
+        const double t = r->getX(k) * c + r->getY(k) * sn;
+        const double n = -r->getX(k) * sn + r->getY(k) * c;
+        t0 = std::min(t0, t); t1 = std::max(t1, t); n0 = std::min(n0, n); n1 = std::max(n1, n);
+      }
+    }
+    if (t0 > t1) continue;
+    t0 -= reach;
+    t1 += reach;
+    for (double n = n0 + 0.5 * hw; n < n1; n += hw) {
+      tryLine({t0 * c - n * sn, t0 * sn + n * c}, {t1 * c - n * sn, t1 * sn + n * c});
+    }
+  }
+  return *best_gain > 0.0;
+}
+
 struct FillPass {
   Seg seg;
   bool spur = false;  // in-and-out: seg runs mouth -> end, driven in and back out
 };
 
 void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
-              CoveragePlan* plan, const OGRGeometry* centre = nullptr) {
+              CoveragePlan* plan, const OGRGeometry* centre = nullptr,
+              const LapSpur* lap_spur = nullptr) {
   const double hw = op_width / 2.0;
   // centre: where a fill pass's centreline may run (edge layout: the row region, so a fill
   // pass obeys the row-end inset); default the target shrunk by half a swath.
@@ -1428,6 +1613,7 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
   const bool layout = centre != nullptr;
   GeomPtr line(target->Boundary());
   size_t spurs = 0;
+  size_t lap_spurs = 0;
   for (int it = 0; it < kFillIterations && plan->gap_count > 0; ++it) {
     std::vector<FillPass> fills;
     for (const OGRPolygon* gp : polygonsOf(unc.get())) {
@@ -1454,6 +1640,15 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
           if (a.Distance(line.get()) < b.Distance(line.get())) std::swap(seg.first, seg.second);
           fp.seg = seg;
           fp.spur = true;
+        } else if (lap_spur != nullptr && openedArea(rest.get(), hw) >= kLayoutSpurMinPocketM2 &&
+                   bestLapSpur(rest.get(), hw, plan->swath_angle_rad, *lap_spur,
+                               kLayoutSpurMinLenM, kLayoutMinFillEfficiency, &seg, &gain) &&
+                   gain >= 0.1 * min_gap) {
+          // the inner laps' band of a narrow feature (the laps dropped there, out of the row
+          // region): a spur into it from the row region, already mouth -> end
+          fp.seg = seg;
+          fp.spur = true;
+          ++lap_spurs;
         } else {
           break;
         }
@@ -1542,10 +1737,11 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
     }
   }
   if (plan->fill_swaths > 0) {
-    char buf[160];
+    char buf[192];
     std::snprintf(buf, sizeof(buf),
-                  "gap fill: %zu pass(es) (%zu pocket spur(s)), coverage %.4f -> %.4f",
-                  plan->fill_swaths, spurs, plan->coverage_fraction_before_fill,
+                  "gap fill: %zu pass(es) (%zu pocket spur(s), %zu along a lap band), "
+                  "coverage %.4f -> %.4f",
+                  plan->fill_swaths, spurs, lap_spurs, plan->coverage_fraction_before_fill,
                   plan->coverage_fraction);
     plan->drops.push_back(buf);
   }
@@ -1578,11 +1774,38 @@ void verifyAndFill(const f2c::types::Cell& field, double op_width, double border
   try {
     GeomPtr target = buildTarget(field, inset, hole);
     GeomPtr centre;
+    std::unique_ptr<LapSpur> lap_spur;
     if (route.edge_layout) {
-      centre = buildTarget(field, route.row_end_inset,
-                           std::max(0.0, route.hole_inset) + route.row_end_inset);
+      const double hole_keep = std::max(0.0, route.hole_inset) + route.row_end_inset;
+      centre = buildTarget(field, route.row_end_inset, hole_keep);
+      // lap-band spurs: base_link at least the first inner lap offset in (obstacles kept as
+      // far as from the rows); only where the body may pass the line (soft: a row-end pivot
+      // sweeps it hypot(front, half width) - row_end_inset = 0.19 past)
+      double first_lap = route.row_end_inset;
+      for (const double o : route.lap_offsets) {
+        if (o > 1e-9) first_lap = std::min(first_lap, o);
+      }
+      const double limit = std::hypot(route.body_front, route.body_half_width) -
+                           route.row_end_inset;
+      if (first_lap < route.row_end_inset && limit > 0.0) {
+        lap_spur = std::make_unique<LapSpur>();
+        lap_spur->region = buildTarget(field, first_lap, hole_keep);
+        lap_spur->mouth = centre.get();
+        lap_spur->line = ringToLoop(field.getGeometry(0));
+        if (!lap_spur->line.empty() &&
+            dist(lap_spur->line.front(), lap_spur->line.back()) > 0.0) {
+          lap_spur->line.push_back(lap_spur->line.front());
+        }
+        for (const double o : route.lap_offsets) {
+          if (o > 1e-9 && o < route.row_end_inset) lap_spur->offsets.push_back(o);
+        }
+        lap_spur->front = route.body_front;
+        lap_spur->rear = route.body_rear;
+        lap_spur->half_width = route.body_half_width;
+        lap_spur->limit = limit;
+      }
     }
-    fillGaps(target.get(), op_width, route.min_gap_area_m2, plan, centre.get());
+    fillGaps(target.get(), op_width, route.min_gap_area_m2, plan, centre.get(), lap_spur.get());
   } catch (const std::exception&) {
     plan->drops.push_back("gap fill failed");
   }
