@@ -652,7 +652,7 @@ def test_mppi_coverage_controllers():
     assert 0.0 < pa["slope_trim_tau_s"] <= 5.0
     with open(MISSION) as f:
         mp = yaml.safe_load(f)["behavior_tree_node"]["ros__parameters"]
-    assert pa["slope_roll_deg"] == mp["slope_caution_roll_deg"]
+    assert pa["slope_tilt_deg"] == mp["slope_caution_roll_deg"]
     assert 0.0 <= pa.get("latency_s", 0.0) <= 0.5
     r = _ctl("FollowCoveragePathReverseMPPI")
     assert r["vx_max"] == 0.0 and -0.15 <= r["vx_min"] < 0.0      # backwards only, slow

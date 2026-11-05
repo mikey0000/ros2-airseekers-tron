@@ -20,9 +20,9 @@ void PathAlignAheadCritic::initialize()
   getParam(trim_.enabled, "trim_enabled", false);
   getParam(trim_.tau_s, "trim_tau_s", 5.0f);
   flat_.trim_tau_s = trim_.tau_s;
-  float slope_roll_deg = 0.0f;
-  getParam(slope_roll_deg, "slope_roll_deg", 0.0f);
-  slope_.roll_rad = slope_roll_deg * static_cast<float>(M_PI / 180.0);
+  float slope_tilt_deg = 0.0f;
+  getParam(slope_tilt_deg, "slope_tilt_deg", 0.0f);
+  slope_.tilt_rad = slope_tilt_deg * static_cast<float>(M_PI / 180.0);
   getParam(slope_.control_point_x, "slope_control_point_x", flat_.control_point_x);
   getParam(slope_.trim_tau_s, "slope_trim_tau_s", trim_.tau_s);
   getParam(trim_.max_m, "trim_max_m", 0.10f);
@@ -35,7 +35,7 @@ void PathAlignAheadCritic::initialize()
   getParam(roll_topic, "roll_topic", std::string("/imu/data"));
   auto node = parent_.lock();
   clock_ = node->get_clock();
-  const bool want_roll = (trim_.enabled && trim_.k_roll != 0.0f) || slope_.roll_rad > 0.0f;
+  const bool want_roll = (trim_.enabled && trim_.k_roll != 0.0f) || slope_.tilt_rad > 0.0f;
   if (want_roll && !roll_topic.empty()) {
     imu_sub_ = node->create_subscription<sensor_msgs::msg::Imu>(
       roll_topic, rclcpp::SensorDataQoS(),
@@ -44,14 +44,15 @@ void PathAlignAheadCritic::initialize()
         const double r = std::atan2(2.0 * (q.w * q.x + q.y * q.z),
         1.0 - 2.0 * (q.x * q.x + q.y * q.y));
         roll_.store(static_cast<float>(r));
+        tilt_.store(mowgli_nav2_plugins::path_align_ahead::tiltAngle(q.x, q.y));
         roll_t_.store(clock_->now().seconds());
       });
   }
   RCLCPP_INFO(
     logger_, "PathAlignAheadCritic: trim %s (tau %.1f s, max %.2f m, k_roll %.2f, roll %s); "
-    "side slope at |roll| >= %.1f deg: control point %.3f m, no latency projection, trim tau "
+    "slope at tilt >= %.1f deg: control point %.3f m, no latency projection, trim tau "
     "%.1f s", trim_.enabled ? "on" : "off", trim_.tau_s, trim_.max_m, trim_.k_roll,
-    imu_sub_ ? roll_topic.c_str() : "unused", slope_roll_deg, slope_.control_point_x,
+    imu_sub_ ? roll_topic.c_str() : "unused", slope_tilt_deg, slope_.control_point_x,
     slope_.trim_tau_s);
   RCLCPP_INFO(
     logger_, "PathAlignAheadCritic: weight %.1f power %u, control point %.3f m ahead, "
@@ -87,7 +88,7 @@ void PathAlignAheadCritic::score(CriticData & data)
   const rclcpp::Time now = clock_->now();
   const bool roll_fresh = imu_sub_ && now.seconds() - roll_t_.load() <= roll_timeout_s_;
   const float roll = roll_.load();
-  const paa::Tuning tune = paa::tuningAt(flat_, slope_, roll, roll_fresh);
+  const paa::Tuning tune = paa::tuningAt(flat_, slope_, tilt_.load(), roll_fresh);
   paa::Params params = params_;
   params.control_point_x = tune.control_point_x;
   const auto & pose0 = data.state.pose.pose;

@@ -269,7 +269,7 @@ TEST(PathAlignAhead, LatencyProjectionAddsHeadingNotAlongTrackError)
   EXPECT_GT(c1b[2], c0[2] + 0.005f);    // a heading error: + about 0.07 m x 0.1 rad
 }
 
-TEST(PathAlignAhead, SideSlopeUsesTheSlopeValues)
+TEST(PathAlignAhead, SlopeUsesTheSlopeValues)
 {
   paa::Tuning flat;
   flat.control_point_x = 0.30f;
@@ -278,25 +278,47 @@ TEST(PathAlignAhead, SideSlopeUsesTheSlopeValues)
   paa::SlopeSchedule slope;
   slope.control_point_x = 0.25f;
   slope.trim_tau_s = 5.0f;
-  // schedule off (roll_rad 0): flat on every roll
+  // schedule off (tilt_rad 0): flat on every tilt
   auto t = paa::tuningAt(flat, slope, 0.2f, true);
   EXPECT_EQ(t.control_point_x, 0.30f);
   EXPECT_EQ(t.latency_s, 0.2f);
   EXPECT_EQ(t.trim_tau_s, 20.0f);
-  slope.roll_rad = static_cast<float>(8.0 * M_PI / 180.0);
-  for (float roll : {0.0f, 0.10f, -0.10f}) {      // flat, +-5.7 deg
-    t = paa::tuningAt(flat, slope, roll, true);
-    EXPECT_EQ(t.control_point_x, 0.30f) << roll;
-    EXPECT_EQ(t.latency_s, 0.2f) << roll;
-    EXPECT_EQ(t.trim_tau_s, 20.0f) << roll;
+  slope.tilt_rad = static_cast<float>(8.0 * M_PI / 180.0);
+  for (float tilt : {0.0f, 0.10f}) {              // flat, 5.7 deg
+    t = paa::tuningAt(flat, slope, tilt, true);
+    EXPECT_EQ(t.control_point_x, 0.30f) << tilt;
+    EXPECT_EQ(t.latency_s, 0.2f) << tilt;
+    EXPECT_EQ(t.trim_tau_s, 20.0f) << tilt;
   }
-  for (float roll : {0.17f, -0.17f}) {            // +-9.7 deg, either side down
-    t = paa::tuningAt(flat, slope, roll, true);
-    EXPECT_EQ(t.control_point_x, 0.25f) << roll;
-    EXPECT_EQ(t.latency_s, 0.0f) << roll;         // no projection on a side slope
-    EXPECT_EQ(t.trim_tau_s, 5.0f) << roll;
-  }
-  t = paa::tuningAt(flat, slope, 0.17f, false);   // stale roll: flat
+  t = paa::tuningAt(flat, slope, 0.17f, true);    // 9.7 deg
+  EXPECT_EQ(t.control_point_x, 0.25f);
+  EXPECT_EQ(t.latency_s, 0.0f);                   // no projection on a slope
+  EXPECT_EQ(t.trim_tau_s, 5.0f);
+  t = paa::tuningAt(flat, slope, 0.17f, false);   // stale IMU: flat
   EXPECT_EQ(t.control_point_x, 0.30f);
   EXPECT_EQ(t.latency_s, 0.2f);
+}
+
+TEST(PathAlignAhead, TiltCountsRollAndPitch)
+{
+  auto quat = [](double roll, double pitch, double yaw, double & qx, double & qy) {
+      const double cr = std::cos(roll / 2), sr = std::sin(roll / 2);
+      const double cp = std::cos(pitch / 2), sp = std::sin(pitch / 2);
+      const double cy = std::cos(yaw / 2), sy = std::sin(yaw / 2);
+      qx = sr * cp * cy - cr * sp * sy;
+      qy = cr * sp * cy + sr * cp * sy;
+    };
+  double qx, qy;
+  const double d10 = 10.0 * M_PI / 180.0;
+  quat(0.0, 0.0, 1.0, qx, qy);
+  EXPECT_NEAR(paa::tiltAngle(qx, qy), 0.0f, 1e-6f);           // level, any heading
+  quat(d10, 0.0, 0.7, qx, qy);
+  EXPECT_NEAR(paa::tiltAngle(qx, qy), d10, 1e-5f);            // side slope
+  quat(0.0, -d10, -2.0, qx, qy);
+  EXPECT_NEAR(paa::tiltAngle(qx, qy), d10, 1e-5f);            // along the fall line
+  // 10 deg slope at 45 deg to the heading: roll and pitch about 7 deg each, tilt 10 deg
+  const double r = std::atan(std::tan(d10) * std::sin(M_PI / 4));
+  const double p = std::asin(std::sin(d10) * std::cos(M_PI / 4));
+  quat(r, p, 0.3, qx, qy);
+  EXPECT_NEAR(paa::tiltAngle(qx, qy), d10, 2e-3f);
 }
