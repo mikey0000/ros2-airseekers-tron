@@ -658,6 +658,14 @@ real_run5 ideal gate x1: MOWING_COMPLETE, docked, charging (1 near realign at 4.
 1.5 cm ok); verdict FAIL on d (1 fallback nav) and i (body over plan), the same two criteria
 master/dock-tweak fail (mow/transit, not docking). Out: `accuracy-simout/dock-lateral/`.
 
+## Slopes (2026-11-06)
+
+See [2026-11-06_stock_slope_handling.md](2026-11-06_stock_slope_handling.md). Summary:
+
+- The live stock controller is the `navigation` node (`libnavigation_lib.so`), launched by `mower-controller.service`. No v1.3.27 launch file starts `mower_controller_node` (`libmower_controller*.so`, read above) (C). Findings above that come from that library describe code the robot does not run in this OTA.
+- Slope handling is small: a 0.3 m/s linear cap above 8.2 deg roll or pitch, a row speed cut proportional to the lateral error above 8 deg roll, and per-area turn modes SLOPE_BACK / SELF_ADAPTIVE. Both are an inner fish-tail (r 0.6 m arcs, short residual pivot) preceded by a straight reverse of 0.1-0.9 m (C).
+- Stock pivots have no slope term and run fast (0.4-0.7 rad/s). No roll feed-forward or creep compensation of any size (C).
+
 ## Field symptoms these findings explain (2026-10-20/21)
 
 - Dusk docking failed with "no usable marker", although the dock has a backlit marker. Without exposure control the camera cannot read it at dusk; stock varies the exposure.
