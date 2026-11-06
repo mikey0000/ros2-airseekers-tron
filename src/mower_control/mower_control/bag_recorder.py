@@ -79,7 +79,7 @@ from mower_control import bag_ring as br
 #   /tf 30 Hz                       -> /odometry/filtered (odom->base_link) and
 #                                      /odometry/filtered_map (map frame); /tf_static kept
 #   /mower_base/bumper_routing_status 20 Hz, /vision/obstacle_close, /ai/det/obstacles,
-#   /stuck, /estop, /fix_gated, /vel, /heading, /gps/status, /cmd_vel_nav_raw, /cmd_vel_raw,
+#   /stuck, /estop, /fix_gated, /vel, /heading, /gps/status, /cmd_vel_raw,
 #   /received_global_plan, /map_server_node/boundary_violation (non-lethal), /local_plan,
 #   /mcu/sent_speed (one per wire frame while driving: /cmd_vel + /mcu/commanded_speed)
 #   (never published) -> derived/duplicate of a kept topic
@@ -92,6 +92,10 @@ DEFAULT_TOPICS = [
     # command chain (silent when parked): lanes -> twist_mux -> cmd_vel_slew -> /cmd_vel -> MCU
     '/cmd_vel_nav', '/cmd_vel_docking', '/cmd_vel_teleop', '/cmd_vel_bumper',
     '/cmd_vel_emergency', '/cmd_vel', '/cmd_vel_slew/gate_status', '/cmd_vel_slew/shape_status',
+    # controller output and smoother output (2026-11-06, docs/analysis/2026-11-06_field_weave_
+    # diagnosis.md): separate MPPI's own sampling noise from the smoother in the row weave;
+    # 20 Hz Twists, silent when parked
+    '/cmd_vel_nav_raw', '/cmd_vel_nav_smoothed',
     '/estop_request', '/motion_enabled', '/collision_monitor_state',
     '/mcu/measured_speed', '/mcu/commanded_speed',
     # localization (20 + 10 Hz)

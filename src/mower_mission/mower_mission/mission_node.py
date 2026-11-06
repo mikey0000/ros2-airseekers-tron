@@ -34,7 +34,7 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 
 from action_msgs.msg import GoalStatus
-from builtin_interfaces.msg import Duration
+from builtin_interfaces.msg import Duration, Time
 from geometry_msgs.msg import Point32, Polygon, PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from nav2_msgs.action import BackUp, DriveOnHeading, FollowPath, NavigateToPose, Spin
@@ -129,7 +129,6 @@ TOPIC_DEFAULTS = {
     'coverage_server_node': '/coverage_server',        # set_parameters target (bridge)
     'controller_server_node': '/controller_server',    # set_parameters target (Nav2)
     'obstacle_guard_node': '/obstacle_guard',          # set_parameters: obstacle_detection
-    'cmd_vel_slew_node': '/cmd_vel_slew',              # set_parameters: pivot_max_radps
     'det_range_node': '/det_range',                    # set_parameters: publish_obstacle_points
     # Nav2 "observation buffer has not been updated" WARNs -> 'sensor stale' sub_state
     # ('' = off). Taken raw and byte-searched on the 10 Hz tick (no deserialisation).
@@ -447,8 +446,7 @@ class MissionNode(Node):
         for key, pname in ((fsm_mod.PARAM_NODE_COVERAGE, 'coverage_server_node'),
                            (fsm_mod.PARAM_NODE_CONTROLLER, 'controller_server_node'),
                            (fsm_mod.PARAM_NODE_OBSTACLE_GUARD, 'obstacle_guard_node'),
-                           (fsm_mod.PARAM_NODE_DET_RANGE, 'det_range_node'),
-                           (fsm_mod.PARAM_NODE_SLEW, 'cmd_vel_slew_node')):
+                           (fsm_mod.PARAM_NODE_DET_RANGE, 'det_range_node')):
             srv_name = p[pname].rstrip('/') + '/set_parameters'
             self._param_clients[key] = (cli(SetParameters, srv_name, callback_group=self._cb),
                                         srv_name)
@@ -1410,9 +1408,17 @@ class MissionNode(Node):
         return ps
 
     def _path(self, poses):
+        """FollowPath goal path in the map frame, stamped 0 (tf2: the latest transform).
+        controller_server transforms the goal (the last pose) into odom with the path's stamp
+        on every isGoalReached; with the send time as stamp the goal stayed where map -> odom
+        put it when the leg was sent, until the stamp left the 10 s TF buffer (2026-11-06
+        slope world: odom slid 0.15-0.2 m off map during a slope leg, the corner checker
+        judged a goal that far from the vertex the robot drove over, and the leg ended 0.2-0.5 m
+        past it on the passed-wide rule; docs/analysis/2026-11-06_mppi_damping.md section 7).
+        MPPI already restamps the path and goal with the robot pose's time."""
         path = Path()
         path.header.frame_id = self._p['map_frame']
-        path.header.stamp = self.get_clock().now().to_msg()
+        path.header.stamp = Time()
         for p in poses:
             ps = self._pose_stamped(p[0], p[1], p[2] if len(p) > 2 else 0.0)
             ps.header.stamp = path.header.stamp

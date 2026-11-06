@@ -155,6 +155,23 @@ def test_coupled_step_unit():
     assert cs.slew_coupled(0.2, 0.3, 0.2, 0.3, 0.5, 1.0, DT) == (0.2, 0.3)
 
 
+def test_pivot_target_while_rolling_stops_straight_first():
+    """2026-11-06: a Spin (0, -0.7) sent while the robot still rolls at 0.2 m/s: v falls at
+    the full 0.8 m/s^2 decel with w shed toward 0, and the pivot starts from rest."""
+    v, w, n = 0.2, -0.09, 0
+    while v != 0.0:
+        nv, nw = cs.slew_coupled(v, w, 0.0, -0.7, 0.5, 1.0, DT, None, 0.8, 1.0)
+        assert nv <= v and abs(nw) <= abs(w)
+        assert not (abs(nw) > 1e-9 and 0.0 < inner(nv, nw) < 0.06 - 1e-9)   # no one-wheel step
+        v, w, n = nv, nw, n + 1
+    assert n == 5 and w == 0.0                           # 0.25 s straight stop
+    # a tighter arc: v held at the floor while w is shed: (0.1, 0.2) -> (0.09, 0.15)
+    assert cs.slew_coupled(0.1, 0.2, 0.0, 0.7, 0.5, 1.0, DT, None, 0.8, 1.0) == \
+        pytest.approx((0.09, 0.15))
+    assert cs.slew_coupled(0.0, 0.0, 0.0, -0.7, 0.5, 1.0, DT, None, 0.8, 1.0) == \
+        pytest.approx((0.0, -0.05))                      # then the pivot (floor step after)
+
+
 
 # ---- docking lane: no one-wheel step (2026-10-16) -------------------------------------------
 def test_no_one_wheel_step_caps_w_in_the_one_wheel_band():

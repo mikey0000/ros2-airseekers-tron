@@ -8,7 +8,7 @@ coverage, docking, mission, gui_bridge) runs unmodified.
 
 Driver contract reproduced (see docs/simulation.md for the full table):
 
-  sub   /cmd_vel (Twist)                    MCU clamp +-0.3 / +-0.3, 0.06 m/s wheel floor,
+  sub   /cmd_vel (Twist)                    MCU clamp +-0.3 / +-0.7, 0.06 m/s wheel floor,
                                             0.5 s timeout, wheel lag; /estop_request (Bool)
   pub   /odom 50 Hz, /battery 1 Hz, /mower_base/status 20 Hz, /mower_sensor_info 10 Hz,
         /estop + /hardware_bridge/emergency 10 Hz, /mcu/driver_heartbeat 2 Hz, /rain + /cutter/height_mm (latched)          [mcu_node]
@@ -171,7 +171,7 @@ class SimNode(Node):
         # vs RTK within 1.3 cm at 0.1-1.5 m; matches docking.yaml rear_camera_yaw_correction_deg 0)
         d('rear_camera_mount_yaw_deg', 0.0)
         d('linear_max', 0.3)
-        d('angular_max', 0.35)
+        d('angular_max', 0.7)
         d('min_wheel_speed_mps', 0.06)
         d('wheel_tau_s', 0.15)
         d('cmd_vel_timeout', 0.5)

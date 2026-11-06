@@ -39,14 +39,14 @@ def test_wheel_speeds_clamp_linear():
 
 def test_wheel_speeds_clamp_angular():
     left, right = wheel_speeds(0.0, 1.0, DriveParams())
-    assert left == pytest.approx(-0.07)      # 0.35 rad/s clamp x 0.20 m half track
-    assert right == pytest.approx(0.07)
+    assert left == pytest.approx(-0.14)      # 0.7 rad/s clamp x 0.20 m half track
+    assert right == pytest.approx(0.14)
 
 
 def test_wheel_speeds_clamp_is_separate():
     left, right = wheel_speeds(1.0, 1.0, DriveParams())
-    assert left == pytest.approx(0.3 - 0.07)
-    assert right == pytest.approx(0.3 + 0.07)
+    assert left == pytest.approx(0.3 - 0.14)
+    assert right == pytest.approx(0.3 + 0.14)
 
 
 def test_wheel_floor():

@@ -4,7 +4,7 @@
 What the real drive does with a /cmd_vel (docs/wheel_control_semantics.md,
 mower_mcu_driver ``_map_command``, nav2_params.yaml comments):
 
-* linear and angular are clamped SEPARATELY to +-0.3 m/s and +-0.3 rad/s
+* linear and angular are clamped SEPARATELY to +-0.3 m/s and +-0.7 rad/s (mcu_node)
   (not curvature preserving);
 * while TURNING, a wheel asked for less than ~0.06 m/s does not turn (the speed
   floor: "wheel 0.04 m/s, under the MCU's ~0.06 m/s floor ... never broke free", the
@@ -86,7 +86,7 @@ def wrap(a: float) -> float:
 @dataclass
 class DriveParams:
     linear_max: float = 0.3          # MCU clamp, m/s
-    angular_max: float = 0.35        # host clamp (mcu_node angular_max), rad/s
+    angular_max: float = 0.7         # host clamp (mcu_node angular_max, 2026-11-06), rad/s
     # 2026-10-20 geometry: the MCU splits (v, w) into wheel speeds with b 0.40 (cmd_vel_slew
     # TRACK_WIDTH_M; was 0.48), the tyres sit 0.39 apart (owner-measured): a pivot turns
     # 0.40 / 0.39 = 2.6 % faster than commanded (field bag: IMU / MCU yaw rate 1.02-1.03).

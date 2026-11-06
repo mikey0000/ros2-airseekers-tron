@@ -40,6 +40,8 @@ mid-mow re-plan, obstacle detours on labelled detections, docking by day, and re
   heading is the raw marker median.
 - The hard-boundary check does nothing when `outside_m` is stale (code review stage 2, item 10).
 - Side-slope pivots on the west edge creep 0.15-0.30 m; slope-aware planning (A5) is open.
+  Stock-rate fast pivots (`ws/pivot1106`, 2026-11-06) halve the pivot time and remove the
+  sim's slope spin-drift trips; field check pending.
 - Coverage map (A3) slice 1 on `ws/cov1105` (2026-11-05, unit + sim): a mowed raster per area,
   `mowed_area_percent` next to the plan %, resume and re-plans mapped by the raster, missed-patch
   report (off by default). Driving the missed patches and the GUI display are slice 2.
@@ -365,6 +367,57 @@ and resumed after 2 s.
   - Look for the det_range "implausible" INFO lines.
   - Walk up to the robot from the front: it must still stop at about 1 m.
   - Stand about 1 m to the side of a pivoting robot: the result must be advisory.
+
+## Fast pivots, stock rate (2026-11-06, ws/pivot1106, sim-gated: not yet run on the mower)
+
+Stock `MoveUtils::Rotation` pivots at `clamp(1.2 e, 0.4, 0.7)` rad/s and does not slow
+down on a slope. In the slope sim the downhill creep grows with the time spent pivoting.
+Changes (details and the cap inventory: `analysis/2026-11-06_fast_pivots.md`):
+
+- behavior_server Spin max / min 0.35 / 0.35 -> 0.7 / 0.4 rad/s (acc 1.0 = the slew
+  decel). It stops from 0.4: inner wheel 0.08 m/s, above the 0.06 floor.
+- Host clamps 0.35 -> 0.7: mcu_node `angular_max`, the cmd_vel_slew turn shaper, and
+  mower_sim.
+- The roll-aware pivot rate is removed (`pivot_rate_flat_rad_s`, `pivot_rate_slope_rad_s`,
+  the mission's cmd_vel_slew parameter client). `pivot_creep_spin_rps` 0.3 -> 0.6.
+  `pivot_stop_lead_rad` 0.06 -> 0.10.
+
+Gates (`-x 3`):
+
+| Run | a | e | g | spin-drift trips |
+|---|---|---|---|---|
+| slope `-d -s 2`, master | 0.210 m / 349 | 6 of 22 (0.678) | 20 % | 5 |
+| slope `-d -s 2`, fast | 0.167 m / 117 | 6 of 22 (0.447) | 13 % | 0 |
+| real_run5 `-l` | 0.095 m / 0 | 0 of 21 | 25 % -> 16 % | 1 -> 0 |
+| owner_far `-l` | 0.066 m / 0 | 0 of 86 (base 1 of 84) | 14 % -> 9 % | 0 -> 1 |
+
+On the slope world b, d and f stay 0 and there is no STUCK. The h and i figures improve,
+except transit. The flat worlds show no new e failure. i side is 0.101 / 0.102 against
+0.10 (marginal; the baselines already failed i).
+
+**Field check needed:**
+
+1. Does turf pivot creep scale with time (sim model) or with angle? On the west edge,
+   compare RTK displacement per 90 / 180 deg pivot at `pivot_max_radps` 0.35 and at 0.
+2. Wheel stick-slip and stop accuracy at 0.7 / 0.4 rad/s.
+3. The joystick now spins at up to 0.7 rad/s.
+
+Revert live: `ros2 param set /cmd_vel_slew pivot_max_radps 0.35`.
+
+Follow-up (after the stamp-fix merge b9008c5): a slope seed-3 run went STUCK_NEEDS_HELP.
+A transit leg ended 0.16 m downhill of its line, MPPI reversed on the slope, the reverse
+slipped and the slip detector called STUCK twice. Fix 140e08f: while the tilt cap is on, the
+mission sets `FollowPath.vx_min` 0 (`tilt_transit_reverse_param`) and restores -0.10 after.
+Slope s3: a 0.195 m / 110 against master+fix 0.200 / 252. Slope s2: 0.158 / 77 against
+0.243 / 633. Both have no STUCK and b/d/f 0. real_run5 `-l` fails h line p99 0.102 and i
+side 0.129, which master+fix passes (0.077 / 0.099). The worst point is the leg after the
+lap 0 vertex (-0.81, 5.37). Cause: a Spin sent while the robot still rolled slowed the
+linear decel in cmd_vel_slew's coupled slew (the large angular gap set the pace). The robot
+arced 0.07 m into the pivot and started the next leg off its line. Fix e76b82c / 83dbf41:
+a pivot target reached while rolling stops straight first (full decel, w shed, no one-wheel
+step). real_run5 `-l` now PASSES: a 0.058, h 0.078 / 0.063, i side 0.069. Slope s3: a 0.157 /
+73, no STUCK. owner_far: 0 of 86 corners, i side 0.108 (FAIL, as the baseline). Its lawn cut
+of 96.9 % (baseline 99.2 %) came from a memory-starved host and needs a rerun.
 
 ## Whole plan rejected over a 0.027 m pose (2026-11-03, ws/edge-reject)
 
@@ -1780,6 +1833,30 @@ Sim, `-l -x 3 -s 1`, master -> branch:
 
 **Next:** a field A/B (procedure in note 2.5). If the arcs come out wider in the field, the
 next step is to slow the carrot before the hand-off (upstream `speed_slow`).
+
+## FollowPath path stamp: goal checker judged a stale vertex on slopes (2026-11-06, master f84eb4d, unit + sim; not field tested)
+
+`mission_node._path` stamped FollowPath paths with the send time. controller_server transforms
+the goal into odom with that stamp on every `isGoalReached`, so the goal checker kept the
+map -> odom offset from the moment the leg was sent until the stamp left the 10 s TF buffer.
+On a side slope odom slides 0.15-0.2 m off map within a leg: the robot drove over the pivot
+vertex, the checker judged a goal that far away, and the leg ended 0.2-0.5 m past the vertex
+(passed-wide rule), so the pivot started off the vertex and slid further downhill. MPPI
+restamps the path itself and was not affected. Fix: stamp 0 (tf2 latest);
+`test_mission_path_stamp.py`. Found in the MPPI damping study (ws/damp1106,
+docs/analysis/2026-11-06_mppi_damping.md section 7 on that branch).
+
+Slope world `-d -x 3`, two seeds each:
+
+| | master s2 | master s3 | fix s2 | fix s3 |
+|---|---|---|---|---|
+| a max / samples > 0.10 m | 0.210 / 349 | 0.289 / 1175 | 0.243 / 633 | 0.200 / 252 |
+| b hard-boundary trips | 0 | 2 | 0 | 0 |
+| slope pivot start mean / max (m) | 0.085 / 0.33 | 0.141 / 0.29 | 0.083 / 0.17 | 0.096 / 0.29 |
+
+real_run5 `-l -s 1 -x 3` with the fix: PASS on every criterion (e 0.146, h 0.077 / 0.078,
+i 0.099 / 0.071 / 0.094). Field check: west-edge slope pivots should start within about
+0.1 m of the vertex (mission log "pivot vertex at" vs pose).
 
 ## Field row weave diagnosis and sim turf slip (2026-11-06, branch ws/fid1106, unit + sim)
 

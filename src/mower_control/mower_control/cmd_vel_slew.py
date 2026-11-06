@@ -59,8 +59,8 @@ Parameters
                                   :class:`TurnShaper`) in autonomous phases: inner wheel
                                   >= ``min_inner_wheel_mps`` (0.06) with ``track_width_m``
                                   (0.40, the MCU's wheel split), ``linear_max`` (0.3), ``angular_max``
-                                  (0.3): inner wheels in the one-wheel zone snap to an
-                                  arc or a proper pivot (|w| >= 0.3, the MCU clamp);
+                                  (0.7 = mcu_node, 2026-11-06): inner wheels in the one-wheel
+                                  zone snap to an arc or a proper pivot (|w| >= the 0.3 floor);
                                   ``shape_manual`` (false) leaves the joystick untouched.
                                   Only commands on the twist_mux navigation lane are
                                   shaped (TRANSIT/MOWING/BOUNDARY_PAUSED and, fix 9, the
@@ -129,9 +129,11 @@ see :class:`DriveShaper`). Applied to the *target* angular.z before slewing:
                                      back onto it
 ``heading_hold_kp``        ``1.0``   rad/s per rad of yaw error
 ``pivot_max_radps``        ``0.0``   cap on |angular.z| of a pure rotation (|linear.x| <=
-                                     0.02); 0 = off. The mission sets it live from the
-                                     roll (pivot_rate_flat/slope_rad_s, 2026-11-03): Nav2
-                                     Spin reads max_rotational_vel only at configure
+                                     0.02); 0 = off. A live field lever since 2026-11-06
+                                     (Nav2 Spin reads max_rotational_vel 0.7 only at
+                                     configure): set 0.35 to go back to the old pivot rate.
+                                     The mission no longer sets it (the 2026-11-03 roll-aware
+                                     0.35 / 0.3 rate is gone: slope creep grows with time)
 ``heading_hold_kd``        ``0.1``   rad/s per rad/s of gyro z (damping)
 ``heading_hold_max_radps`` ``0.15``  clamp on the heading-hold correction
 ``robot_settings_file``    ``$MOWER_ROBOT_SETTINGS_FILE`` or
@@ -626,7 +628,9 @@ SHAPE_DEFAULTS = {
     'track_width_m': TRACK_WIDTH_M,
     'min_inner_wheel_mps': 0.06,
     'linear_max': 0.3,
-    'angular_max': 0.35,      # = mcu_node angular_max (0.3 until 2026-11-03: Spin 0.35 flat)
+    # = mcu_node angular_max (0.3 until 2026-11-03, 0.35 until 2026-11-06: Spin 0.7 since,
+    # stock-like fast pivots). Only caps a snapped pivot; a proper pivot passes unchanged.
+    'angular_max': 0.7,
     'pivot_deadband_rps': 0.03,   # |w| below this in a pure rotation -> (0, 0)
     # Task 0.4 (b), 2026-10-14 run 3: MPPI asked for slow tight corners (r 0.2-0.3 m) and
     # _tight_arc widened them to r 0.5-1.0 m, overshooting every corner. A command whose
@@ -877,10 +881,27 @@ def slew_coupled(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, dt,
     forward (inner >= 0: the unavoidable slow start/end of an arc from/to rest) and
     neither end is on the pivot side (inner < 0). Otherwise, e.g. pivot <-> arc, the
     step is :func:`slew_both_wheels`, which passes through a stop.
+
+    A pure-rotation target (a Spin, v = 0) reached while still rolling forward or back
+    stops straight first: v at the full decel, w toward 0, then the pivot ramps from rest
+    (2026-11-06 fast pivots: the common fraction toward a 0.7 rad/s target let w set the
+    pace, v fell at 0.33 instead of 0.8 m/s^2, and the robot rolled 0.07 m on an arc into
+    every pivot, starting the next leg off its line).
     """
     p = dict(SHAPE_DEFAULTS)
     if params:
         p.update(params)
+    if abs(tgt_v) < 1e-6 and abs(tgt_w) > 1e-6 and abs(cur_v) > 1e-6:
+        nv = slew_ad(cur_v, 0.0, max_lin_accel, max_lin_decel, dt)
+        nw = slew_ad(cur_w, 0.0, max_ang_accel, max_ang_decel, dt)
+        # never a one-wheel step on the way down: while w is still being shed, |v| is held
+        # at min_inner + |w| b/2 (the inner wheel at the floor, as slew_both_wheels' arc
+        # side), never above the current |v|
+        if abs(nw) > 1e-6:
+            need = float(p['min_inner_wheel_mps']) + abs(nw) * 0.5 * float(p['track_width_m'])
+            if abs(nv) < need:
+                nv = math.copysign(min(abs(cur_v), need), cur_v)
+        return nv, nw
     dv, dw = tgt_v - cur_v, tgt_w - cur_w
     lim_v = _axis_rate(cur_v, tgt_v, max_lin_accel, max_lin_decel) * dt
     lim_w = _axis_rate(cur_w, tgt_w, max_ang_accel, max_ang_decel) * dt
@@ -1070,7 +1091,7 @@ TURN_PARAMS = {   # node parameter -> (TurnShaper attribute / params key, type)
     'turn_shaper_transit_pivot_hold_rps': ('transit_pivot_hold_rps', float),
 }
 TURN_DEFAULTS = {'turn_shaper': True, 'shape_manual': False, 'track_width_m': TRACK_WIDTH_M,
-                 'min_inner_wheel_mps': 0.06, 'linear_max': 0.3, 'angular_max': 0.35,
+                 'min_inner_wheel_mps': 0.06, 'linear_max': 0.3, 'angular_max': 0.7,
                  'turn_shaper_hysteresis_mps': 0.02, 'turn_shaper_latch_ticks': 6,
                  'turn_shaper_pivot_deadband_rps': 0.03,
                  'turn_shaper_dock_transit': True,
