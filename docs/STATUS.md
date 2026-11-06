@@ -411,7 +411,13 @@ mission sets `FollowPath.vx_min` 0 (`tilt_transit_reverse_param`) and restores -
 Slope s3: a 0.195 m / 110 against master+fix 0.200 / 252. Slope s2: 0.158 / 77 against
 0.243 / 633. Both have no STUCK and b/d/f 0. real_run5 `-l` fails h line p99 0.102 and i
 side 0.129, which master+fix passes (0.077 / 0.099). The worst point is the leg after the
-lap 0 vertex (-0.81, 5.37). Open (`analysis/2026-11-06_fast_pivots.md`, follow-up).
+lap 0 vertex (-0.81, 5.37). Cause: a Spin sent while the robot still rolled slowed the
+linear decel in cmd_vel_slew's coupled slew (the large angular gap set the pace). The robot
+arced 0.07 m into the pivot and started the next leg off its line. Fix e76b82c / 83dbf41:
+a pivot target reached while rolling stops straight first (full decel, w shed, no one-wheel
+step). real_run5 `-l` now PASSES: a 0.058, h 0.078 / 0.063, i side 0.069. Slope s3: a 0.157 /
+73, no STUCK. owner_far: 0 of 86 corners, i side 0.108 (FAIL, as the baseline). Its lawn cut
+of 96.9 % (baseline 99.2 %) came from a memory-starved host and needs a rerun.
 
 ## Whole plan rejected over a 0.027 m pose (2026-11-03, ws/edge-reject)
 

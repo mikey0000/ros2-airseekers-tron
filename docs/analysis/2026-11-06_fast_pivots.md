@@ -205,3 +205,41 @@ runs then keep turning the same way under FollowPath for about 0.03-0.05 rad, so
 heading is about 1.3 deg further round than on master. That does not explain the 6 cm. A
 faster rotation that starts during the forward coast plausibly turns a wider arc, but this
 is not shown. Not fixed here: one seed, a 3 cm margin.
+
+## Follow-up 2: the real_run5 regression was the stop into the pivot (e76b82c, 83dbf41)
+
+Mechanism (norev-l1 against master+fix fix-l3, at the lap 0 vertex (-0.81, 5.37)):
+
+- Every Spin starts while the robot still rolls at about 0.18 m/s. This was true on master
+  too (45 of 47 Spins above 0.05 m/s at the start; median 0.18).
+- cmd_vel_slew's `slew_coupled` moves v and w by one common fraction. Toward a (0, 0.7)
+  Spin target, the 0.61 rad/s angular gap set that fraction: v fell at 0.33 m/s^2 instead
+  of 0.8 while w ramped to -0.29. The robot rolled 0.07 m on an arc into the pivot and took
+  0.55 s to stop. At the old 0.35 target it took 0.32 s with w near 0.
+- The next leg started 0.07 m off its line. Lateral error over its first 1.2 m was
+  -0.149 m (master+fix -0.089).
+
+Fix: a pure-rotation target reached while still rolling stops straight first. v drops at
+the full linear decel and w is shed toward 0. While w is still non-zero, |v| is held at
+`min_inner + |w| b/2`, so there is no one-wheel tick; the first version without that rule
+gave 2 one-wheel ticks (f). The pivot then ramps from rest as before. No new keys. It
+applies to every Spin and to every shaper pivot snap on a shaped lane.
+
+| Run | a | b / d / f | e | g | h p99 line / arc | i side / nose / sweep; transit | cut % | verdict |
+|---|---|---|---|---|---|---|---|---|
+| real_run5 `-l -s 1`, master+fix (fix-l3) | 0.078 / 0 | 0 / 0 / 0 | 0 of 21 (0.146) | 24 % | 0.077 / 0.078 | 0.099 / 0.071 / 0.094; 0.393 | - | PASS |
+| real_run5 `-l -s 1`, straight stop v1 (stopfirst-l1) | 0.076 / 0 | 0 / 0 / **2** | 0 of 21 (0.122) | 16 % | 0.082 / 0.079 | 0.096 / 0.059 / 0.106; 0.356 | 97.6 | FAIL (f, i) |
+| real_run5 `-l -s 1`, straight stop (stopfirst2-l1) | **0.058 / 0** | 0 / 0 / 0 | 0 of 21 (0.127) | **16 %** | **0.078 / 0.063** | **0.069** / 0.072 / 0.089; 0.355 | 97.8 | **PASS** |
+| slope `-d -s 3`, master+fix (fix-slope-s3) | 0.200 / 252 | 0 / 0 / 0 | 5 of 22 (0.624) | 20 % | 0.436 / 0.602 | 0.323 / 0.346 / 0.348; 0.402 | - | FAIL |
+| slope `-d -s 3`, straight stop (stopfirst-slope-s3) | **0.157 / 73** | 0 / 0 / 0 | 6 of 22 (0.429) | 12 % | 0.244 / 0.280 | 0.198 / 0.192 / 0.202; 0.389 | 96.6 | FAIL (as master) |
+| owner_far `-l -s 1 -t 4800`, branch-of-l3b (older plan) | 0.079 / 0 | 0 / 0 / 0 | 1 of 84 (0.181) | 14 % | 0.068 / 0.048 | 0.096 / 0.119 / 0.153; 0.344 | 99.2 | FAIL (e, i) |
+| owner_far `-l -s 1 -t 4800`, straight stop (stopfirst-of-l1) | 0.087 / 0 | 0 / 0 / 0 | 0 of 86 (0.149) | 9 % | 0.067 / 0.075 | 0.108 / 0.055 / 0.118; 0.361 | 96.9 | FAIL (i) |
+
+Slope s3 had no STUCK and no spin-drift trip. On owner_far the session's background shell
+was reaped for low host memory just after the mow ended. The evaluation container finished
+and wrote result.json, but verdict.txt is empty (figures above are from result.json). The
+controller loop held median 20, p10 19 Hz (valid, at least 18). The log has 1588 "desired rate of
+60" warnings against about 150 on the other owner_far runs, so the host was under memory
+pressure during the run. Its lawn cut (96.9 %, plan 100 %) is below the older baseline
+(99.2 %) and the pre-merge fast run (98.1 %). Not investigated: that needs a rerun on a
+quiet host.
