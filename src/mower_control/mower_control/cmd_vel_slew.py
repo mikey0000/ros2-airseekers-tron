@@ -881,10 +881,19 @@ def slew_coupled(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, dt,
     forward (inner >= 0: the unavoidable slow start/end of an arc from/to rest) and
     neither end is on the pivot side (inner < 0). Otherwise, e.g. pivot <-> arc, the
     step is :func:`slew_both_wheels`, which passes through a stop.
+
+    A pure-rotation target (a Spin, v = 0) reached while still rolling forward or back
+    stops straight first: v at the full decel, w toward 0, then the pivot ramps from rest
+    (2026-11-06 fast pivots: the common fraction toward a 0.7 rad/s target let w set the
+    pace, v fell at 0.33 instead of 0.8 m/s^2, and the robot rolled 0.07 m on an arc into
+    every pivot, starting the next leg off its line).
     """
     p = dict(SHAPE_DEFAULTS)
     if params:
         p.update(params)
+    if abs(tgt_v) < 1e-6 and abs(tgt_w) > 1e-6 and abs(cur_v) > 1e-6:
+        return (slew_ad(cur_v, 0.0, max_lin_accel, max_lin_decel, dt),
+                slew_ad(cur_w, 0.0, max_ang_accel, max_ang_decel, dt))
     dv, dw = tgt_v - cur_v, tgt_w - cur_w
     lim_v = _axis_rate(cur_v, tgt_v, max_lin_accel, max_lin_decel) * dt
     lim_w = _axis_rate(cur_w, tgt_w, max_ang_accel, max_ang_decel) * dt
