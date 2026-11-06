@@ -1818,3 +1818,27 @@ Sim, `-l -x 3 -s 1`, master -> branch:
 
 **Next:** a field A/B (procedure in note 2.5). If the arcs come out wider in the field, the
 next step is to slow the carrot before the hand-off (upstream `speed_slow`).
+
+## FollowPath path stamp: goal checker judged a stale vertex on slopes (2026-11-06, master f84eb4d, unit + sim; not field tested)
+
+`mission_node._path` stamped FollowPath paths with the send time. controller_server transforms
+the goal into odom with that stamp on every `isGoalReached`, so the goal checker kept the
+map -> odom offset from the moment the leg was sent until the stamp left the 10 s TF buffer.
+On a side slope odom slides 0.15-0.2 m off map within a leg: the robot drove over the pivot
+vertex, the checker judged a goal that far away, and the leg ended 0.2-0.5 m past the vertex
+(passed-wide rule), so the pivot started off the vertex and slid further downhill. MPPI
+restamps the path itself and was not affected. Fix: stamp 0 (tf2 latest);
+`test_mission_path_stamp.py`. Found in the MPPI damping study (ws/damp1106,
+docs/analysis/2026-11-06_mppi_damping.md section 7 on that branch).
+
+Slope world `-d -x 3`, two seeds each:
+
+| | master s2 | master s3 | fix s2 | fix s3 |
+|---|---|---|---|---|
+| a max / samples > 0.10 m | 0.210 / 349 | 0.289 / 1175 | 0.243 / 633 | 0.200 / 252 |
+| b hard-boundary trips | 0 | 2 | 0 | 0 |
+| slope pivot start mean / max (m) | 0.085 / 0.33 | 0.141 / 0.29 | 0.083 / 0.17 | 0.096 / 0.29 |
+
+real_run5 `-l -s 1 -x 3` with the fix: PASS on every criterion (e 0.146, h 0.077 / 0.078,
+i 0.099 / 0.071 / 0.094). Field check: west-edge slope pivots should start within about
+0.1 m of the vertex (mission log "pivot vertex at" vs pose).
