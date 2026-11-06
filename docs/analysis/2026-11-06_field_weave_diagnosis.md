@@ -264,10 +264,11 @@ but it is offline only (section 7).
 - `kinematics.with_field_slip(p, std, tau_s, seed)` returns `p` with the existing
   `disturb_slip_*` per-wheel slip process turned on. A run that sets its own slip (`-d`) is
   left unchanged, and `std` 0 turns it off.
-- `sim_node`: with `loc_model: field` it applies `field_slip_std` 0.05 and
-  `field_slip_tau_s` 0.3, seeded with `loc_drift_seed`. The values are also arguments in
-  `launch/sim.launch.py`; `sim_gate.sh ... -- field_slip_std:=0.0` restores the old ideal
-  `-l` drive.
+- `sim_node`: with `loc_model: field` it applies `field_slip_std` and `field_slip_tau_s`
+  (0.3), seeded with `loc_drift_seed`. The values are also arguments in
+  `launch/sim.launch.py`. Merged with `field_slip_std` 0 (off) so gate baselines are
+  unchanged; `sim_gate.sh ... -- field_slip_std:=0.05` turns on the field fit used in the
+  runs below.
 - Tests (`test_kinematics.py`): the field slip fills in only when the run has none; open
   loop at 0.21 m/s it adds 0.038 rad/s ± 20 % of yaw-rate noise with a 0.3 s correlation
   time, and the encoders do not see it.

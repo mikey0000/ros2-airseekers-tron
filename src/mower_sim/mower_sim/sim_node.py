@@ -204,8 +204,9 @@ class SimNode(Node):
         # turf slip (2026-11-06): per-wheel slip noise, std / correlation time; the field rows'
         # unexplained yaw rate (0.026-0.028 rad/s rms) needs it, the ideal drive has 0.002.
         # Seeded with loc_drift_seed; a run that sets disturb_slip_std (-d) keeps its own.
-        # 0 = off. docs/analysis/2026-11-06_field_weave_diagnosis.md
-        d('field_slip_std', 0.05)
+        # 0 = off (the default: it shifts every gate baseline; weave studies turn it on with
+        # -- field_slip_std:=0.05). docs/analysis/2026-11-06_field_weave_diagnosis.md
+        d('field_slip_std', 0.0)
         d('field_slip_tau_s', 0.3)
         # RTK degradation (mower_sim/rtk.py): extra events 't0:dur:kind' on top of the world's
         # ``rtk:`` block (sim_gate.sh --rtk-loss writes them into a run world instead)

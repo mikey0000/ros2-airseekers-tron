@@ -269,8 +269,8 @@ def generate_launch_description() -> LaunchDescription:
         arg('loc_model', 'field', 'sim (with loc_drift): field (2026-10-29, 10-28 bag: fix '
             'latency, rotation centre, track lag, no jumps) or legacy (2026-10-16 model, older gate '
             'baselines).'),
-        arg('field_slip_std', '0.05', 'sim (loc_model field): per-wheel turf slip noise std when '
-            'disturb_slip_std is 0 (2026-11-06 field fit; 0 = the ideal drive of before).'),
+        arg('field_slip_std', '0.0', 'sim (loc_model field): per-wheel turf slip noise std when '
+            'disturb_slip_std is 0 (0 = off, the default; 0.05 = the 2026-11-06 field fit).'),
         arg('field_slip_tau_s', '0.3', 'sim (loc_model field): correlation time of that slip (s).'),
         arg('urdf_file', default_urdf, 'xacro robot description.'),
         arg('log_level', 'info', 'Log level of the sim node.'),

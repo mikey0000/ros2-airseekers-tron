@@ -24,8 +24,8 @@
 #              AND field-like localisation drift (mower_sim/loc_drift.py: drifting odom and
 #              map -> odom matched to field run 6, seed SEED; -L turns the drift off)
 #   -l         localisation drift also without -d (no wheel bias or pivot loss; the field
-#              model's drive terms apply: turn centre, track lag and, since 2026-11-06, turf
-#              slip noise 0.05 / 0.3 s; -- field_slip_std:=0 for the ideal drive of before)
+#              model's drive terms apply: turn centre, track lag; turf slip noise is off by
+#              default, -- field_slip_std:=0.05 turns on the 2026-11-06 field fit)
 #   -L         no localisation drift (perfect static map -> odom, the pre-2026-10-16 gate)
 #   -M MODEL   localisation drift model: field (default since 2026-10-29) or legacy (the
 #              2026-10-16 model; reproduces gate results taken before 2026-10-29)

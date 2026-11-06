@@ -1794,8 +1794,8 @@ Details: `analysis/2026-11-06_field_weave_diagnosis.md`.
   trim. `/cmd_vel_nav_raw`, `/cmd_vel_nav_smoothed` and `/imu/data` are not in the field bag.
 - **What the sim lacked:** the body yaws 0.026-0.028 rad/s rms more than its commands explain
   (turf slip); the old `-l` drive yawed 0.002. The field model now adds per-wheel slip noise of
-  std 0.05 / 0.3 s (`field_slip_std`, `field_slip_tau_s`; `-- field_slip_std:=0.0` restores
-  the old drive). Master `real_run5 -l -x 3 -s 1`: band rms 0.84 -> 1.00 cm (field about
+  std 0.05 / 0.3 s (`field_slip_std`, `field_slip_tau_s`). Merged OFF by default (2026-11-06,
+  owner): gate baselines stay as they were; weave studies add `-- field_slip_std:=0.05`. Master `real_run5 -l -x 3 -s 1`: band rms 0.84 -> 1.00 cm (field about
   1.55 on the measured position). Yaw residual, actuator fit and w spectra move to the field's
   values. Criterion a now fails (0.116 m, 29 samples) besides i, so compare gate runs only
   against baselines taken on the same model.
