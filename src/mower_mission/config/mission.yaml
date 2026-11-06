@@ -653,6 +653,10 @@ behavior_tree_node:
     # vx_max is a dynamic MPPI param).
     tilt_transit_speed_param: FollowPath.vx_max
     tilt_transit_speed_mps: 0.3       # restored after caution: keep = nav2_params FollowPath
+    # tilt cap on (slope caution): no MPPI reverse in transit (reversing on a slope slips ->
+    # STUCK, 2026-11-06 slope sim); restored after: keep = nav2_params FollowPath vx_min. '' = off
+    tilt_transit_reverse_param: FollowPath.vx_min
+    tilt_transit_reverse_mps: -0.10
     tilt_trail_m: 2.0                 # driven track remembered for the back-out
     tilt_trail_step_m: 0.05
     tilt_backout_pause_s: 0.5

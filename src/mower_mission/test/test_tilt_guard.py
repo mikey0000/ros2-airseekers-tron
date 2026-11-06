@@ -85,14 +85,14 @@ def test_caution_caps_speed_once_then_restores():
     m = h.mark()
     step(h, 'caution', 17, n=5)
     assert speed_calls(h, m) == [{'FollowCoveragePathMPPI.vx_max': 0.15,
-                                  'FollowPath.vx_max': 0.15}]
+                                  'FollowPath.vx_max': 0.15, 'FollowPath.vx_min': 0.0}]
     assert h.blade and h.name == 'MOWING' and not h.since(m, f.CancelActions)
     assert h.fsm.status()['sub_state_name'].startswith('slope caution (roll 17 deg): slowed')
     m2 = h.mark()
     step(h, 'ok', 5, n=5)
     cut = min(float(h.fsm.mission.settings['cut_speed_mps']), float(h.fsm.p.cut_speed_max_mps),
               float(h.fsm.p.mppi_speed_max_mps))
-    assert speed_calls(h, m2) == [{'FollowPath.vx_max': 0.3,
+    assert speed_calls(h, m2) == [{'FollowPath.vx_max': 0.3, 'FollowPath.vx_min': -0.10,
                                    'FollowCoveragePathMPPI.vx_max': cut}]
     assert h.fsm.status()['sub_state_name'] == h.fsm.sub_state
     assert h.blade and h.name == 'MOWING'
@@ -272,7 +272,7 @@ def test_side_slope_roll_in_the_ok_band_caps_with_hysteresis():
     assert speed_calls(h, m) == []
     step(h, 'ok', 10.0, n=3)
     assert speed_calls(h, m) == [{'FollowCoveragePathMPPI.vx_max': 0.15,
-                                  'FollowPath.vx_max': 0.15}]
+                                  'FollowPath.vx_max': 0.15, 'FollowPath.vx_min': 0.0}]
     m2 = h.mark()
     step(h, 'ok', 7.0, n=3)                 # inside the hysteresis band: still capped
     step(h, 'ok', -8.5, n=3)                # either side
@@ -280,6 +280,7 @@ def test_side_slope_roll_in_the_ok_band_caps_with_hysteresis():
     step(h, 'ok', 5.5, n=3)
     calls = speed_calls(h, m2)
     assert len(calls) == 1 and calls[0]['FollowPath.vx_max'] == 0.3
+    assert calls[0]['FollowPath.vx_min'] == -0.10       # transit reverse back after the slope
 
 
 def test_side_slope_cap_off_when_zero():
@@ -288,3 +289,13 @@ def test_side_slope_cap_off_when_zero():
     m = h.mark()
     step(h, 'ok', 12.0, n=3)
     assert speed_calls(h, m) == []
+
+
+def test_side_slope_transit_reverse_off_when_param_empty():
+    """2026-11-06: tilt_transit_reverse_param '' leaves the transit reverse limit alone."""
+    h = Harness(tilt_transit_reverse_param='')
+    mowing(h)
+    m = h.mark()
+    step(h, 'ok', 10.0, n=3)
+    assert speed_calls(h, m) == [{'FollowCoveragePathMPPI.vx_max': 0.15,
+                                  'FollowPath.vx_max': 0.15}]

@@ -1418,6 +1418,15 @@ class Params:
     slope_caution_roll_hyst_deg: float = 2.0
     tilt_transit_speed_param: str = 'FollowPath.vx_max'  # MPPI transit
     tilt_transit_speed_mps: float = 0.3     # restored after caution (nav2_params FollowPath)
+    # 2026-11-06 slope sim (fast pivots, seed 3): a transit leg ending 0.16 m downhill of
+    # its line (outside the corner checker's 0.15 m) made MPPI back up at -0.10 m/s on the
+    # 10 deg slope; reversing there slips (field 2026-11-02: 3.8 m of wheel for 0.4 m), the
+    # slip detector called it STUCK, and the costmap-planner retry reversed again ->
+    # STUCK_NEEDS_HELP. While the tilt cap is on, the transit controller's reverse limit
+    # (this param) is 0 (forward only, pivots allowed); restored to tilt_transit_reverse_mps
+    # after (nav2_params FollowPath vx_min). '' = off.
+    tilt_transit_reverse_param: str = 'FollowPath.vx_min'
+    tilt_transit_reverse_mps: float = -0.10
     # front camera blocked (mower_vision camera_blocked, stock CameraBlocked 100105): both
     # controllers capped at this while a mission runs; 0 disables
     tilt_trail_m: float = 2.0           # driven track kept for the back-out

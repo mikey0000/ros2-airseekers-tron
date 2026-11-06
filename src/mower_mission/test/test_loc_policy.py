@@ -133,7 +133,9 @@ def test_tilt_cap_survives_loc_restore():
     m = h.mark()
     run(h, 'ok', 0.5)
     caps = speed_calls(h, m)
-    assert caps and all(v == h.fsm.p.caution_speed_mps for v in caps[-1].values())
+    assert caps and all(v == h.fsm.p.caution_speed_mps for k, v in caps[-1].items()
+                        if k != h.fsm.p.tilt_transit_reverse_param)
+    assert caps[-1][h.fsm.p.tilt_transit_reverse_param] == 0.0    # tilt: forward-only transit
 
 
 # ---- lost: retrace -------------------------------------------------------------------------

@@ -112,6 +112,12 @@ class TiltGuardMixin:
                 params.update(self.coverage_speed_params(min(
                     float(m.settings.get('cut_speed_mps', AREA_SETTINGS_DEFAULTS['cut_speed_mps'])),
                     float(self.p.cut_speed_max_mps))))
+        rev = self.p.tilt_transit_reverse_param
+        if rev and (self._tilt_capped or getattr(self, '_tilt_reverse_blocked', False)):
+            # forward-only transits while the tilt cap is on (reversing on a slope slips);
+            # restored once when it lifts. Camera / loc caps leave the reverse alone.
+            params[rev] = 0.0 if self._tilt_capped else float(self.p.tilt_transit_reverse_mps)
+            self._tilt_reverse_blocked = self._tilt_capped
         if self.p.set_cut_speed:
             self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER, 'params': params},
                        track=False)
