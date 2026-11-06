@@ -40,6 +40,8 @@ mid-mow re-plan, obstacle detours on labelled detections, docking by day, and re
   heading is the raw marker median.
 - The hard-boundary check does nothing when `outside_m` is stale (code review stage 2, item 10).
 - Side-slope pivots on the west edge creep 0.15-0.30 m; slope-aware planning (A5) is open.
+  Stock-rate fast pivots (`ws/pivot1106`, 2026-11-06) halve the pivot time and remove the
+  sim's slope spin-drift trips; field check pending.
 - Coverage map (A3) slice 1 on `ws/cov1105` (2026-11-05, unit + sim): a mowed raster per area,
   `mowed_area_percent` next to the plan %, resume and re-plans mapped by the raster, missed-patch
   report (off by default). Driving the missed patches and the GUI display are slice 2.
@@ -365,6 +367,42 @@ and resumed after 2 s.
   - Look for the det_range "implausible" INFO lines.
   - Walk up to the robot from the front: it must still stop at about 1 m.
   - Stand about 1 m to the side of a pivoting robot: the result must be advisory.
+
+## Fast pivots, stock rate (2026-11-06, ws/pivot1106, sim-gated: not yet run on the mower)
+
+Stock `MoveUtils::Rotation` pivots at `clamp(1.2 e, 0.4, 0.7)` rad/s and does not slow
+down on a slope. In the slope sim the downhill creep grows with the time spent pivoting.
+Changes (details and the cap inventory: `analysis/2026-11-06_fast_pivots.md`):
+
+- behavior_server Spin max / min 0.35 / 0.35 -> 0.7 / 0.4 rad/s (acc 1.0 = the slew
+  decel). It stops from 0.4: inner wheel 0.08 m/s, above the 0.06 floor.
+- Host clamps 0.35 -> 0.7: mcu_node `angular_max`, the cmd_vel_slew turn shaper, and
+  mower_sim.
+- The roll-aware pivot rate is removed (`pivot_rate_flat_rad_s`, `pivot_rate_slope_rad_s`,
+  the mission's cmd_vel_slew parameter client). `pivot_creep_spin_rps` 0.3 -> 0.6.
+  `pivot_stop_lead_rad` 0.06 -> 0.10.
+
+Gates (`-x 3`):
+
+| Run | a | e | g | spin-drift trips |
+|---|---|---|---|---|
+| slope `-d -s 2`, master | 0.210 m / 349 | 6 of 22 (0.678) | 20 % | 5 |
+| slope `-d -s 2`, fast | 0.167 m / 117 | 6 of 22 (0.447) | 13 % | 0 |
+| real_run5 `-l` | 0.095 m / 0 | 0 of 21 | 25 % -> 16 % | 1 -> 0 |
+| owner_far `-l` | 0.066 m / 0 | 0 of 86 (base 1 of 84) | 14 % -> 9 % | 0 -> 1 |
+
+On the slope world b, d and f stay 0 and there is no STUCK. The h and i figures improve,
+except transit. The flat worlds show no new e failure. i side is 0.101 / 0.102 against
+0.10 (marginal; the baselines already failed i).
+
+**Field check needed:**
+
+1. Does turf pivot creep scale with time (sim model) or with angle? On the west edge,
+   compare RTK displacement per 90 / 180 deg pivot at `pivot_max_radps` 0.35 and at 0.
+2. Wheel stick-slip and stop accuracy at 0.7 / 0.4 rad/s.
+3. The joystick now spins at up to 0.7 rad/s.
+
+Revert live: `ros2 param set /cmd_vel_slew pivot_max_radps 0.35`.
 
 ## Whole plan rejected over a 0.027 m pose (2026-11-03, ws/edge-reject)
 
