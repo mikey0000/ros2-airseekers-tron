@@ -95,7 +95,8 @@ def test_slope_caution_caps_the_mppi_coverage_speed():
         h.fsm.inputs.tilt_axis = 'roll'
         h.tick(dt=0.1)
     assert param_calls(h, f.PARAM_NODE_CONTROLLER, m) == \
-        [{'FollowCoveragePathMPPI.vx_max': 0.15, 'FollowPath.vx_max': 0.15}]
+        [{'FollowCoveragePathMPPI.vx_max': 0.15, 'FollowPath.vx_max': 0.15,
+          'FollowPath.vx_min': 0.0}]           # 2026-11-06: no transit reverse on a slope
 
 
 def test_transit_route_controller_is_unchanged():

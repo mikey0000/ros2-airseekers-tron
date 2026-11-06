@@ -66,7 +66,7 @@ Parameters
                                  stays the raw MCU value so ``wheel_cal.py`` keeps measuring it.
 ``odom_vx_variance`` ``0.02`` / ``odom_vy_variance`` ``1e6``  ``/odom`` twist covariance while
                                  measured; bringup sets 1e-4 / 1e-4 with ``gnss_smoothing:=true``
-``linear_max`` ``0.3`` / ``angular_max`` ``0.35``       clamp (m/s, rad/s; vendor PID clamp)
+``linear_max`` ``0.3`` / ``angular_max`` ``0.7``        clamp (m/s, rad/s; 0.7 = stock MoveUtils::Rotation max, 2026-11-06)
 ``battery_voltage_scale`` ``0.1``  raw 0.1 V units -> volts (set 1.0 to mimic the stock node)
 ``battery_current_scale`` ``-0.1`` raw 0.1 A, positive = discharging -> ROS amperes (negative
                                  = discharging, REP/BatteryState convention)
@@ -567,7 +567,7 @@ class McuNode(Node):
         # Vendor PidControllerROS clamps its /cmd_vel output to +-0.3; mirror it until the
         # wheel scale/sign has been characterised wheels-up.
         self.declare_parameter('linear_max', 0.3)
-        self.declare_parameter('angular_max', 0.35)   # 2026-11-03: flat pivots 0.35
+        self.declare_parameter('angular_max', 0.7)    # 2026-11-06: stock pivot max 0.7 (wheels +-0.14 m/s)
         # SpeedData TX policy (docs/wheel_control_semantics.md section 5): one frame per
         # /cmd_vel message; after a non-zero command, a zero / timeout / interlock sends
         # stop_frames zeros stop_frame_spacing_s apart, then silence. Idle = silence.

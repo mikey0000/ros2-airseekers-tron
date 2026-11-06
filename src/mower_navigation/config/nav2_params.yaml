@@ -700,10 +700,17 @@ behavior_server:
     # acc = cmd_vel_slew max_angular_decel (1.0).
     # cycle_frequency 20 (was 10): the stop decision is late by up to one cycle (0.9 deg at
     # 0.3 rad/s instead of 1.7).
-    # 0.35 (2026-11-03, was 0.3): Jazzy Spin reads these only at configure; the mission
-    # caps pure rotations on a side slope through cmd_vel_slew pivot_max_radps
-    max_rotational_vel: 0.35
-    min_rotational_vel: 0.35
+    # 0.35 (2026-11-03, was 0.3): Jazzy Spin reads these only at configure.
+    # 2026-11-06 stock-like fast pivot (docs/analysis/2026-11-06_fast_pivots.md): stock
+    # MoveUtils::Rotation turns at clamp(1.2 e, 0.4, 0.7) rad/s on the same MCU and motors.
+    # max 0.7, min 0.4: Spin runs at 0.7 and slows on sqrt(2 acc remaining) from 14 deg out
+    # to 0.4 at 4.6 deg, then stops from 0.4 (inner wheel 0.08 m/s, above the 0.06 floor,
+    # so no slow tail under the floor). acc stays = cmd_vel_slew max_angular_decel (1.0), so
+    # the slew follows the slow-down exactly (2 rad/s^2 like stock saves ~0.1 s per pivot).
+    # No slope slow-down any more: the downhill creep grows with the time spent pivoting.
+    # cmd_vel_slew pivot_max_radps (live, 0 = off) is the field revert: set 0.35.
+    max_rotational_vel: 0.7
+    min_rotational_vel: 0.4
     rotational_acc_lim: 1.0
 
 # Controller output (/cmd_vel_nav_raw) -> velocity_smoother (/cmd_vel_nav_smoothed)

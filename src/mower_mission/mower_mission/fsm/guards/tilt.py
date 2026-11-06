@@ -4,7 +4,6 @@
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
 from mower_mission.fsm.common import (AREA_SETTINGS_DEFAULTS, DriveCmd, PARAM_NODE_CONTROLLER,
-    PARAM_NODE_SLEW,
     SRV_SET_PARAMS, STUCK_PHASES, SUB_MANUAL_BLADE_OFF, math)
 from mower_mission.fsm.budget import Budget
 from mower_mission.fsm.escape import Escape
@@ -113,35 +112,20 @@ class TiltGuardMixin:
                 params.update(self.coverage_speed_params(min(
                     float(m.settings.get('cut_speed_mps', AREA_SETTINGS_DEFAULTS['cut_speed_mps'])),
                     float(self.p.cut_speed_max_mps))))
+        rev = self.p.tilt_transit_reverse_param
+        if rev and (self._tilt_capped or getattr(self, '_tilt_reverse_blocked', False)):
+            # forward-only transits while the tilt cap is on (reversing on a slope slips);
+            # restored once when it lifts. Camera / loc caps leave the reverse alone.
+            params[rev] = 0.0 if self._tilt_capped else float(self.p.tilt_transit_reverse_mps)
+            self._tilt_reverse_blocked = self._tilt_capped
         if self.p.set_cut_speed:
             self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER, 'params': params},
                        track=False)
-
-    def _pivot_rate_tick(self):
-        """Roll-aware pivot rate: cmd_vel_slew pivot_max_radps = pivot_rate_slope_rad_s while
-        |roll| (fresh /tilt/status) > pivot_creep_roll_deg, else pivot_rate_flat_rad_s; sent
-        on change (a stale status keeps the last rate)."""
-        p, i = self.p, self.inputs
-        flat, slope = float(p.pivot_rate_flat_rad_s), float(p.pivot_rate_slope_rad_s)
-        if flat <= 0.0 or slope <= 0.0 or not p.set_cut_speed:
-            return
-        if i.tilt_roll_deg is None or i.tilt_stamp is None or \
-                self._now - i.tilt_stamp > float(p.tilt_status_timeout_s):
-            return
-        thr = float(p.pivot_creep_roll_deg)
-        want = slope if thr > 0.0 and abs(float(i.tilt_roll_deg)) > thr else flat
-        if want == getattr(self, '_pivot_rate_sent', None):
-            return
-        self._pivot_rate_sent = want
-        self._log('info', 'pivot rate %.2f rad/s (roll %.1f deg)' % (want, float(i.tilt_roll_deg)))
-        self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_SLEW,
-                                    'params': {'pivot_max_radps': want}}, track=False)
 
     def _tilt_tick(self):
         """Returns True while the tilt guard owns the tick."""
         if not self.p.tilt_guard:
             return False
-        self._pivot_rate_tick()
         self._tilt_trail_add()
         band = self._tilt_band()
         self._tilt_speed(band)
