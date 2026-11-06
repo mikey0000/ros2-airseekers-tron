@@ -892,8 +892,16 @@ def slew_coupled(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, dt,
     if params:
         p.update(params)
     if abs(tgt_v) < 1e-6 and abs(tgt_w) > 1e-6 and abs(cur_v) > 1e-6:
-        return (slew_ad(cur_v, 0.0, max_lin_accel, max_lin_decel, dt),
-                slew_ad(cur_w, 0.0, max_ang_accel, max_ang_decel, dt))
+        nv = slew_ad(cur_v, 0.0, max_lin_accel, max_lin_decel, dt)
+        nw = slew_ad(cur_w, 0.0, max_ang_accel, max_ang_decel, dt)
+        # never a one-wheel step on the way down: while w is still being shed, |v| is held
+        # at min_inner + |w| b/2 (the inner wheel at the floor, as slew_both_wheels' arc
+        # side), never above the current |v|
+        if abs(nw) > 1e-6:
+            need = float(p['min_inner_wheel_mps']) + abs(nw) * 0.5 * float(p['track_width_m'])
+            if abs(nv) < need:
+                nv = math.copysign(min(abs(cur_v), need), cur_v)
+        return nv, nw
     dv, dw = tgt_v - cur_v, tgt_w - cur_w
     lim_v = _axis_rate(cur_v, tgt_v, max_lin_accel, max_lin_decel) * dt
     lim_w = _axis_rate(cur_w, tgt_w, max_ang_accel, max_ang_decel) * dt
