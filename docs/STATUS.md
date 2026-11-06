@@ -1858,6 +1858,36 @@ real_run5 `-l -s 1 -x 3` with the fix: PASS on every criterion (e 0.146, h 0.077
 i 0.099 / 0.071 / 0.094). Field check: west-edge slope pivots should start within about
 0.1 m of the vertex (mission log "pivot vertex at" vs pose).
 
+## Field row weave diagnosis and sim turf slip (2026-11-06, branch ws/fid1106, unit + sim)
+
+Details: `analysis/2026-11-06_field_weave_diagnosis.md`.
+
+- **The weave is a disturbance response, not a limit cycle.** Field rows (10-28, 11-04) have
+  Gaussian lateral statistics (kurtosis 2.9-3.3, envelope CV 0.52-0.55) and a lightly damped
+  6-6.6 s mode (damping ratio about 0.15-0.25).
+- **Actuator chain:** no deadband, minimum differential or quantisation down to 0.005 rad/s.
+  The turn shaper and the wheel floor never act on a row. cmd_vel_slew adds 0.01-0.05 s; the
+  MCU wheel loop follows at gain 1.03 in about 0.1 s. The only offset is a -0.005 rad/s yaw
+  trim. `/cmd_vel_nav_raw`, `/cmd_vel_nav_smoothed` and `/imu/data` are not in the field bag.
+- **What the sim lacked:** the body yaws 0.026-0.028 rad/s rms more than its commands explain
+  (turf slip); the old `-l` drive yawed 0.002. The field model now adds per-wheel slip noise of
+  std 0.05 / 0.3 s (`field_slip_std`, `field_slip_tau_s`). Merged OFF by default (2026-11-06,
+  owner): gate baselines stay as they were; weave studies add `-- field_slip_std:=0.05`. Master `real_run5 -l -x 3 -s 1`: band rms 0.84 -> 1.00 cm (field about
+  1.55 on the measured position). Yaw residual, actuator fit and w spectra move to the field's
+  values. Criterion a now fails (0.116 m, 29 samples) besides i, so compare gate runs only
+  against baselines taken on the same model.
+- **Why B13-1 fell short in the field:** after B13-1, MPPI's effective gains agree between
+  field and sim (Ky 3.4-3.5, Kpsi 1.1-1.2). Before it, the sim had Kpsi 0.87 and the field
+  1.04. The control point raised Kpsi 43 % in the sim and 4 % in the field. The sim's gain
+  mostly repaired a damping deficit the field never had. The replay under the new model still
+  gives -58 %. Candidate cause: the sim's track lag (0.081 m against a field fit of
+  0.038-0.049 m), not yet changed.
+- **For the controller work:** judge MPPI changes by their fitted Kpsi in the field, not only
+  by the sim's band rms. Raising heading damping acts on every input, while lowering Ky
+  mainly rejects pose noise. FTC (higher Kpsi, no sampling residual) and pose-latency
+  compensation (offline: 0.1 s less delay, -18 to -34 %) are the levers the field fit
+  supports.
+
 ## Row weave: MPPI heading damping and latency compensation (2026-11-06, branch ws/damp1106, unit + sim; not field tested)
 
 Details: `analysis/2026-11-06_mppi_damping.md`. The coverage MPPI (`FollowCoveragePathMPPI`,

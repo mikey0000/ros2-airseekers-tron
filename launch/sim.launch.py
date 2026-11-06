@@ -24,7 +24,8 @@ scripted moving ones). Everything above the drivers is the real code:
 TF map -> odom + /odometry/filtered_map at 10 Hz instead of the static identity; gui_bridge
 then reads /odometry/filtered_map (as on the robot) instead of relaying /odometry/filtered.
 ``loc_model`` (with loc_drift): ``field`` (default since 2026-10-29: fix latency, rotation
-centre ahead of base_link, track lag, no RTK jumps) or ``legacy`` (the 2026-10-16 model;
+centre ahead of base_link, track lag, turf slip noise ``field_slip_std`` / ``field_slip_tau_s``
+since 2026-11-06, no RTK jumps) or ``legacy`` (the 2026-10-16 model;
 reproduces gate results taken before 2026-10-29). docs/simulation.md "Localisation drift".
 
 The world's lawn and dock are written to a scratch ``maps_dir`` (fresh temp dir
@@ -268,6 +269,9 @@ def generate_launch_description() -> LaunchDescription:
         arg('loc_model', 'field', 'sim (with loc_drift): field (2026-10-29, 10-28 bag: fix '
             'latency, rotation centre, track lag, no jumps) or legacy (2026-10-16 model, older gate '
             'baselines).'),
+        arg('field_slip_std', '0.0', 'sim (loc_model field): per-wheel turf slip noise std when '
+            'disturb_slip_std is 0 (0 = off, the default; 0.05 = the 2026-11-06 field fit).'),
+        arg('field_slip_tau_s', '0.3', 'sim (loc_model field): correlation time of that slip (s).'),
         arg('urdf_file', default_urdf, 'xacro robot description.'),
         arg('log_level', 'info', 'Log level of the sim node.'),
         arg('compose_nodes', 'true', 'Python node hosts (docs/analysis/2026-10-22_memory_footprint.md '
@@ -300,6 +304,10 @@ def generate_launch_description() -> LaunchDescription:
             'loc_drift_seed': ParameterValue(LaunchConfiguration('loc_drift_seed'),
                                              value_type=int),
             'loc_model': LaunchConfiguration('loc_model'),
+            'field_slip_std': ParameterValue(LaunchConfiguration('field_slip_std'),
+                                             value_type=float),
+            'field_slip_tau_s': ParameterValue(LaunchConfiguration('field_slip_tau_s'),
+                                               value_type=float),
             'rear_marker_size': ParameterValue(LaunchConfiguration('rear_marker_size'),
                                                value_type=float),
             'rear_marker_offset': ParameterValue(LaunchConfiguration('rear_marker_offset'),
