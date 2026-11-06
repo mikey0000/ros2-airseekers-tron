@@ -404,6 +404,15 @@ except transit. The flat worlds show no new e failure. i side is 0.101 / 0.102 a
 
 Revert live: `ros2 param set /cmd_vel_slew pivot_max_radps 0.35`.
 
+Follow-up (after the stamp-fix merge b9008c5): a slope seed-3 run went STUCK_NEEDS_HELP.
+A transit leg ended 0.16 m downhill of its line, MPPI reversed on the slope, the reverse
+slipped and the slip detector called STUCK twice. Fix 140e08f: while the tilt cap is on, the
+mission sets `FollowPath.vx_min` 0 (`tilt_transit_reverse_param`) and restores -0.10 after.
+Slope s3: a 0.195 m / 110 against master+fix 0.200 / 252. Slope s2: 0.158 / 77 against
+0.243 / 633. Both have no STUCK and b/d/f 0. real_run5 `-l` fails h line p99 0.102 and i
+side 0.129, which master+fix passes (0.077 / 0.099). The worst point is the leg after the
+lap 0 vertex (-0.81, 5.37). Open (`analysis/2026-11-06_fast_pivots.md`, follow-up).
+
 ## Whole plan rejected over a 0.027 m pose (2026-11-03, ws/edge-reject)
 
 Field, build cbdddbb: START on area 1 ("Area 4", narrow strip, soft edge layout so lap 0

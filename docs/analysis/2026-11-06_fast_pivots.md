@@ -138,3 +138,70 @@ consistent with the 0.10 lead, FollowPath finishing the turn the same way).
 Revert without a redeploy: `ros2 param set /cmd_vel_slew pivot_max_radps 0.35`. Spin then
 runs at 0.35 (slew cap). `pivot_stop_lead_rad` 0.10 is then a little long, so the pivot
 ends about 2 deg short, and FollowPath finishes the turn.
+
+## Follow-up: STUCK on the slope at seed 3, after the stamp-fix merge (b9008c5)
+
+Gate `real_run5_slope -d -s 3` (simout_pivot1106/fastfix-slope) ended in STUCK_NEEDS_HELP.
+The chain, from mission.log and data.json:
+
+1. A route-corner Spin near the dock was cancelled by the spin-drift guard (0.16 m, flat
+   ground, -d disturbance) and pivoted again. This happens on master+fix too (0.15 m at the
+   same corner) and did not lead to the STUCK.
+2. Sub-path 4 ended at (-5.31, 1.78) on the slope. The robot coasted on at 0.1 m/s while
+   a 34 deg route-corner Spin started, and ended 0.13 m downhill of the 0.7 m transit
+   leg's line. On the slope leg it crept further to 0.16-0.21 m off. That is outside the
+   corner goal checker's 0.15 m `lateral_tolerance`, so the leg end was never accepted.
+3. MPPI (FollowPath, `vx_min` -0.10) turned toward the goal and backed up at -0.10 m/s on
+   the 10 deg slope. The reverse slipped (the model's 95 %, field 2026-11-02 3.8 m of wheel
+   for 0.4 m). The slip detector closed the motion gate ("wheels spinning") and the mission
+   went STUCK.
+4. The escape reverse also slipped. The forward arc got 0.30 m out, and the costmap-planner
+   retry (NavigateToPose, the same MPPI) reversed again at -0.07..-0.09 m/s. The result
+   was "stuck again at the same spot": STUCK_NEEDS_HELP.
+
+Master+fix at seed 3 reached that sub-path end in a different state and did not reverse
+there. The hazard is generic: any MPPI transit reverse on a side slope. Stock never reverses
+under a tracking controller on a slope except the fish-tail's straight reverses, and it
+skips a reverse that slips (stock doc Q5).
+
+Fix (140e08f): while the tilt cap is on (caution band, or |roll| above
+`slope_caution_roll_deg` 8 with the 2 deg hysteresis), the mission also sets
+`FollowPath.vx_min` to 0 (`tilt_transit_reverse_param`). MPPI can then only drive forward
+or pivot. The value is restored to `tilt_transit_reverse_mps` -0.10 once when the cap
+lifts. Camera and loc caps leave it alone. The coverage controller already had `vx_min` 0.
+`''` turns the rule off.
+
+Aside: the controller_server logs "Parameter FollowPath.vx_max not found" on every cap push.
+The cap does apply (cmd linear tops out at 0.15), so the warning appears to come from the
+other MPPI instance's parameter handler.
+
+### Gates after the fix (`-x 3`, controller loop median 20 Hz)
+
+| Run | a max / n | b | d STUCK / not mowed / fallback | f | e | g | h p99 line / arc | i side / nose / sweep; transit | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| slope `-d -s 3`, master+fix (simout_stamp1106/fix-slope-s3) | 0.200 / 252 | 0 | 0/0/0 | 0 | 5 of 22 (0.624) | 20 % | 0.436 / 0.602 | 0.323 / 0.346 / 0.348; 0.402 | FAIL |
+| slope `-d -s 3`, fast + merge (fastfix-slope) | 0.161 / 77 | 0 | **1/0/1** | 1 | 5 of 15 (0.423) | 12 % | 0.254 / 0.276 | 0.247 / 0.176 / 0.175; 0.513 | FAIL (STUCK) |
+| slope `-d -s 3`, fast + no slope reverse (norev-slope-s3) | 0.195 / 110 | 0 | 0/0/0 | 0 | 7 of 22 (0.449) | 13 % | 0.236 / 0.272 | 0.253 / 0.189 / 0.215; 0.406 | FAIL |
+| slope `-d -s 2`, master+fix (simout_stamp1106/fix-slope) | 0.243 / 633 | 0 | 0/0/0 | 0 | 6 of 22 (0.713) | 20 % | 0.450 / 0.671 | 0.344 / 0.406 / 0.409; 0.376 | FAIL |
+| slope `-d -s 2`, fast + no slope reverse (norev-slope-s2) | **0.158 / 77** | 0 | 0/0/0 | 0 | 7 of 22 (0.403) | 13 % | 0.224 / 0.245 | 0.171 / 0.153 / 0.167; 0.423 | FAIL |
+| real_run5 `-l -s 1`, master+fix (simout_stamp1106/fix-l3) | 0.078 / 0 | 0 | 0/0/0 | 0 | 0 of 21 (0.146) | 24 % | 0.077 / 0.078 | 0.099 / 0.071 / 0.094; 0.393 | PASS |
+| real_run5 `-l -s 1`, fast + no slope reverse (norev-l1) | 0.080 / 0 | 0 | 0/0/0 | 0 | 0 of 21 (0.121) | 16 % | **0.102** / 0.079 | **0.129** / 0.087 / 0.101; 0.383 | FAIL (h, i) |
+
+Both slope seeds: no STUCK, b/d/f 0, a below master+fix (0.195 vs 0.200 at s3 with 110
+samples against 252; 0.158 vs 0.243 at s2). Spin-drift trips: one each (0.15 m). e counts
+rise from 5-6 to 7 of 22 while the worst corner falls from 0.62-0.71 m to 0.40-0.45 m.
+
+real_run5 regresses past two limits that master+fix passes:
+
+- i side: 0.129 against 0.10 (master+fix 0.099; the pre-merge fast run gave 0.101).
+- h line p99: 0.102 against 0.10 (master+fix 0.077, pre-merge fast 0.087).
+
+The i side worst sample is at (-0.61, 5.05), just after the lap 0 pivot vertex
+(-0.81, 5.37). The coverage leg ends with the robot still rolling at about 0.18 m/s, 0.08 m past the
+vertex. The Spin starts during that coast, so the next leg starts 0.07 m off its line.
+Lateral error over its first 1.2 m: -0.149 m (fast) against -0.089 (master+fix). The coast
+after a Spin's stop is 0.087 rad on the ideal drive (master 0.055 at 0.35 rad/s). Both
+runs then keep turning the same way under FollowPath for about 0.03-0.05 rad, so the end
+heading is about 1.3 deg further round than on master. That does not explain the 6 cm. A
+faster rotation that starts during the forward coast plausibly turns a wider arc, but this
+is not shown. Not fixed here: one seed, a 3 cm margin.
