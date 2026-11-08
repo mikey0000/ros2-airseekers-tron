@@ -451,6 +451,8 @@ class SaveRecordingQuality:
     name: str
     kind: str                   # area | obstacle | path
     vertices: list              # [{'x', 'y', 'fix_type', 'hdop', 'fixed'}]
+    # areas only: the boundary smoothing report, with the ring as recorded (to undo it)
+    smoothing: Optional[dict] = None
 
 
 @dataclass
@@ -1345,6 +1347,9 @@ class Params:
     record_min_spacing_m: float = 0.05
     record_simplify_tolerance_m: float = 0.05
     record_close_radius_m: float = 0.5
+    # A finished AREA recording is smoothed (mower_map.boundary_smoothing inner hull): zigs
+    # within this of the recorded line go, the line only moves inward. 0 = off.
+    record_smooth_tolerance_m: float = 0.08
     record_min_area_m2: float = 1.0
     record_min_obstacle_area_m2: float = 0.5   # CMD_RECORD_OBSTACLE (11): no-go zones are small
     record_max_points: int = 50000

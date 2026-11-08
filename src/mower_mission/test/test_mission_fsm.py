@@ -6036,3 +6036,73 @@ def test_retried_stretch_blocked_static_stays_excluded():
     h._apply(h.fsm._end())
     assert h.fsm.cursor.available is False or h.name == 'RETURNING_HOME'
     assert m.excluded_count == 1 and not m.blocked and not m.ignored_short_m
+
+
+# ---- boundary smoothing of a finished area recording (2026-11-09) -------------------------
+def drive_bumpy_rectangle(h, w=4.0, d=3.0, bump=0.06, step=0.1):
+    """The 4 x 3 m rectangle (counter-clockwise) with an outward tent bump of ``bump`` m
+    every metre of edge: the zigs the recorder keeps at 5 cm and the smoothing removes."""
+    corners = [(0.0, 0.0), (w, 0.0), (w, d), (0.0, d)]
+    for k in range(4):
+        (ax, ay), (bx, by) = corners[k], corners[(k + 1) % 4]
+        L = math.hypot(bx - ax, by - ay)
+        ux, uy = (bx - ax) / L, (by - ay) / L
+        nx, ny = uy, -ux                       # outward (right of a CCW edge)
+        for j in range(int(round(L / step))):
+            s = j * step
+            off = bump * (1.0 - abs(((s % 1.0) - 0.5) / 0.5)) if 0.5 < s < L - 0.5 else 0.0
+            h.fsm.inputs.pose = (ax + ux * s + nx * off, ay + uy * s + ny * off, 0.0)
+            h.tick()
+
+
+def test_record_finish_smooths_area_inward_and_keeps_the_recorded_ring():
+    h = Harness()
+    h.areas = [square(0, 0, 5)]
+    h.cmd(f.CMD_RECORD_AREA)
+    drive_bumpy_rectangle(h)
+    m = h.mark()
+    assert h.cmd(f.CMD_RECORD_FINISH)
+    h.answer_services()
+    poly = [tuple(p) for p in h.add_area_req['polygon']]
+    assert sorted(poly) == [(0.0, 0.0), (0.0, 3.0), (4.0, 0.0), (4.0, 3.0)]   # corners kept
+    q = h.since(m, f.SaveRecordingQuality)[0]
+    sm = q.smoothing
+    assert sm['method'] == 'inner_hull' and sm['tolerance_m'] == h.fsm.p.record_smooth_tolerance_m
+    assert sm['vertices_before'] > 4 and sm['vertices_after'] == 4
+    assert 0.05 < sm['max_deviation_m'] <= h.fsm.p.record_smooth_tolerance_m
+    assert sm['area_after_m2'] < sm['area_before_m2']
+    assert len(sm['recorded_polygon']) == sm['vertices_before']
+    assert len(q.vertices) == 4 and all(v['fixed'] for v in q.vertices)
+    assert any('boundary smoothed' in e.text for e in h.since(m, f.Log))
+    assert h.name == 'RECORDING_COMPLETE'
+
+
+def test_record_smoothing_off_saves_the_recorded_ring():
+    h = Harness()
+    h.fsm.p.record_smooth_tolerance_m = 0.0
+    h.areas = [square(0, 0, 5)]
+    h.cmd(f.CMD_RECORD_AREA)
+    drive_bumpy_rectangle(h)
+    m = h.mark()
+    assert h.cmd(f.CMD_RECORD_FINISH)
+    h.answer_services()
+    assert len(h.add_area_req['polygon']) > 4
+    assert h.since(m, f.SaveRecordingQuality)[0].smoothing is None
+
+
+def test_record_obstacle_is_not_smoothed():
+    """Inward smoothing would shrink a keep-out: no-go recordings keep their ring."""
+    h = Harness()
+    h.areas = [square(-1, -1, 7)]
+    h.cmd(f.CMD_RECORD_OBSTACLE)
+    drive_bumpy_rectangle(h)
+    m = h.mark()
+    assert h.cmd(f.CMD_RECORD_FINISH)
+    h.answer_services()
+    assert len(h.promote_req['polygon']) > 4
+    assert h.since(m, f.SaveRecordingQuality)[0].smoothing is None
+
+
+def test_record_smooth_tolerance_default_matches_mower_map():
+    from mower_map import boundary_smoothing
+    assert f.Params().record_smooth_tolerance_m == boundary_smoothing.DEFAULT_TOLERANCE_M

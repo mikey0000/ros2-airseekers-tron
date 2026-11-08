@@ -704,6 +704,7 @@ behavior_tree_node:
     record_min_spacing_m: 0.05
     record_simplify_tolerance_m: 0.05
     record_close_radius_m: 0.5        # finish: cut the drive where it passes back within this of its start (overshoot spike)
+    record_smooth_tolerance_m: 0.08   # finish (areas): inner-hull smoothing, line moves inward by at most this; recorded ring kept in the quality file; 0 = off
     record_min_area_m2: 1.0
     record_min_obstacle_area_m2: 0.5   # CMD_RECORD_OBSTACLE (11): min ring of a recorded no-go zone
     record_max_points: 50000

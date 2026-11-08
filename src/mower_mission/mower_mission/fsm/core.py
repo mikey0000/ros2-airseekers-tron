@@ -114,6 +114,7 @@ class MissionFSM(PreviewMixin,
         self._record_name = ''
         self._record_kind = 'area'          # 'area' (closed boundary) | 'path' (open band)
         self._record_line = None            # simplified centreline of a PATH being saved
+        self._record_smoothing = None       # boundary smoothing report of the AREA being saved
         self._record_index = -1             # area index the PATH gets in the map server
         self._last_status = None
         self._incomplete_text = ''

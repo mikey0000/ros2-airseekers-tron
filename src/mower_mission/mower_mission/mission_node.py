@@ -586,7 +586,9 @@ class MissionNode(Node):
                 json.dump({'name': e.name, 'kind': e.kind, 'saved': time.time(),
                            'require_fixed': bool(self.fsm.p.record_require_fixed),
                            'not_fixed': sum(1 for v in e.vertices if not v['fixed']),
-                           'vertices': e.vertices}, fh, indent=1)
+                           'vertices': e.vertices,
+                           **({'smoothing': e.smoothing} if e.smoothing else {})},
+                          fh, indent=1)
             os.replace(tmp, path)
         except OSError as exc:
             self.get_logger().warn('cannot save the recording quality file: %s' % exc)

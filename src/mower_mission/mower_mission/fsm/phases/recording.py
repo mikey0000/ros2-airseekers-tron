@@ -3,9 +3,19 @@
 
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
+import os
+import sys
+
 from mower_mission.fsm.common import (FIX_RTK_FIXED, PublishTrajectory, SRV_ADD_AREA,
     SRV_GET_AREA, SRV_PROMOTE_OBSTACLE, STATE_AUTONOMOUS, SaveRecordingFallback,
     SaveRecordingQuality, geo)  # noqa: F401
+
+try:
+    from mower_map import boundary_smoothing
+except ImportError:          # source tree without the mower_map install (unit tests)
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', '..',
+                                    'mower_map'))
+    from mower_map import boundary_smoothing      # noqa: E402
 
 
 class RecordingMixin:
@@ -27,6 +37,7 @@ class RecordingMixin:
         self._track_q = []               # (fix_type, hdop) per _track sample
         self._record_poly = None
         self._record_line = None
+        self._record_smoothing = None
         self._record_kind = kind
         self._last_sample = -1e9
         hint = {'path': 'drive the path with the joystick',
@@ -80,13 +91,44 @@ class RecordingMixin:
             self._go_idle('recording rejected: %s' % why)
             return False
         self._record_poly = poly
+        self._record_smoothing = None
         self._log('info', 'recording finished: %d samples -> %d vertices, %.1f m^2' % (
             n, len(poly), area))
+        if self._record_kind == 'area':
+            self._smooth_recorded_area()
         self._go('RECORDING', 'saving obstacle' if self._record_kind == 'obstacle'
                  else 'saving area')
         self._enum = {'purpose': 'record', 'index': 0, 'areas': {}, 'count': 0}
         self._call(SRV_GET_AREA, {'index': 0}, purpose='enum')
         return True
+
+    def _smooth_recorded_area(self):
+        """Smooth a finished AREA ring (mower_map.boundary_smoothing, the inner polygon hull
+        bounded by record_smooth_tolerance_m): the zigs go, the line only moves inward, corners
+        stay. The ring as recorded rides along in the quality sidecar to undo it. No-go zones
+        are not smoothed (inward would shrink a keep-out); paths are bands, not lines."""
+        tol = float(self.p.record_smooth_tolerance_m)
+        if tol <= 0.0:
+            return
+        res = boundary_smoothing.smooth_ring(self._record_poly, tol)
+        if res.reason:
+            self._log('warn', 'boundary smoothing skipped: %s' % res.reason)
+            return
+        if not res.removed:
+            return
+        self._record_smoothing = {
+            'method': 'inner_hull', 'tolerance_m': tol,
+            'max_deviation_m': round(res.max_deviation_m, 4),
+            'area_before_m2': round(res.area_before_m2, 3),
+            'area_after_m2': round(res.area_after_m2, 3),
+            'vertices_before': len(self._record_poly), 'vertices_after': len(res.ring),
+            'recorded_polygon': [[round(float(x), 4), round(float(y), 4)]
+                                 for x, y in self._record_poly]}
+        self._log('info', 'boundary smoothed (tolerance %.2f m): %d -> %d vertices, max %.3f m '
+                  'inward, area %.2f -> %.2f m^2 (recorded ring kept in the quality file)' % (
+                      tol, len(self._record_poly), len(res.ring), res.max_deviation_m,
+                      res.area_before_m2, res.area_after_m2))
+        self._record_poly = list(res.ring)
 
     def _record_finish_path(self):
         n = len(self._track)
@@ -174,13 +216,15 @@ class RecordingMixin:
         poly, self._record_poly = self._record_poly, None
         verts = self._record_line if self._record_kind == 'path' and self._record_line else poly
         quality = self._record_vertex_quality(verts) if ok else []
+        smoothing, self._record_smoothing = self._record_smoothing, None
         self._track = []
         self._track_q = []
         self._fx.append(PublishTrajectory([]))
         if ok:
             self._log('info', '%s "%s" saved (%d vertices)' % (
                 self._record_kind, self._record_name, len(poly)))
-            self._fx.append(SaveRecordingQuality(self._record_name, self._record_kind, quality))
+            self._fx.append(SaveRecordingQuality(self._record_name, self._record_kind, quality,
+                                                 smoothing=smoothing))
             bad = sum(1 for v in quality if not v['fixed'])
             if bad and self.p.record_require_fixed:
                 self._log('warn', '%s "%s": %d of %d vertices recorded without RTK fixed '

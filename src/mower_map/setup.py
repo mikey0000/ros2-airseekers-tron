@@ -26,6 +26,7 @@ setup(
             'map_server_node = mower_map.map_server_node:main',
             'obstacle_tracker = mower_map.obstacle_tracker_node:main',
             'import_vendor_geojson = mower_map.import_vendor_geojson:main',
+            'smooth_areas = mower_map.smooth_areas:main',
         ],
     },
 )
