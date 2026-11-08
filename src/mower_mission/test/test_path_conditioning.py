@@ -695,6 +695,69 @@ def test_transit_ending_beside_the_start_drives_onto_it_first():
     assert h.name == 'MOWING'
 
 
+def _past_start_harness(**params):
+    """Lap 0 starts on the top edge of square(0, 0, 5) at (2, 5), its first leg east along
+    the line. The transit target is the start itself (an on-line start the edge approach
+    point does not apply to)."""
+    h = Harness(path_conditioning=True, auto_route=False, hard_boundary_body=True, **params)
+    h.areas = [square(0, 0, 5)]
+    start_until_planning(h)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(2.0, 5.0, 4.5, 5.0)]))
+    m = h.fsm.mission
+    assert h.name == 'TRANSIT'
+    h.fsm._region_areas = {0: {'outer': square(0, 0, 5)['outer']}}
+    m.transit_target = (2.0, 5.0, 0.0)
+    h.fsm._action = None
+    return h, m
+
+
+def _end_transit_past_the_start(h):
+    # sim 2026-11-09 (real_run5_smooth): the transit ended on the line 0.21 m past the start
+    # along its leg, heading 55 deg into the line
+    h.fsm.inputs.pose = (2.21, 4.99, math.radians(55))
+    h.fsm._route_legs = {'legs': [[(1.0, 3.0, 0.0), (2.21, 4.99, 0.0)]], 'i': 0}
+    h.fsm._begin(h.t)
+    h.fsm._route_result(f.SUCCEEDED)
+    h._apply(h.fsm._end())
+
+
+def test_transit_ending_past_an_on_line_start_reverses_onto_it_along_the_leg():
+    # master turned 124 deg to face the start, drove onto it against the leg, and the
+    # -177 deg leg-start pivot on the line put the nose 0.46 m out (BOUNDARY OUT)
+    h, m = _past_start_harness()
+    _end_transit_past_the_start(h)
+    assert m.final_approach and m.final_approach_reverse
+    away = math.atan2(-0.01, 0.21)                    # facing away from the start: ~ the leg
+    assert abs(h.goal(f.ACT_SPIN)['angle'] - (away - math.radians(55))) < 1e-6
+    h.fsm.inputs.pose = (2.21, 4.99, away)
+    h.finish(f.ACT_SPIN)
+    assert abs(h.goal(f.ACT_BACKUP)['distance_m'] - math.hypot(0.21, 0.01)) < 1e-6
+    a = h.pending_action(f.ACT_BACKUP)
+    assert a.purpose == 'final_approach'
+    mark = h.mark()
+    h.fsm.inputs.pose = (2.0, 5.0, away)
+    h.finish(f.ACT_BACKUP)
+    assert h.name == 'MOWING'
+    texts = [e.text for e in h.since(mark, f.Log)]
+    assert not any('leg start at' in t for t in texts)   # arrived along the leg: no pivot
+
+
+def test_final_approach_reverse_only_when_the_reversed_body_stays_within_limits():
+    # hard edge_mode: base_link on the line puts the sides 0.235 out (> 0.10): no reverse
+    # hop, the straight one as before
+    h, m = _past_start_harness()
+    m.settings = dict(m.settings, edge_mode='hard')
+    _end_transit_past_the_start(h)
+    assert m.final_approach and not m.final_approach_reverse
+    to = math.atan2(0.01, -0.21)
+    assert abs(h.goal(f.ACT_SPIN)['angle'] -
+               math.remainder(to - math.radians(55), 2 * math.pi)) < 1e-6
+    h.fsm.inputs.pose = (2.21, 4.99, to)
+    h.finish(f.ACT_SPIN)
+    assert h.pending_action(f.ACT_DRIVE).purpose == 'final_approach'
+
+
 def test_transit_ending_on_the_start_mows_at_once():
     h = Harness(path_conditioning=True, auto_route=False)
     h.areas = [square(-1, -1, 12)]

@@ -102,8 +102,12 @@ class MowingMixin:
         the area line - an edge-lap start / resume point - is approached at a point
         edge_approach_inset_m inside, beside it (sim 2026-10-22: transits arriving square to
         the line put the nose 0.40 m out). Not where another edge is closer to that point
-        than the start's own (a corner: run5 (-1.83, 4.48)). The leg-start pivot and the join then take the
-        robot onto the lap from inside. edge_approach_inset_m <= 0: the start itself."""
+        than the start's own (a corner). The leg-start pivot and the join then take the
+        robot onto the lap from inside. edge_approach_inset_m <= 0: the start itself. Both
+        distances are to the boundary of the allowed region (the union): a drawn path's edges
+        inside the area are not lines. 2026-11-09: Path 2 / 3 crossing Area 1's top edge made
+        an on-line start beside them a "corner", so the transit went onto the line itself;
+        run5's (-1.83, 4.48), once taken for a corner, is 0.42 m inside (no edge start)."""
         x, y = float(target[0]), float(target[1])
         inset = float(self.p.edge_approach_inset_m)
         if self.mission is not None:
@@ -111,7 +115,7 @@ class MowingMixin:
         if inset <= 0.0 or not self._region_areas:
             return (x, y, yaw)
         polys = self._region()
-        q = bbody.nearest_edge_point(x, y, polys)
+        q = bbody.nearest_boundary_point(x, y, polys)
         if q is None or q[2] > float(self.p.edge_approach_near_m):
             return (x, y, yaw)
         best = None
@@ -120,7 +124,7 @@ class MowingMixin:
             cx, cy = x + inset * nx, y + inset * ny
             if bbody.point_outside(cx, cy, polys) > 0.0:
                 continue
-            e = bbody.nearest_edge_point(cx, cy, polys)
+            e = bbody.nearest_boundary_point(cx, cy, polys)
             c = e[2] if e is not None else 0.0
             if best is None or c > best[0]:
                 best = (c, cx, cy, sgn)

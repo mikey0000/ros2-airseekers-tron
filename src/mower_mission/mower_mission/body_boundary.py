@@ -81,6 +81,37 @@ def nearest_edge_point(x, y, polys):
     return best
 
 
+def nearest_boundary_point(x, y, polys, step=0.02):
+    """(px, py, d): the closest point to (x, y) on the boundary of the UNION of ``polys``.
+    Unlike nearest_edge_point, an edge stretch strictly inside another polygon is internal
+    and does not count (a drawn path crossing a mowing area's line: its edges run through
+    the area's interior; real_run5's Path 2 / Path 3 cross Area 1's top edge). Each edge is
+    checked at its closest point and every ``step`` m, nearest edges first. None without
+    polygons or when every edge is internal."""
+    rings = [p for p in polys if len(p) >= 3]
+    edges = []
+    for i, poly in enumerate(rings):
+        for k in range(len(poly)):
+            ax, ay = poly[k - 1][0], poly[k - 1][1]
+            dx, dy = poly[k][0] - ax, poly[k][1] - ay
+            e = (ax, ay, poly[k][0], poly[k][1], dx, dy, dx * dx + dy * dy)
+            edges.append((_seg_point_dist(x, y, e), i, e))
+    edges.sort(key=lambda r: r[0])
+    best = None
+    for d0, i, (ax, ay, _bx, _by, dx, dy, L2) in edges:
+        if best is not None and d0 >= best[2]:
+            break                      # no point of this or any later edge is nearer
+        others = [p for j, p in enumerate(rings) if j != i]
+        n = max(1, int(math.ceil(math.sqrt(L2) / step)))
+        tc = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+        for t in [tc] + [k / n for k in range(n + 1)]:
+            px, py = ax + t * dx, ay + t * dy
+            d = math.hypot(px - x, py - y)
+            if (best is None or d < best[2]) and not any(_pip(px, py, p) for p in others):
+                best = (px, py, d)
+    return best
+
+
 def point_outside(x, y, polys):
     """Distance of (x, y) outside the union of ``polys`` (0 inside; inf without polygons)."""
     best = math.inf

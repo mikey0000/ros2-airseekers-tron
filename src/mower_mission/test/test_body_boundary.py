@@ -353,6 +353,37 @@ def test_edge_start_join_merges_tangentially_onto_an_arc():
     assert max(turns) < math.radians(8)                                # smooth, no kink
 
 
+# ---- 2026-11-09: a drawn path crossing the area line (real_run5_smooth Area 1 / Path 2, 3) ----
+
+_STRIP = [(2.2, 3.0), (2.6, 3.0), (2.6, 7.0), (2.2, 7.0)]      # crosses square(0, 0, 5)'s top
+
+
+def test_nearest_boundary_point_skips_edges_inside_another_polygon():
+    polys = [square(0, 0, 5)['outer'], _STRIP]
+    assert abs(bb.nearest_edge_point(2.0, 4.7, polys)[2] - 0.2) < 1e-9   # the strip's edge
+    q = bb.nearest_boundary_point(2.0, 4.7, polys)                      # ... runs inside
+    assert abs(q[2] - 0.3) < 1e-9 and abs(q[1] - 5.0) < 1e-9
+    q = bb.nearest_boundary_point(2.4, 5.5, polys)                      # inside the strip
+    assert abs(q[2] - 0.2) < 1e-9
+    assert bb.nearest_boundary_point(1.0, 1.0, []) is None
+
+
+def test_edge_start_beside_a_drawn_path_crossing_the_line_gets_the_approach_point():
+    # master took the strip's edge 0.2 m from the approach point for a corner and sent the
+    # transit onto the line itself (the final approach then pushed the nose 0.46 m out)
+    h = mowing_h([line(1, 3, 4, 3), line(2.0, 5.0, 4.0, 5.0, n=21)], (1.0, 3.0, 0.0),
+                 path_conditioning=True, edge_approach_inset_m=0.30)
+    m = h.fsm.mission
+    h.fsm._region_areas = {0: {'outer': square(0, 0, 5)['outer'], 'is_navigation_area': False},
+                           1: {'outer': _STRIP, 'is_navigation_area': True}}
+    m.sub_i, m.start_local = 1, 0
+    h.fsm._begin(h.t)
+    h.fsm._dispatch(force_transit=True)
+    h._apply(h.fsm._end())
+    tx, ty, _ = m.transit_target
+    assert abs(tx - 2.0) < 1e-6 and abs(ty - 4.7) < 1e-6
+
+
 # ---- owner 2026-10-23: blade stays on for obstacle avoidance while inside the area ----
 
 def _fx_call(h, fn):

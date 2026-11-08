@@ -35,6 +35,7 @@ class TransitMixin:
         m.route_poses = None
         m.route_full, m.route_cusps, m.cusp_resume = None, [], None
         m.final_approach = False
+        m.final_approach_reverse = False
         if self.p.route_transits and not m.route_fallback and m.detour is None \
                 and not m.recovering and self.inputs.pose is not None:
             m.fallback_ref = None
@@ -779,16 +780,19 @@ class TransitMixin:
         not a tracker leg (sim gate 2026-10-16: transits ended 0.1-0.23 m beside the start
         and the start pivot / rejoin ran that far off the line; as a 0.1 m FollowPath leg
         MPPI reversed 0.4 m out of the area). Once per transit; the outcome is not judged
-        (the transit had arrived). True = started."""
+        (the transit had arrived). The hop reverses onto the start when that arrives facing
+        along the sub-path's first leg (_final_approach_reverses). True = started."""
         m, pose, tol = self.mission, self.inputs.pose, float(self.p.route_final_approach_m)
         if not self.p.path_conditioning or tol <= 0.0 or d <= tol or pose is None or \
                 len(pose) < 3 or m.transit_target is None or m.final_approach:
             return False
         m.final_approach = True
-        b = m.transit_target
-        delta = geo.wrap_angle(math.atan2(b[1] - pose[1], b[0] - pose[0]) - float(pose[2]))
+        m.final_approach_reverse = self._final_approach_reverses(pose, d)
+        delta = geo.wrap_angle(self._final_approach_heading(pose) - float(pose[2]))
         self._log('info', 'transit ended %.2f m from the sub-path start: final approach onto '
-                          'it (turn %.0f deg, then straight)' % (d, math.degrees(delta)))
+                          'it (turn %.0f deg, then %s)' % (
+                              d, math.degrees(delta), 'reverse along its first leg'
+                              if m.final_approach_reverse else 'straight'))
         if abs(delta) >= float(self.p.path_conditioning_pivot_min_rad):
             allowance = abs(delta) / max(0.05, float(self.p.route_cusp_spin_rps)) + 10.0
             self._start_action(ACT_SPIN, {'angle': delta, 'time_allowance_s': allowance},
@@ -797,17 +801,51 @@ class TransitMixin:
         self._final_approach_drive()
         return True
 
+    def _final_approach_reverses(self, pose, d):
+        """True: the final approach hop of ``d`` m reverses onto the start. That is when the
+        start lies behind the robot along the sub-path's first leg (the target yaw): reversed,
+        the robot arrives facing along the leg; forward, against it, with a near about-turn
+        on the start next. Sim 2026-11-09 (real_run5_smooth): transits ending 0.13-0.35 m
+        past an on-line start along the line turned 79-124 deg to face it, drove onto it and
+        the 156-177 deg leg-start pivot on the line put the nose 0.44-0.46 m out. Only when
+        every pose of the reversed hop keeps the body within its limits (_safe_backoff)."""
+        b = self.mission.transit_target
+        if len(b) < 3:
+            return False
+        to = math.atan2(b[1] - pose[1], b[0] - pose[0])
+        if abs(geo.wrap_angle(to + math.pi - float(b[2]))) >= \
+                abs(geo.wrap_angle(to - float(b[2]))):
+            return False
+        need = max(0.10, 0.05 * math.ceil(d / 0.05 - 1e-9))
+        back = (float(pose[0]), float(pose[1]), geo.wrap_angle(to + math.pi))
+        return self._safe_backoff(need, back) >= need - 1e-9
+
+    def _final_approach_heading(self, pose):
+        """Yaw of the final approach hop from ``pose``: facing the start, or facing away
+        from it when the hop reverses."""
+        m = self.mission
+        b = m.transit_target
+        to = math.atan2(b[1] - pose[1], b[0] - pose[0])
+        return geo.wrap_angle(to + math.pi) if m.final_approach_reverse else to
+
     def _final_approach_drive(self):
-        """The straight hop of the final approach: the start's distance along the heading."""
+        """The straight hop of the final approach: the start's distance along the heading
+        (DriveOnHeading), or against it (BackUp) when the hop reverses."""
         m, pose = self.mission, self.inputs.pose
         b = m.transit_target
         dist = 0.0
         if pose is not None and len(pose) >= 3:
             dist = (b[0] - pose[0]) * math.cos(pose[2]) + (b[1] - pose[1]) * math.sin(pose[2])
+            if m.final_approach_reverse:
+                dist = -dist
         if dist < 0.02:
             self._final_approach_done(SUCCEEDED)
             return
         speed = float(self.p.route_final_approach_speed_mps)
+        if m.final_approach_reverse:
+            self._start_action(ACT_BACKUP, {'distance_m': dist, 'speed_mps': speed},
+                               dist / max(0.01, speed) + 15.0, purpose='final_approach')
+            return
         self._start_action(ACT_DRIVE, {'distance_m': dist, 'speed_mps': speed,
                                        'wait_for_rtk': False, 'rtk_timeout_s': 0.0},
                            dist / max(0.01, speed) + 15.0, purpose='final_approach')
@@ -870,8 +908,7 @@ class TransitMixin:
                     self._pivot_tries = {}
                 else:
                     b, pose = m.transit_target, self.inputs.pose
-                    heading = None if pose is None else \
-                        math.atan2(b[1] - pose[1], b[0] - pose[0])
+                    heading = None if pose is None else self._final_approach_heading(pose)
                     if self._pivot_unfinished(outcome, 'final_approach_spin',
                                               ('final', round(b[0], 2), round(b[1], 2)),
                                               heading, self._pivot_follow_rad(),
