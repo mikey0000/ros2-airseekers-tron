@@ -2230,3 +2230,45 @@ Wi-Fi profiles, BSSID lock, routes and DNS: documented in `handover.md`, no conf
 `src/seg_ros/README.md`). Not ported: speed raises, `local_stop_dist`, omni shift (Tron is
 diff drive); left: the bumper back-up safety check against keepouts. Details and the
 candidate table: `analysis/2026-11-25_stock_v1.3.33_glean.md`.
+
+## Boundary smoothing for recorded areas (2026-11-09, branch ws/smooth1109, unit + offline + sim; gate FAILS b, not field tested)
+
+Details, sources and numbers: `analysis/2026-11-09_boundary_smoothing.md`.
+
+- **Problem.** Recorded boundaries zigzag 5-20 cm, and lap 0 and its offset laps drive every
+  zig. The recorder's DP 0.05 m and the mission's in-memory `clean_area_ring` do not remove
+  them: they keep noisy samples where they are.
+- **Method.** `mower_map/boundary_smoothing.py`: the inner polygon hull of JTS / GEOS
+  `PolygonHullSimplifier`, stopped by a distance (DP's criterion) instead of a vertex or area
+  ratio. It removes convex ears only, smallest triangle first. Guarantees, unit-tested:
+  - the line moves inward or stays, by at most the tolerance (Hausdorff);
+  - vertices are recorded vertices, unmoved; corners are at most bevelled by the tolerance,
+    never rounded;
+  - the polygon stays simple with the same winding;
+  - the area only shrinks, and the change is reported.
+- **Recording.** An AREA recording is smoothed on finish at `record_smooth_tolerance_m`
+  (0.08 m, 0 = off). The ring as recorded and the report go into the recording quality file
+  (`smoothing`). No-go zones and paths are not smoothed.
+- **A6.** One new mission parameter, no removal, reason in the analysis. The tolerance moves
+  where the edge is driven and must be switchable per robot. `mission.yaml` now has one more
+  key.
+- **Existing areas.** `ros2 run mower_map smooth_areas areas.dat [--area NAME]` writes
+  `areas.smoothed.dat` + a report next to the map and never the map itself. The owner copies
+  it over `areas.dat` and calls `load_areas` (mower_map README "Smoothing existing
+  boundaries"). `--restore-from` puts recorded rings back. No GUI action: it would need a
+  second implementation or a new service type.
+- **Owner's areas (2026-11-05 snapshot, 0.08 m), offline.**
+  - Max inward move 0.074-0.080 m. Area change -0.25 to -0.78 % on the lawns, -2.5 % heart,
+    -9.2 % on the 3.8 m² Area 4.
+  - Outline excess turning down 6-74 %. Planner lap turning down 2-7 %. Closer backyard
+    lawn straight-edge lap squiggle p50 3.2 -> 2.3 cm.
+  - Coverage unchanged, drive 1-2 % shorter.
+  - The p90 / max kinks are larger than the tolerance and stay; edit those in the GUI.
+- **Sim.** `real_run5_smooth` (Area 1 smoothed) fails b in both seeds: one hard-boundary
+  trip at the new lap-0 start. The baseline real_run5 on the same code has b 0.
+  - Cause: the transit's final approach (`_route_final_approach`) drives straight onto a
+    lap-0 start on the line from 0.13-0.21 m inside at a steep angle, which puts the nose
+    0.44 m out.
+  - Smoothing only moved the planner's start there. It is a mission transit weakness that
+    a recorded map can hit too.
+  - Fix or guard that approach and re-gate before applying proposals on the mower.

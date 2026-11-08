@@ -11,6 +11,9 @@ areas, progress and boundary state from it.
   numpy and PyYAML, not shapely.
 - `mower_map/map_server_node.py`: the rclpy node.
 - `mower_map/import_vendor_geojson.py`: the vendor map importer CLI.
+- `mower_map/boundary_smoothing.py`: ROS-free boundary smoothing (inner polygon hull with a
+  distance tolerance). Recorded areas are smoothed with it when the recording finishes.
+- `mower_map/smooth_areas.py`: the CLI that proposes smoothed boundaries for existing areas.
 
 ```bash
 ros2 launch mower_map map_server.launch.py maps_dir:=/ros2_ws/maps \
@@ -181,6 +184,61 @@ pitch and quality are dropped.
 | 5 dock outline | `dock_outline` in `dock_pose.yaml` (dock-local frame) |
 | 6 charge_point, 7 undock_point | Dock pose. Position = charge point. Yaw = atan2 from charge point to undock point, which is the heading when leaving. |
 | 8 RTK base | Ignored |
+
+## Smoothing existing boundaries
+
+Recorded boundaries zigzag by 5-20 cm (RTK noise and steering). Lap 0 runs on the line and the
+inner laps are offsets of it, so the zigs are driven in every lap. Since 2026-11-09 a new
+recording is smoothed when it is finished (mower_mission `record_smooth_tolerance_m`). Areas
+recorded before that are smoothed only when the owner applies a proposal:
+
+```bash
+# on the mower host: propose (writes areas.smoothed.dat + areas.smoothed.json next to the map;
+# areas.dat is not touched). --area per area to smooth; default every mowing area.
+docker exec mower_jazzy bash -c 'cd /work && PYTHONPATH=src/mower_map:src/mower_common \
+    python3 -m mower_map.smooth_areas /ros2_ws/maps/areas.dat --area "Front lawn"'
+# (or `ros2 run mower_map smooth_areas ...` once mower_map is rebuilt)
+```
+
+Sim gate status (2026-11-09): a smoothed real_run5 tripped the hard boundary once, at the
+transit's final approach onto the new lap-0 start (a mission transit weakness, not the
+smoothing itself; `docs/analysis/2026-11-09_boundary_smoothing.md`). Re-gate before relying
+on it.
+
+It prints, per area: vertices before / after, the largest inward move, the area change (m2,
+%), and wiggle and excess turning before / after. `--tolerance` sets the largest inward
+move (default 0.08 m). To apply the proposal, mower docked and no mow paused:
+
+```bash
+cd /userdata/ros2/maps
+sudo cp areas.dat areas.dat.before_smoothing        # the undo copy
+sudo cp areas.smoothed.dat areas.dat
+docker exec mower_jazzy bash -c 'source /opt/ros/jazzy/setup.bash; \
+    source /work/install/setup.bash; ros2 daemon stop; \
+    ros2 service call /map_server_node/load_areas std_srvs/srv/Trigger'
+```
+
+`load_areas` re-reads the file, keeps the per-area settings (names are unchanged) and
+publishes `replan_needed`. Undo: copy `areas.dat.before_smoothing` back and call
+`load_areas` again. For an area smoothed when it was recorded, `--restore-from
+/ros2_ws/maps/record_quality` writes `areas.restored.dat` with the ring as recorded (from the
+quality file's `smoothing.recorded_polygon`), applied the same way.
+
+What the smoothing does (`boundary_smoothing.py`; method and evaluation in
+`docs/analysis/2026-11-09_boundary_smoothing.md`):
+
+- It is the inner hull of JTS / GEOS `PolygonHullSimplifier` (a subset of the recorded
+  vertices, contained in the recorded polygon), stopped by a distance instead of a vertex
+  or area ratio. It removes recorded vertices only and never moves one. Each removal cuts
+  off a convex corner ("ear") whose triangle holds no other vertex, smallest triangle first.
+- A vertex goes only while every recorded vertex of the span the new edge replaces is
+  within the tolerance of that edge.
+- The line therefore moves inward or stays, by at most the tolerance. A corner stays a
+  corner (bevelled by at most the tolerance, never rounded). The polygon stays simple with
+  the same winding. The area can only shrink.
+- Zigs larger than the tolerance stay. They are real features or recording errors: edit them
+  in the GUI.
+- Navigation areas (paths), no-go zones and boundary lines are not changed.
 
 ## Paths (channels)
 

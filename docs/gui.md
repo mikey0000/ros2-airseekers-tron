@@ -298,6 +298,9 @@ Paths below are under `third_party/mowglinext/gui/`.
   `/ros2_ws/maps/record_quality`; `web/src/utils/recordingQuality.ts` turns them into vertex
   circles (green RTK fixed, amber float, red worse) for items whose name is still in the map,
   only the non-fixed ones outside Edit Map.
+  Since 2026-11-09 an area sidecar can also hold `smoothing` (the boundary smoothing report
+  and the ring as recorded, `mower_map` README "Smoothing existing boundaries"); the GUI
+  ignores it.
 * **Charger moved.** Topic key `dockMoved` (`/mower_docking/dock_moved`, latched JSON; also in
   `launch/mower.launch.py` FOXGLOVE_GUI_TOPICS, the third list a new GUI topic needs);
   `VisionDockCard` warns until the stored dock pose is within `warn_m` of where the robot docked
