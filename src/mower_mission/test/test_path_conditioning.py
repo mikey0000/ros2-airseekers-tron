@@ -758,6 +758,23 @@ def test_final_approach_reverse_only_when_the_reversed_body_stays_within_limits(
     assert h.pending_action(f.ACT_DRIVE).purpose == 'final_approach'
 
 
+def test_final_approach_no_reverse_on_a_slope_or_off_the_line():
+    # slope caution cap on (slope sim 2026-11-09: the reverse hop slipped into STUCK)
+    h, m = _past_start_harness()
+    h.fsm._tilt_capped = True
+    _end_transit_past_the_start(h)
+    assert m.final_approach and not m.final_approach_reverse
+    # an approach point 0.30 m inside: the leg-start pivot there is safe, no reverse
+    h, m = _past_start_harness()
+    m.transit_target = (2.0, 4.7, 0.0)
+    h.fsm.inputs.pose = (2.21, 4.69, math.radians(55))
+    h.fsm._route_legs = {'legs': [[(1.0, 3.0, 0.0), (2.21, 4.69, 0.0)]], 'i': 0}
+    h.fsm._begin(h.t)
+    h.fsm._route_result(f.SUCCEEDED)
+    h._apply(h.fsm._end())
+    assert m.final_approach and not m.final_approach_reverse
+
+
 def test_transit_ending_on_the_start_mows_at_once():
     h = Harness(path_conditioning=True, auto_route=False)
     h.areas = [square(-1, -1, 12)]

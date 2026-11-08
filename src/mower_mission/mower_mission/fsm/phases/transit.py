@@ -807,10 +807,17 @@ class TransitMixin:
         the robot arrives facing along the leg; forward, against it, with a near about-turn
         on the start next. Sim 2026-11-09 (real_run5_smooth): transits ending 0.13-0.35 m
         past an on-line start along the line turned 79-124 deg to face it, drove onto it and
-        the 156-177 deg leg-start pivot on the line put the nose 0.44-0.46 m out. Only when
-        every pose of the reversed hop keeps the body within its limits (_safe_backoff)."""
+        the 156-177 deg leg-start pivot on the line put the nose 0.44-0.46 m out. Only for a
+        start on the line (within edge_approach_near_m of the region's boundary: an approach
+        point inside or an interior start pivots there safely), not while the slope caution
+        cap is on (no reversing on a side slope, as tilt_transit_reverse_param; slope sim
+        2026-11-09: a reverse hop there slipped into STUCK), and when every pose of the
+        reversed hop keeps the body within its limits (_safe_backoff)."""
         b = self.mission.transit_target
-        if len(b) < 3:
+        if len(b) < 3 or self._tilt_capped or not self._region_areas:
+            return False
+        q = bbody.nearest_boundary_point(float(b[0]), float(b[1]), self._region())
+        if q is None or q[2] > float(self.p.edge_approach_near_m):
             return False
         to = math.atan2(b[1] - pose[1], b[0] - pose[0])
         if abs(geo.wrap_angle(to + math.pi - float(b[2]))) >= \
