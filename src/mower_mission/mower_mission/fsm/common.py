@@ -1585,6 +1585,7 @@ class Mission:
     route_full: Optional[list] = None           # the planned route (route_cusps index into it)
     route_cusps: list = field(default_factory=list)   # [(i, x, y, heading_after)] of route_full
     final_approach: bool = False                # this transit's final approach leg was sent
+    final_approach_reverse: bool = False        # ... and it reverses onto the start (BackUp)
     tangent: object = None                      # transit target the route ends tangent onto
     join: Any = None
     route_backouts: set = field(default_factory=set)   # route corners backed off from
