@@ -2462,3 +2462,116 @@ TEST(EdgeLayoutSpurs, LapBandSpursNeedRoomToTurnAbout) {
   expectSpursKeepTheBodyIn(plan, area, "0.5 m lobe");
 }
 
+
+// ---------------------------------------------------------------------------
+// Edge passes (2026-11-09, field 2026-11-08 "closer backyard lawn": rows meet a long edge at a
+// shallow angle and each straight stretch of the line leaves a thin pocket between the row ends
+// and the inner lap; every pocket got its own fill pass, so the edge was mowed as a chain of
+// short passes with a dog-leg or a transit between each). A run of fill passes and spurs along
+// one edge is driven as one pass along the edge of the row region (0.45 in, the rows' rule)
+// where that pass leaves no more of the pockets, nor of their blade-fit part, and drives no
+// farther.
+// ---------------------------------------------------------------------------
+namespace {
+
+// The fill passes as continuous forward stretches: a swath that starts where the last one ended
+// (an edge pass's next leg starts 0.02 m past its corner) and does not turn back extends it.
+std::vector<std::vector<Point2D>> fillStretches(const CoveragePlan& plan) {
+  std::vector<std::vector<Point2D>> out;
+  const size_t first = plan.swaths.size() - plan.fill_swaths;
+  for (size_t i = first; i < plan.swaths.size(); ++i) {
+    const auto& s = plan.swaths[i];
+    if (i > first) {
+      const auto& prev = plan.swaths[i - 1];
+      const double ax = prev.second.first - prev.first.first;
+      const double ay = prev.second.second - prev.first.second;
+      const double bx = s.second.first - s.first.first, by = s.second.second - s.first.second;
+      if (std::hypot(prev.second.first - s.first.first, prev.second.second - s.first.second) <
+              0.03 &&
+          ax * bx + ay * by > 0.0) {
+        out.back().push_back(s.second);
+        continue;
+      }
+    }
+    out.push_back({s.first, s.second});
+  }
+  return out;
+}
+
+// Every 5 cm along a stretch: base_link at least the row-end inset (0.45) inside the line, so a
+// pivot there sweeps the body no farther out than at a row end (hypot(0.60, 0.235) - 0.45 =
+// 0.194), and the body heading along it within the soft planning limit (0.26).
+void expectStretchInRowRegion(const std::vector<Point2D>& st, const std::vector<Point2D>& area) {
+  for (size_t i = 0; i + 1 < st.size(); ++i) {
+    const double len = std::hypot(st[i + 1].first - st[i].first, st[i + 1].second - st[i].second);
+    const double yaw = std::atan2(st[i + 1].second - st[i].second, st[i + 1].first - st[i].first);
+    for (double t = 0.0; t <= len; t += 0.05) {
+      const Point2D q{st[i].first + t / len * (st[i + 1].first - st[i].first),
+                      st[i].second + t / len * (st[i + 1].second - st[i].second)};
+      EXPECT_TRUE(pointInPolygon(q, area));
+      EXPECT_GE(distToOutline(q, area), 0.45 - 1e-3) << "(" << q.first << ", " << q.second << ")";
+      EXPECT_LE(bodyOutside(q, yaw, area), 0.26);
+    }
+  }
+}
+
+// stretches with every point within `reach` of the outline piece a -> b and at least `from`
+// along it from a
+std::vector<std::vector<Point2D>> stretchesBeside(const CoveragePlan& plan, const Point2D& a,
+                                                  const Point2D& b, double reach, double from) {
+  std::vector<std::vector<Point2D>> out;
+  const double len = std::hypot(b.first - a.first, b.second - a.second);
+  for (const auto& st : fillStretches(plan)) {
+    bool beside = true;
+    for (const Point2D& p : st) {
+      const double t = ((p.first - a.first) * (b.first - a.first) +
+                        (p.second - a.second) * (b.second - a.second)) / len;
+      beside = beside && pointSegDist(p, a, b) <= reach && t >= from && t <= len;
+    }
+    if (beside) out.push_back(st);
+  }
+  return out;
+}
+
+}  // namespace
+
+// A long edge 3 deg off the rows (rows at 90 deg, the west edge from (0, 0) to (0.524, 10)).
+// Master (6253c79): two fill passes beside it, at 87.0 and 89.4 deg, 0.6 m apart with a dog-leg
+// between (plan coverage 0.9944). Branch: one straight pass parallel to the edge, 0.46 m in
+// (0.9949).
+TEST(EdgeLayoutEdgePasses, ShallowEdgeGetsOneStraightPass) {
+  const std::vector<Point2D> area = {{0, 0}, {8, 0}, {8, 10}, {0.5241, 10}};
+  const CoveragePlan plan = planSoft(area, 90.0);
+  const auto beside = stretchesBeside(plan, area[0], area[3], 1.0, 3.0);
+  ASSERT_EQ(beside.size(), 1u);
+  const auto& st = beside.front();
+  EXPECT_EQ(st.size(), 2u);  // straight
+  const double th = std::atan2(st.back().second - st.front().second,
+                               st.back().first - st.front().first);
+  EXPECT_LT(std::fabs(std::remainder(th - std::atan2(10.0, 0.5241), M_PI)), 1e-3);
+  expectStretchInRowRegion(st, area);
+  EXPECT_GE(plan.coverage_fraction, 0.9944);
+}
+
+// The closer backyard lawn's shape of edge: rows at 105 deg, the west edge 5 / 15 / 5 deg off
+// them in three stretches. Master (6253c79): four fill passes beside it, one per stretch's
+// pocket, each a separate pass with a transit between (plan coverage 0.9922). Branch: one pass
+// along the edge of the row region, bending with the line (0.9928).
+TEST(EdgeLayoutEdgePasses, BentEdgeGetsOnePassAlongIt) {
+  const std::vector<Point2D> area = {{0, 0}, {9, 0}, {9, 8.8164}, {-1.7348, 8.8164},
+                                     {-1.0402, 4.8771}, {-0.6946, 3.9276}};
+  const CoveragePlan plan = planSoft(area, 105.0);
+  // fill stretches beside the west edge (x < 1), and those spanning its three stretches (6 m)
+  size_t west = 0, along = 0;
+  for (const auto& st : fillStretches(plan)) {
+    if (!std::all_of(st.begin(), st.end(), [](const Point2D& p) { return p.first < 1.0; })) {
+      continue;
+    }
+    ++west;
+    along += std::fabs(st.back().second - st.front().second) > 6.0 ? 1 : 0;
+    expectStretchInRowRegion(st, area);
+  }
+  EXPECT_EQ(west, 1u);
+  EXPECT_EQ(along, 1u);
+  EXPECT_GE(plan.coverage_fraction, 0.9922);
+}

@@ -1597,7 +1597,347 @@ bool bestLapSpur(const OGRGeometry* gap, double hw, double swath_angle, const La
 struct FillPass {
   Seg seg;
   bool spur = false;  // in-and-out: seg runs mouth -> end, driven in and back out
+  bool lap = false;   // a spur along a lap band
+  bool edge = false;  // an edge pass in place of a run (mergeEdgeRuns)
+  std::vector<Point2D> via;  // an edge pass: its corners between seg.first and seg.second
+  int gap = -1;              // the gap (index into this round's pockets) it was planned for
 };
+
+// Edge passes (2026-11-09, field 2026-11-08 "closer backyard lawn": rows at 105 deg run along
+// a long edge whose recorded line jogs, and each stretch leaves a thin pocket between the row
+// ends and the inner lap; every pocket got its own pass or spur, so the edge was mowed as a
+// chain of short passes and "V"s with a dog-leg or a transit between each). A run of fill
+// passes and spurs along one edge (neighbours within kEdgeRunMaxTurnRad of each other, their
+// ends at most kEdgeRunGapM apart and at most kEdgeRunSideM side by side, their pockets within
+// kEdgeRunReachM of the line) is driven as one pass along the edge of the row region instead:
+// kEdgePassInsetsM inside it, so straight where the line is straight and bending where it
+// bends. It replaces the run only where it leaves no more of the run's pockets uncovered (their
+// area, and their blade-fit part: the opening by half a swath) and drives no farther than the
+// run did. It is an ordinary fill pass: base_link stays in the row region (row_end_inset in,
+// the rows' rule), so a pivot anywhere on it sweeps the body no farther out than at a row end.
+constexpr double kEdgeRunMaxTurnRad = 20.0 * M_PI / 180.0;
+constexpr double kEdgeRunGapM = 1.0;
+constexpr double kEdgeRunSideM = 0.5;
+constexpr double kEdgeRunReachM = 1.0;
+constexpr double kEdgePassInsetsM[] = {0.01, 0.03, 0.05};
+constexpr double kEdgePassReach[] = {0.1, 0.5, 1.0};  // half swaths from the pockets: its ends
+constexpr double kEdgePassSimplifyM = 0.01;
+constexpr double kEdgePassMinLegM = 0.1;  // shorter legs (the inset's corner arcs) are merged
+constexpr double kEdgePassTolM2 = 1e-4;  // "no more left", to a square centimetre
+
+// |a - b| between two undirected line angles, in [0, pi/2]
+double lineAngleDiff(double a, double b) {
+  const double d = std::fmod(std::fabs(a - b), M_PI);
+  return std::min(d, M_PI - d);
+}
+
+double segAngle(const Seg& s) {
+  return std::atan2(s.second.second - s.first.second, s.second.first - s.first.first);
+}
+
+// nearest end-to-end distance of two segments
+double endGap(const Seg& a, const Seg& b) {
+  return std::min({dist(a.first, b.first), dist(a.first, b.second), dist(a.second, b.first),
+                   dist(a.second, b.second)});
+}
+
+// how far apart side by side two segments of similar direction lie: the nearer of each one's
+// midpoint to the other's line
+double sideGap(const Seg& a, const Seg& b) {
+  auto off = [](const Seg& s, const Seg& t) {
+    const double l = std::max(dist(s.first, s.second), 1e-9);
+    const double mx = 0.5 * (t.first.first + t.second.first) - s.first.first;
+    const double my = 0.5 * (t.first.second + t.second.second) - s.first.second;
+    return std::fabs(mx * (s.second.second - s.first.second) -
+                     my * (s.second.first - s.first.first)) / l;
+  };
+  return std::min(off(a, b), off(b, a));
+}
+
+// straight pieces of every line string in g
+void lineSegmentsOf(const OGRGeometry* g, std::vector<Seg>* out) {
+  if (g == nullptr) return;
+  if (const auto* l = dynamic_cast<const OGRLineString*>(g)) {
+    for (int i = 0; i + 1 < l->getNumPoints(); ++i) {
+      out->push_back({{l->getX(i), l->getY(i)}, {l->getX(i + 1), l->getY(i + 1)}});
+    }
+  } else if (const auto* gc = dynamic_cast<const OGRGeometryCollection*>(g)) {
+    for (int i = 0; i < gc->getNumGeometries(); ++i) lineSegmentsOf(gc->getGeometryRef(i), out);
+  }
+}
+
+// the legs a pass drives one way: seg.first, its corners, seg.second
+std::vector<Seg> passLegs(const FillPass& f) {
+  std::vector<Seg> legs;
+  Point2D a = f.seg.first;
+  for (const Point2D& v : f.via) {
+    legs.push_back({a, v});
+    a = v;
+  }
+  legs.push_back({a, f.seg.second});
+  return legs;
+}
+
+double passLength(const FillPass& f) {
+  double l = 0.0;
+  for (const Seg& s : passLegs(f)) l += dist(s.first, s.second);
+  return l;
+}
+
+GeomPtr passSwept(const FillPass& f, double hw) {
+  auto* mp = new OGRMultiPolygon();
+  for (const Seg& s : passLegs(f)) addPolys(mp, segRect(s.first, s.second, hw));
+  return unionAll(mp);
+}
+
+// Every ring (outer and holes) of g as a line string.
+std::vector<OGRLineString> ringsOf(const OGRGeometry* g) {
+  std::vector<OGRLineString> out;
+  for (const OGRPolygon* p : polygonsOf(g)) {
+    for (int i = 0; i <= p->getNumInteriorRings(); ++i) {
+      const OGRLinearRing* r = i == 0 ? p->getExteriorRing() : p->getInteriorRing(i - 1);
+      if (r == nullptr || r->getNumPoints() < 4) continue;
+      out.emplace_back();
+      out.back().addSubLineString(r);
+    }
+  }
+  return out;
+}
+
+// The part of ring between distances s0 and s1 along it (wrapping past its start when
+// s1 < s0), simplified by kEdgePassSimplifyM, legs of at least kEdgePassMinLegM.
+std::vector<Point2D> ringPiece(const OGRLineString& ring, double s0, double s1) {
+  const double len = ring.get_Length();
+  OGRLineString piece;
+  auto add = [&piece, &ring](double a, double b) {
+    std::unique_ptr<OGRLineString> sub(ring.getSubLine(a, b, FALSE));
+    if (sub) piece.addSubLineString(sub.get(), piece.getNumPoints() > 0 ? 1 : 0);
+  };
+  if (s0 <= s1) {
+    add(s0, s1);
+  } else {
+    add(s0, len);
+    add(0.0, s1);
+  }
+  std::vector<Point2D> pts;
+  GeomPtr simple(piece.SimplifyPreserveTopology(kEdgePassSimplifyM));
+  const auto* ls = dynamic_cast<const OGRLineString*>(simple.get());
+  const int n = ls != nullptr ? ls->getNumPoints() : 0;
+  for (int i = 0; i < n; ++i) {
+    const Point2D p{ls->getX(i), ls->getY(i)};
+    if (pts.empty() || (i + 1 < n && dist(pts.back(), p) >= kEdgePassMinLegM)) {
+      pts.push_back(p);
+    } else if (i + 1 == n) {
+      if (pts.size() > 1 && dist(pts.back(), p) < kEdgePassMinLegM) pts.pop_back();
+      pts.push_back(p);
+    }
+  }
+  return pts;
+}
+
+// Edge pass candidates over `fit`: along each inset ring of the row region (`inner`, one
+// geometry per kEdgePassInsetsM), the stretch that passes within kEdgePassReach half swaths of
+// fit, at least min_len long, inside centre_region, every leg within kEdgeRunMaxTurnRad of
+// direction th (along the edge, not round a corner).
+std::vector<FillPass> edgePassCandidates(const OGRGeometry* fit, double th, double hw,
+                                         const std::vector<GeomPtr>& inner,
+                                         const OGRGeometry* centre_region, double min_len) {
+  std::vector<FillPass> out;
+  for (const double reach : kEdgePassReach) {
+    GeomPtr zone(fit->Buffer(reach * hw, kBufQuadSegs));
+    for (const GeomPtr& in : inner) {
+      for (const OGRLineString& ring : ringsOf(in.get())) {
+        GeomPtr near(ring.Intersection(zone.get()));
+        if (!near || near->IsEmpty()) continue;
+        // the distances along the ring where it passes near fit; the stretch spanning them is
+        // the ring less its longest stretch away from fit
+        std::vector<Seg> pieces;
+        lineSegmentsOf(near.get(), &pieces);
+        std::vector<double> at;
+        for (const Seg& sg : pieces) {
+          for (const Point2D& q : {sg.first, sg.second}) {
+            OGRPoint pt(q.first, q.second);
+            at.push_back(ring.Project(&pt));
+          }
+        }
+        if (at.size() < 2) continue;
+        std::sort(at.begin(), at.end());
+        const double len = ring.get_Length();
+        size_t start = 0;
+        double widest = len - at.back() + at.front();
+        for (size_t i = 1; i < at.size(); ++i) {
+          if (at[i] - at[i - 1] > widest) {
+            widest = at[i] - at[i - 1];
+            start = i;
+          }
+        }
+        const std::vector<Point2D> pts =
+            ringPiece(ring, at[start], at[(start + at.size() - 1) % at.size()]);
+        if (pts.size() < 2) continue;
+        FillPass cand;
+        cand.seg = {pts.front(), pts.back()};
+        cand.via.assign(pts.begin() + 1, pts.end() - 1);
+        if (passLength(cand) < min_len) continue;
+        const std::vector<Seg> legs = passLegs(cand);
+        if (std::any_of(legs.begin(), legs.end(), [th](const Seg& leg) {
+              return lineAngleDiff(segAngle(leg), th) > kEdgeRunMaxTurnRad;
+            })) {
+          continue;
+        }
+        OGRLineString path;
+        for (const Point2D& q : pts) path.addPoint(q.first, q.second);
+        if (centre_region->Contains(&path)) out.push_back(cand);
+      }
+    }
+  }
+  return out;
+}
+
+// The edge pass for fills[run] (see kEdgeRunMaxTurnRad): of the candidates that leave no more of
+// the run's pockets and of their blade-fit part uncovered than the run does, and drive no
+// farther than the run did (any length past that paying for itself: the area it covers that the
+// run left, at a full swath's width), the one leaving the least, the shorter on a tie. False
+// where none qualifies.
+bool edgePassFor(const std::vector<FillPass>& fills, const std::vector<size_t>& run,
+                 const std::vector<GeomPtr>& pockets, const std::vector<GeomPtr>& inner,
+                 const OGRGeometry* centre_region, double hw, FillPass* out) {
+  std::vector<bool> in_run(fills.size(), false), mine(pockets.size(), false);
+  for (const size_t i : run) {
+    in_run[i] = true;
+    mine[fills[i].gap] = true;
+  }
+  // the run's pockets, less what their other passes cover
+  auto* mp = new OGRMultiPolygon();
+  for (size_t g = 0; g < pockets.size(); ++g) {
+    if (mine[g]) addPolys(mp, pockets[g]->clone());
+  }
+  GeomPtr fit = unionAll(mp);
+  for (size_t i = 0; i < fills.size(); ++i) {
+    if (in_run[i] || fills[i].gap < 0 || !mine[fills[i].gap]) continue;
+    const GeomPtr swept = passSwept(fills[i], hw);
+    fit.reset(fit->Difference(swept.get()));
+  }
+  auto* rects = new OGRMultiPolygon();
+  double drive = 0.0, sx = 0.0, sy = 0.0;
+  for (size_t k = 0; k < run.size(); ++k) {
+    const FillPass& f = fills[run[k]];
+    addPolys(rects, passSwept(f, hw).release());
+    drive += (f.spur ? 2.0 : 1.0) * passLength(f);
+    if (k > 0) drive += endGap(fills[run[k - 1]].seg, f.seg);
+    const double len = dist(f.seg.first, f.seg.second);
+    sx += len * std::cos(2.0 * segAngle(f.seg));
+    sy += len * std::sin(2.0 * segAngle(f.seg));
+  }
+  const GeomPtr swept = unionAll(rects);
+  GeomPtr run_left(fit->Difference(swept.get()));
+  const double run_left_area = geomArea(run_left.get());
+  const double run_left_fit = openedArea(run_left.get(), hw);
+  double best_left = 0.0, best_len = 0.0;
+  bool found = false;
+  for (const FillPass& cand : edgePassCandidates(fit.get(), 0.5 * std::atan2(sy, sx), hw, inner,
+                                                 centre_region, kLayoutMinFillLenM)) {
+    const GeomPtr cs = passSwept(cand, hw);
+    GeomPtr left(fit->Difference(cs.get()));
+    const double left_area = geomArea(left.get()), len = passLength(cand);
+    const double more = run_left_area - left_area;
+    if (more < -kEdgePassTolM2 || len > drive + std::max(0.0, more) / (2.0 * hw) ||
+        openedArea(left.get(), hw) > run_left_fit + kEdgePassTolM2) {
+      continue;
+    }
+    if (!found || left_area < best_left - 1e-9 ||
+        (left_area < best_left + 1e-9 && len < best_len)) {
+      best_left = left_area;
+      best_len = len;
+      *out = cand;
+      found = true;
+    }
+  }
+  return found;
+}
+
+// Replaces each run of fills along an edge (see kEdgeRunMaxTurnRad) that one edge pass covers
+// with that pass, the longest runs first. pockets[f.gap] is the pocket a fill was planned for.
+void mergeEdgeRuns(std::vector<FillPass>* fills, const std::vector<GeomPtr>& pockets,
+                   const OGRGeometry* line, const OGRGeometry* centre_region, double hw) {
+  std::vector<FillPass>& f = *fills;
+  std::vector<size_t> cand;
+  for (size_t i = 0; i < f.size(); ++i) {
+    if (f[i].gap >= 0 && pockets[f[i].gap]->Distance(line) <= kEdgeRunReachM) cand.push_back(i);
+  }
+  // groups: neighbours along an edge (union-find over the candidates)
+  std::vector<size_t> root(cand.size());
+  for (size_t i = 0; i < cand.size(); ++i) root[i] = i;
+  auto find = [&root](size_t i) {
+    while (root[i] != i) i = root[i] = root[root[i]];
+    return i;
+  };
+  auto near = [&f](size_t a, size_t b) {
+    return lineAngleDiff(segAngle(f[a].seg), segAngle(f[b].seg)) <= kEdgeRunMaxTurnRad &&
+           endGap(f[a].seg, f[b].seg) <= kEdgeRunGapM &&
+           sideGap(f[a].seg, f[b].seg) <= kEdgeRunSideM;
+  };
+  bool any = false;
+  for (size_t i = 0; i < cand.size(); ++i) {
+    for (size_t j = i + 1; j < cand.size(); ++j) {
+      if (near(cand[i], cand[j])) {
+        root[find(i)] = find(j);
+        any = true;
+      }
+    }
+  }
+  if (!any) return;
+  std::vector<GeomPtr> inner;  // the row region's inset rings run here
+  for (const double d : kEdgePassInsetsM) {
+    inner.emplace_back(centre_region->Buffer(-d, kBufQuadSegs));
+  }
+  std::vector<bool> drop(f.size(), false);
+  std::vector<FillPass> added;
+  for (size_t r = 0; r < cand.size(); ++r) {
+    if (find(r) != r) continue;
+    std::vector<size_t> group;
+    double sx = 0.0, sy = 0.0;
+    for (size_t i = 0; i < cand.size(); ++i) {
+      if (find(i) != r) continue;
+      const Seg& s = f[cand[i]].seg;
+      group.push_back(cand[i]);
+      sx += dist(s.first, s.second) * std::cos(2.0 * segAngle(s));
+      sy += dist(s.first, s.second) * std::sin(2.0 * segAngle(s));
+    }
+    if (group.size() < 2) continue;
+    // in order along the group's direction; a run never spans a break between neighbours
+    const double th = 0.5 * std::atan2(sy, sx);
+    auto along = [&f, th](size_t i) {
+      const Seg& s = f[i].seg;
+      return 0.5 * ((s.first.first + s.second.first) * std::cos(th) +
+                    (s.first.second + s.second.second) * std::sin(th));
+    };
+    std::sort(group.begin(), group.end(),
+              [&along](size_t a, size_t b) { return along(a) < along(b); });
+    size_t i = 0;
+    while (i + 1 < group.size()) {
+      size_t last = i;
+      while (last + 1 < group.size() && near(group[last], group[last + 1])) ++last;
+      bool merged = false;
+      for (size_t j = last; j > i && !merged; --j) {
+        const std::vector<size_t> run(group.begin() + i, group.begin() + j + 1);
+        FillPass ep;
+        if (!edgePassFor(f, run, pockets, inner, centre_region, hw, &ep)) continue;
+        for (const size_t k : run) drop[k] = true;
+        ep.edge = true;
+        added.push_back(ep);
+        i = j + 1;
+        merged = true;
+      }
+      if (!merged) ++i;
+    }
+  }
+  std::vector<FillPass> kept;
+  for (size_t i = 0; i < f.size(); ++i) {
+    if (!drop[i]) kept.push_back(f[i]);
+  }
+  for (const FillPass& ep : added) kept.push_back(ep);
+  f.swap(kept);
+}
 
 void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
               CoveragePlan* plan, const OGRGeometry* centre = nullptr,
@@ -1614,11 +1954,14 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
   GeomPtr line(target->Boundary());
   size_t spurs = 0;
   size_t lap_spurs = 0;
+  size_t edge_passes = 0;
   for (int it = 0; it < kFillIterations && plan->gap_count > 0; ++it) {
     std::vector<FillPass> fills;
+    std::vector<GeomPtr> pockets;
     for (const OGRPolygon* gp : polygonsOf(unc.get())) {
       if (gp->get_Area() < min_gap) continue;
       GeomPtr rest(gp->clone());
+      pockets.emplace_back(gp->clone());
       for (int k = 0; k < kMaxPassesPerGap && geomArea(rest.get()) >= min_gap; ++k) {
         Seg seg;
         double gain = 0.0;
@@ -1626,6 +1969,7 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
         // best by gain first and then rejecting it gave up on pockets a shorter or
         // differently aimed pass fills: owner_far's west lobe, 2026-11-05)
         FillPass fp;
+        fp.gap = static_cast<int>(pockets.size()) - 1;
         if (bestFillPass(rest.get(), hw, plan->swath_angle_rad, centre_region.get(),
                          layout ? kLayoutMinFillLenM : 0.0,
                          layout ? kLayoutMinFillEfficiency : 0.0, &seg, &gain) &&
@@ -1648,7 +1992,7 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
           // region): a spur into it from the row region, already mouth -> end
           fp.seg = seg;
           fp.spur = true;
-          ++lap_spurs;
+          fp.lap = true;
         } else {
           break;
         }
@@ -1658,6 +2002,8 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
       }
     }
     if (fills.empty()) break;
+    // a run of passes and spurs along one edge: one pass along the row region's edge instead
+    if (layout) mergeEdgeRuns(&fills, pockets, line.get(), centre_region.get(), hw);
     // Append nearest-neighbour from the current last swath end, each pass
     // started at its nearer end.
     Point2D cur = plan->swaths.empty() ? (plan->rings.empty() ? fills.front().seg.first
@@ -1691,6 +2037,7 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
       FillPass fp = fills[pick];
       if (!fp.spur && dist(cur, fp.seg.second) < dist(cur, fp.seg.first)) {
         std::swap(fp.seg.first, fp.seg.second);
+        std::reverse(fp.via.begin(), fp.via.end());
       }
       order.push_back(fp);
       cur = fp.spur ? fp.seg.first : fp.seg.second;
@@ -1698,7 +2045,16 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
     for (size_t k = 0; k < order.size(); ++k) {
       const Seg& s = order[k].seg;
       if (!order[k].spur) {
-        append(s);
+        // an edge pass leg by leg, each after the first from kSpurTurnBackM past its corner
+        // (the planner path keeps two poses per swath)
+        const std::vector<Seg> legs = passLegs(order[k]);
+        for (size_t l = 0; l < legs.size(); ++l) {
+          const double g = l == 0 ? 0.0 : kSpurTurnBackM / dist(legs[l].first, legs[l].second);
+          append({{legs[l].first.first + g * (legs[l].second.first - legs[l].first.first),
+                   legs[l].first.second + g * (legs[l].second.second - legs[l].first.second)},
+                  legs[l].second});
+        }
+        edge_passes += order[k].edge ? 1 : 0;
         continue;
       }
       // in to the end, pivot about there, back out: to the mouth, or straight to just short
@@ -1724,6 +2080,7 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
                s.second.second + f * (out_to.second - s.second.second)},
               out_to});
       ++spurs;
+      lap_spurs += order[k].lap ? 1 : 0;
     }
     covered = unionAll(mp);
     unc = evaluate(target, covered.get(), min_gap, plan);
@@ -1739,9 +2096,10 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
   if (plan->fill_swaths > 0) {
     char buf[192];
     std::snprintf(buf, sizeof(buf),
-                  "gap fill: %zu pass(es) (%zu pocket spur(s), %zu along a lap band), "
-                  "coverage %.4f -> %.4f",
-                  plan->fill_swaths, spurs, lap_spurs, plan->coverage_fraction_before_fill,
+                  "gap fill: %zu pass(es) (%zu pocket spur(s), %zu along a lap band, %zu along "
+                  "an edge), coverage %.4f -> %.4f",
+                  plan->fill_swaths, spurs, lap_spurs, edge_passes,
+                  plan->coverage_fraction_before_fill,
                   plan->coverage_fraction);
     plan->drops.push_back(buf);
   }

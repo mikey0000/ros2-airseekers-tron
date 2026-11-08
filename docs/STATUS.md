@@ -1778,6 +1778,50 @@ Follow-up to the corner pockets. Analysis, gap table and the opening-radius expe
 
 `mission.yaml` and the planner parameters are unchanged (A6).
 
+## Edge passes: one pass along an edge instead of a chain of fills (2026-11-09, branch ws/vpass1109, unit + offline; not sim gated, not field tested)
+
+Field 2026-11-08, live closer backyard lawn: rows at 105 deg run almost along the long west
+edge, and the edge was finished by a chain of short passes. Analysis and offline table:
+`analysis/2026-11-09_edge_passes.md`.
+
+**Cause.**
+- The west line bends 10-20 deg in three places. Each straight stretch leaves one thin pocket
+  between the row ends and lap 2.
+- Each pocket got its own fill pass, driven separately with a dog-leg or transit between.
+  The pockets are narrower than a swath, so they have no blade-fit part.
+
+**Change (`mower_coverage` `fillGaps`, edge layout only).**
+- A run of fill passes and spurs along one edge (neighbours within 20 deg, ends within 1 m,
+  at most 0.5 m side by side) is replaced by **one pass along the row region's edge**:
+  - It runs 0.01-0.05 m inside the 0.45 inset. It is straight where the line is straight and
+    bends with it (each leg within 20 deg of the run, so it never wraps round a corner).
+  - It replaces the run only where it leaves no more of the pockets uncovered, nor of their
+    blade-fit part. It must also drive no farther, except where extra length covers area the
+    run left, at a full swath's width.
+- It is an ordinary fill pass. Base_link stays at least 0.45 in, so a pivot anywhere on it
+  sweeps the body at most 0.194 past the line (a row end's sweep).
+- The drops line adds `E along an edge`. No new parameters.
+- Tried and dropped:
+  - a strictly straight pass, which misses the next stretch's pocket at every bend;
+  - accepting on blade-fit area alone, which replanned the missed pockets for +7.8 m and cost
+    Area 5 1.7 % of raster;
+  - a lap-band edge spur for Area 5's 12 deg V's, which left more than the V's in every run.
+
+**Tests.** `EdgeLayoutEdgePasses.ShallowEdgeGetsOneStraightPass` (an edge 3 deg off the rows)
+and `BentEdgeGetsOnePassAlongIt` (the closer backyard edge's shape) both fail on master. They
+check base_link at least 0.45 in and the body within 0.26 every 5 cm along the pass.
+
+**Offline (master 6253c79 to branch).**
+- Closer backyard lawn: three of the four west-edge passes become one 8.1 m pass. The
+  conditioned drive and the raster cut (99.72 %) are unchanged.
+- Synthetic bent edge: four passes become one, -1.3 m of drive and 3 fewer sub-paths.
+- Every sim-world area (real_run5, owner_far) and live further backyard, Area 5 and
+  Clothesline plan identically to master. Their runs fail the area test: Area 5's bands are
+  wider than a swath, and the lobe spurs fan into a tip. No V is removed anywhere.
+- No corner the conditioner logs over the limit is new.
+
+**Sim gate.** Not run: both gate worlds plan identically to master.
+
 ## Row weave: heading check and FTC row controller (2026-11-05, branch ws/ftc1105, unit + sim; not field tested)
 
 Details: `analysis/2026-11-05_row_weave_ftc.md`.
