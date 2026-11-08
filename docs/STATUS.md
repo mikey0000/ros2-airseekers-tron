@@ -368,6 +368,34 @@ and resumed after 2 s.
   - Walk up to the robot from the front: it must still stop at about 1 m.
   - Stand about 1 m to the side of a pivoting robot: the result must be advisory.
 
+## Final approach onto an on-line start (2026-11-09, ws/approach1109, sim-gated: not yet run on the mower)
+
+The boundary smoothing gate (ws/smooth1109) failed b on `real_run5_smooth`. It reproduces on
+master: b = 2. Details: `analysis/2026-11-09_final_approach.md`.
+
+Mechanism:
+- Lap 0 starts on Area 1's top edge, beside the drawn paths Path 2 / 3 that cross the line.
+- `_transit_approach` measured to every polygon's edges and saw the path edges inside the
+  area. It took the spot for a corner and sent the transit onto the line itself.
+- The transit ended 0.13-0.35 m past the start, on the line.
+- The final approach turned to face the start and drove onto it against the lap. The
+  156-177 deg leg-start pivot on the line then put the nose 0.44-0.46 m out.
+
+Fix:
+- `body_boundary.nearest_boundary_point` measures to the union's boundary (edges inside
+  another polygon do not count). `_transit_approach` uses it, so the start gets its 0.30 m
+  approach point.
+- The final approach reverses onto a start on the line (BackUp) when the start lies behind
+  the robot along the first leg. It arrives aligned with the leg. This only happens when
+  the reversed body stays within its limits, and never under the slope caution cap. No new
+  parameters.
+
+Gates (`-x 3`): real_run5_smooth `-d` s2 / s1 b 0 / 0, no STUCK (bar met). real_run5 `-l
+-s 1` and slope `-d -s 3` make the same decisions as master (no STUCK, b 0). real_run5 `-l`
+fails i side 0.110 against the baseline's PASS (0.069): one run, mid-leg on the east edge,
+read as run-to-run variation but not shown. A first version that reversed at every approach
+point went STUCK on the slope (fixed in 8f112e7).
+
 ## Fast pivots, stock rate (2026-11-06, ws/pivot1106, sim-gated: not yet run on the mower)
 
 Stock `MoveUtils::Rotation` pivots at `clamp(1.2 e, 0.4, 0.7)` rad/s and does not slow
