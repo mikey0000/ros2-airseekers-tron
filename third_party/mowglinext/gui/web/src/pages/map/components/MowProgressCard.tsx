@@ -43,15 +43,22 @@ export const MowProgressCard: React.FC<Props> = ({progress: p, colors, compact, 
     const left = `${Math.round(p.remaining_m)} m`;
     const pct = Math.round(p.percent);
     if (compact) {
-        return (
+        const bar = (
             <div data-testid="mow-progress-bar" style={{display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, minWidth: 0}}>
                 <Progress percent={pct} size="small" showInfo={false} strokeColor={colors.mowed}
                           style={{flex: 1, margin: 0, minWidth: 60}}/>
                 <span style={{whiteSpace: 'nowrap', fontWeight: 600}}>{pct} %</span>
-                {runLabel && <span data-testid="mow-progress-run" style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0}}>{runLabel}</span>}
                 <span style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>
                     {t('mowProgress.compact', {sub, eta, left})}
                 </span>
+            </div>
+        );
+        if (!runLabel) return bar;
+        // the run gets its own line: the bar line is already full on a phone
+        return (
+            <div style={{display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0}}>
+                {bar}
+                <span data-testid="mow-progress-run" style={{fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{runLabel}</span>
             </div>
         );
     }
