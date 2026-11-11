@@ -1272,6 +1272,19 @@ class Params:
     # / resume point) ends edge_approach_inset_m inside, beside it; 0 = at the start.
     edge_approach_inset_m: float = 0.30
     edge_approach_near_m: float = 0.25
+    # A sub-path start within edge_approach_near_m of the line that is more than
+    # edge_start_gap_m but at most transit_gap_m from the robot gets the transit (and so the
+    # approach point beside it and the tangent join) instead of a leg-start pivot and a
+    # tracker leg across the gap (field 2026-11-11: a skipped-stretch retry 0.60 m from an
+    # edge start on a lap bend joined it diagonally, overshot the bend outward on a side
+    # slope, BOUNDARY OUT front_left -> STUCK). Not when a join onto that start is already
+    # set (boundary rejoin, edge detour end). <= edge_approach_inset_m or 0 = off.
+    edge_start_gap_m: float = 0.40
+    # The final approach hop onto an edge approach point (a waypoint 0.30 m inside, not the
+    # lap) is skipped when the transit ended within this of it: the tangent join and the
+    # leg-start pivot take the robot on from there (field 2026-11-11: a 0.08 m hop turned
+    # the nose 69 deg toward the outside on a side slope first). 0 = always hop.
+    edge_approach_hop_min_m: float = 0.15
     # Area setting tangent_approach (2026-11-03, docs/analysis/2026-11-03_turns.md appendix B):
     # a route to a sub-path start (the start itself, not an edge-approach point) ends on a
     # straight of tangent_approach_m along the first leg's heading, when base_link stays
@@ -1508,6 +1521,15 @@ class Params:
     nogo_edge_costmap_backup_near_m: float = 0.80
     nogo_edge_costmap_backup_m: float = 0.50
     nogo_living_memory_s: float = 60.0       # static marks this recently under a living zone
+    # A static (non-living) mark / candidate / pending zone centred outside the allowed region
+    # or within this of its boundary is an object beyond the recorded perimeter (the owner
+    # drove the line; lap 0 has base_link on it and the sides 0.235 m over): it does not
+    # block the pre-pivot sweep check, the edge-lap detour or the plan-time exclusions
+    # (field 2026-11-11: potted plants 0.38 m outside the west edge, inflated to r 0.56 marks
+    # centred on the line, skipped the edge laps there and sent the end-of-area retries back
+    # to that corner). Accepted keepouts and person / animal zones always count; the
+    # collision monitor and the bumper are unchanged. < 0 = off.
+    nogo_edge_ignore_m: float = 0.25
     nogo_plan_grow_m: float = 0.25           # zone hole radius + this (nose 0.60 vs 0.40 keepout)
 
     @classmethod
@@ -1625,6 +1647,7 @@ class Mission:
     nogo_route_aborts: set = field(default_factory=set)
     nogo_living_wait: Any = None                # {'xy', 'since'}: route-corner living wait
     nogo_living_spots: list = field(default_factory=list)   # [(x, y, r, t)] living zones
+    nogo_edge_ignored: set = field(default_factory=set)     # (x, y) 0.1 m keys logged as beyond the perimeter
     nogo_turns: int = 0                         # pivots re-routed by the sweep check
     nogo_detour: Any = None                     # edge detour in flight
     nogo_detoured: set = field(default_factory=set)

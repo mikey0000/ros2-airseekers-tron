@@ -966,3 +966,115 @@ def test_signed_plan_ranks_poses_already_inside_by_clearance():
     rows = bb.plan_recovery((2.5, 0.9, -math.pi / 2), polys, motions, signed=True)
     assert rows and rows[0][0] == 'reverse'
     assert bb.plan_recovery((2.5, 0.9, -math.pi / 2), polys, motions) == []
+
+
+# ---- 2026-11-11: area 3 west edge (docs/analysis/2026-11-11_west_edge_stuck.md) ----
+
+def _step_lap():
+    """Field geometry, mirrored onto square(0, 0, 5)'s west edge (interior +x): an edge lap
+    running north 0.15 m inside the line up to the pivot vertex (0.15, 2.0), a 0.15 m
+    sideways step east to the 0.30 m inset, then north again. Every pose carries the lap
+    heading (90 deg), as the conditioned edge laps do."""
+    a = [(0.15, 1.0 + 0.05 * k, D90) for k in range(20)]                # ... -> (0.15, 1.95)
+    step = [(0.15 + 0.05 * k, 2.0, D90) for k in range(4)]              # vertex + step east
+    b = [(0.30, 2.05 + 0.05 * k, D90) for k in range(40)]
+    return a + step + b
+
+
+D90 = math.pi / 2.0
+
+
+def _edge_start_h(pose, start_local, **params):
+    sp = _step_lap()
+    params.setdefault('path_conditioning', True)
+    h = mowing_h([line(1, 3, 4, 3), sp], pose, **params)
+    m = h.fsm.mission
+    m.sub_i, m.start_local = 1, start_local
+    return h, sp
+
+
+def test_join_from_a_vertex_whose_first_step_is_sideways_starts_at_the_approach_point():
+    # field 2026-11-11 (1a): the leg from pivot vertex 786 began with the sideways inset step;
+    # the per-pose normal of that step pointed 0.3 m ALONG the edge (south here), the
+    # leg-start pivot swung the nose out through the outside to face it and the follow ran
+    # along the line with the front corner 0.46 m out. The join now offsets every pose by
+    # the start heading's inward normal: it starts at the approach point and never runs
+    # back along the edge.
+    h, sp = _edge_start_h((2.0, 2.0, 0.0), 20)
+    h.fsm._dispatch(force_transit=True)
+    m = h.fsm.mission
+    assert m.join is not None and m.join[2] == -1          # right of north = interior (+x)
+    tx, ty, _ = m.transit_target
+    assert abs(tx - 0.45) < 1e-6 and abs(ty - 2.0) < 1e-6
+    legs = h.fsm._join_leg([tuple(q) for q in sp[20:]], 1, 20)
+    assert math.hypot(legs[0][0] - tx, legs[0][1] - ty) < 0.02
+    for q, o in zip(legs, sp[20:]):
+        assert q[1] >= o[1] - 1e-9          # no pose moved back along the edge
+        assert q[0] >= o[0] - 1e-9          # ... nor toward the line
+    # the leg-start pivot from the approach point faces into the lap, not out and back
+    hd = f.MissionFSM._join_heading(legs[:4], (tx, ty, math.radians(84.0)))
+    assert math.cos(hd) > -0.2 and math.sin(hd) > -0.2
+
+
+def test_edge_start_beyond_the_gap_gets_the_approach_transit_not_a_diagonal_leg():
+    # field 2026-11-11 (1b): a skipped-stretch retry 0.60 m from its edge start (transit_gap
+    # 0.6) pivoted on the spot and joined the lap diagonally at a bend, overshooting
+    # outward. Beyond edge_start_gap_m the start gets the transit to its approach point.
+    h, _sp = _edge_start_h((0.65, 1.55, 0.0), 0)
+    h.fsm.mission.start_local = 10                   # start (0.15, 1.5): 0.50 m away
+    h.fsm._dispatch()
+    assert h.name == 'TRANSIT'
+    tx, ty, _ = h.fsm.mission.transit_target
+    assert abs(tx - 0.45) < 1e-6 and abs(ty - 1.5) < 1e-6      # the approach point
+    assert h.fsm.mission.join is not None
+
+
+def test_edge_start_gap_off_or_close_keeps_the_pivot_and_follow():
+    h, _sp = _edge_start_h((0.65, 1.55, 0.0), 0, edge_start_gap_m=0.0)
+    h.fsm.mission.start_local = 10
+    h.fsm._dispatch()
+    assert h.name != 'TRANSIT'
+    h, _sp = _edge_start_h((0.45, 1.5, D90), 0)       # at the approach point (0.30 m)
+    h.fsm.mission.start_local = 10
+    h.fsm._dispatch()
+    assert h.name != 'TRANSIT'
+
+
+def test_edge_start_gap_leaves_a_set_join_alone():
+    # the boundary rejoin / edge-detour end set m.join onto a start ahead of the robot:
+    # that is the intended merge from inside, never a transit
+    h, _sp = _edge_start_h((0.65, 1.55, D90), 0)
+    m = h.fsm.mission
+    m.start_local = 10
+    m.join = (1, 10, -1, 0.10)
+    h.fsm._dispatch()
+    assert h.name != 'TRANSIT'
+
+
+def _arrive_at_approach(miss):
+    h, _sp = _edge_start_h((2.0, 1.5, math.pi), 10)
+    h.fsm._dispatch(force_transit=True)
+    m = h.fsm.mission
+    tx, ty, _ = m.transit_target
+    assert m.join is not None
+    feed(h, (tx + miss, ty, math.radians(160.0)))
+    return h
+
+
+def test_no_final_approach_hop_onto_a_near_edge_approach_point():
+    # field 2026-11-11 (1a): a transit 0.08 m from the approach point turned 69 deg toward
+    # the outside on the side slope to hop onto it; the join starts there anyway
+    h = _arrive_at_approach(0.08)
+    assert h.fsm._route_final_approach(0.08) is False
+    assert not h.fsm.mission.final_approach
+    mk = h.mark()
+    h._apply(h.fsm._end())
+    assert any('no final approach hop' in e.text for e in h.since(mk, f.Log))
+
+
+def test_final_approach_hop_still_runs_beyond_the_hop_minimum():
+    h = _arrive_at_approach(0.20)
+    assert h.fsm._route_final_approach(0.20) is True
+    h = _arrive_at_approach(0.08)
+    h.fsm.p.edge_approach_hop_min_m = 0.0
+    assert h.fsm._route_final_approach(0.08) is True

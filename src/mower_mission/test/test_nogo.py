@@ -777,3 +777,67 @@ def test_costmap_edge_detour_off_by_default_skips_like_master():
     assert any('edge blocked: skip' in t for t in txt), txt
     assert not any('costmap cells' in t or 'back up' in t for t in txt)
     assert h.fsm.mission.nogo_edge_detours == 0
+
+
+# =====================================================================
+# 2026-11-11: static objects at / beyond the recorded perimeter do not block
+# =====================================================================
+def _perimeter_h(**params):
+    h = Harness(**params)                    # area square(0, 0, 5)
+    start_until_planning(h)
+    h.fsm.inputs.pose = (2.0, 2.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0.0, 0.0, 5.0, 0.0, 51),
+                                            line(4.5, 2.0, 0.5, 2.0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    return h
+
+
+def _field_west_edge_discs():
+    # field 2026-11-11 area 3, mirrored onto the south line y = 0 (interior +y): the potted
+    # plant track centred 0.06 m inside, marks at 0.02 / 0.10 m inside and 0.26 m outside
+    # (all r 0.56), the bumper keepout (pending, r 1.0) 0.11 m inside
+    plant = Z(2.0, 0.06, 0.56, 4, 'potted plant', 'pending')
+    bump = Z(3.5, 0.11, 1.0, 5, '', 'pending')
+    marks = [Z(1.9, 0.02, 0.56, state='mark'), Z(2.1, 0.10, 0.56, state='mark'),
+             Z(2.2, -0.26, 0.56, state='mark')]
+    return plant, bump, marks
+
+
+def test_static_discs_on_or_beyond_the_area_line_do_not_block():
+    h = _perimeter_h()
+    plant, bump, marks = _field_west_edge_discs()
+    inner = Z(2.5, 0.60, 0.17, state='mark')                  # a stone 0.6 m in: counts
+    dog = Z(0.3, 0.05, 0.2, 8, 'dog', 'candidate')            # living: always counts
+    keep = Z(4.0, 0.05, 0.3, 9, 'trunk', 'accepted')          # owner-accepted: counts
+    zones(h, plant, bump, dog, keep, marks=marks + [inner])
+    got = h.fsm._nogo_discs()
+    assert plant not in got and bump not in got and not any(z in got for z in marks)
+    assert inner in got and dog in got and keep in got
+    # the edge-lap detour still sees them all (it only bends the lap inward)
+    allz = h.fsm._nogo_discs(perimeter=False)
+    assert plant in allz and all(z in allz for z in marks)
+    mk = h.mark()
+    h.tick()
+    h.fsm._nogo_discs()
+    assert not any('beyond the recorded perimeter' in t for t in logs(h, mk))   # logged once
+
+
+def test_perimeter_filter_tolerance_and_off_switch():
+    plant, bump, marks = _field_west_edge_discs()
+    h = _perimeter_h(nogo_edge_ignore_m=0.0)          # only centres outside the line
+    zones(h, plant, bump, marks=marks)
+    got = h.fsm._nogo_discs()
+    assert plant in got and bump in got and marks[2] not in got
+    h = _perimeter_h(nogo_edge_ignore_m=-1.0)         # off
+    zones(h, plant, bump, marks=marks)
+    assert len(h.fsm._nogo_discs()) == 5
+
+
+def test_plan_time_exclusion_ignores_marks_on_the_area_line():
+    h = _perimeter_h()
+    _plant, _bump, marks = _field_west_edge_discs()
+    zones(h, marks=marks)
+    sp = line(0.0, 0.0, 5.0, 0.0, 51)
+    cums = [[0.1 * k for k in range(51)]]
+    assert h.fsm._exclude_marks([sp], cums) is None    # nothing left to exclude by

@@ -51,7 +51,8 @@ class MowingMixin:
         if self._turn_leg_driven():
             return
         target = sp[m.start_local]
-        if force_transit or geo.needs_transit(self.inputs.pose, target, self.p.transit_gap_m):
+        if force_transit or geo.needs_transit(self.inputs.pose, target, self.p.transit_gap_m) \
+                or self._edge_start_needs_approach(target):
             # SAFETY (FollowStrip): blade off before any dispatch across the gap, unless
             # the continuous policy keeps it on for a transit inside the area.
             self._transit_blade(target, 'transit', force_off=force_transit)
@@ -64,6 +65,29 @@ class MowingMixin:
             self._send_transit()
         else:
             self._begin_blade()
+
+    def _edge_start_needs_approach(self, target):
+        """True: ``target`` (the current sub-path start) is an edge start (within
+        edge_approach_near_m of the region's boundary) more than edge_start_gap_m from the
+        robot, and no join onto it is set. Such a start gets the transit to its approach
+        point and the tangent join rather than a leg-start pivot and a tracker leg across up
+        to transit_gap_m (see edge_start_gap_m)."""
+        m, p, pose = self.mission, self.p, self.inputs.pose
+        gap = float(p.edge_start_gap_m)
+        if gap <= float(p.edge_approach_inset_m) or gap <= 0.0 or pose is None or \
+                not self._region_areas:
+            return False
+        if m.join is not None and m.join[0] == m.sub_i and m.join[1] == m.start_local:
+            return False
+        if geo.dist(pose, target) <= gap:
+            return False
+        q = bbody.nearest_boundary_point(float(target[0]), float(target[1]), self._region())
+        if q is None or q[2] > float(p.edge_approach_near_m):
+            return False
+        self._log('info', 'edge start (%.2f, %.2f) is %.2f m away (> %.2f): transit to its '
+                          'approach point, then join the lap'
+                  % (target[0], target[1], geo.dist(pose, target), gap))
+        return True
 
     def _excluded_local(self):
         """[(local_from, local_to)] blocked_static stretches of the current sub-path."""
@@ -145,22 +169,32 @@ class MowingMixin:
         ended at its edge start's approach point (m.join), offset toward the interior by the
         approach inset fading out (cosine) over edge_join_m of arc length - the robot merges
         onto the lap along the curve instead of aiming across it (owner_far's lap start on a
-        drawn arc). Otherwise ``poses`` unchanged."""
+        drawn arc). Otherwise ``poses`` unchanged.
+
+        The offset is one vector: the inward normal of the start's own heading
+        (geo.heading_of, the heading every producer of m.join used to pick the side and the
+        approach point), scaled by the fading inset. It is not re-derived per pose from the
+        neighbours: field 2026-11-11 (area 3 west edge) the leg from pivot vertex 786 began
+        with the 0.15 m sideways step from the 0.15 m to the 0.30 m inset, whose own heading
+        is square to the lap, so "inward" of those poses pointed 0.3 m along the edge. The
+        leg-start pivot turned the nose out through the outside to face that point, slid
+        0.32 m downhill doing it, and the robot drove along the line with the front corner
+        0.46 m out (STUCK_NEEDS_HELP). The fixed vector starts the join exactly at the
+        approach point and never points along the edge."""
         m = self.mission
         j = m.join if m is not None else None
         if j is None or j[0] != k or j[1] != frm or len(poses) < 2:
             return poses
         D, sgn, off = float(self.p.edge_join_m), j[2], j[3]
         cum = geo.cumulative_lengths(poses)
+        h0 = geo.heading_of(poses, 0)
+        nx, ny = -math.sin(h0) * sgn, math.cos(h0) * sgn
         out = []
         for i, q in enumerate(poses):
             if cum[i] >= D:
                 out.append(tuple(q))
                 continue
-            a, b = poses[max(0, i - 1)], poses[min(len(poses) - 1, i + 1)]
-            h = math.atan2(b[1] - a[1], b[0] - a[0])
             w = off * 0.5 * (1.0 + math.cos(math.pi * cum[i] / D))
-            nx, ny = -math.sin(h) * sgn, math.cos(h) * sgn
             out.append((q[0] + w * nx, q[1] + w * ny) + tuple(q[2:]))
         res = []
         for i, q in enumerate(out):

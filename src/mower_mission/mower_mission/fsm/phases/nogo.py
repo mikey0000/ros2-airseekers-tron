@@ -15,7 +15,8 @@ docs/analysis/2026-10-23_obstacle_nogo_options.md).
 
 from mower_mission import nogo
 from mower_mission.fsm.common import (ACT_BACKUP, ACT_DRIVE, ACT_FOLLOW, ACT_PLAN, ACT_SPIN,
-    AreaCursor, CancelActions, DriveCmd, PublishPlan, SUCCEEDED, CONDITIONED_KEY, geo, math,
+    AreaCursor, CancelActions, DriveCmd, PublishPlan, SUCCEEDED, CONDITIONED_KEY, bbody, geo,
+    math,
     _seg_dist, costmap_lethal_points, subpath_offsets, walls)  # noqa: F401
 
 
@@ -31,12 +32,18 @@ class NogoMixin:
             return None
         return i.nogo_zones
 
-    def _nogo_discs(self, marks=True):
+    def _nogo_discs(self, marks=True, perimeter=True):
+        """Zones and (``marks``) static marks of the fresh zone set. ``perimeter``: without
+        the static objects at or beyond the recorded perimeter (_nogo_inside_perimeter): for
+        the checks that BLOCK (pre-pivot sweep, plan-time exclusions). The edge-lap detour
+        takes them all: it only bends the lap inward round them."""
         zs = self._nogo_set()
         if zs is None:
             return []
         self._nogo_living_note(zs)
         discs = zs.discs(include_candidates=True, include_marks=marks)
+        if perimeter:
+            discs = self._nogo_inside_perimeter(discs)
         spots = self.mission.nogo_living_spots if self.mission is not None else []
         if not marks or not spots:
             return discs
@@ -44,6 +51,48 @@ class NogoMixin:
         # 2026-10-28: a 'stone' mark under the dog kept the corner blocked after it left)
         return [z for z in discs if z.state != 'mark' or not any(
             math.hypot(z.x - x, z.y - y) <= r + z.r for (x, y, r, _t) in spots)]
+
+    def _nogo_inside_perimeter(self, discs):
+        """``discs`` without the static objects beyond the recorded perimeter: a mark,
+        candidate or pending zone (not a person / animal, not an accepted keepout) whose
+        centre is outside the allowed region or within nogo_edge_ignore_m inside its
+        boundary. Field 2026-11-11 (area 3 west edge): potted plants ranged 0.38 m (median)
+        outside the line became r 0.56 marks and a tracked zone centred 0.02-0.10 m inside
+        it; their discs blocked every pivot sweep there, skipped the edge laps and drew the
+        end-of-area retries back to the corner. The owner recorded that line by driving it,
+        so the lap the body overhangs by 0.235 m is clear by construction. Such objects
+        still bend an edge lap inward (the edge detour does not use this filter); they no
+        longer stop a pivot or skip / exclude a stretch."""
+        tol = float(self.p.nogo_edge_ignore_m)
+        if tol < 0.0 or not discs or not self._region_areas:
+            return discs
+        polys = self._region()
+        if not polys:
+            return discs
+        keep = []
+        m = self.mission
+        for z in discs:
+            if z.state == 'accepted' or z.label in nogo.LIVING_CLASSES:
+                keep.append(z)
+                continue
+            out = bbody.point_outside(z.x, z.y, polys)
+            if out <= 0.0:
+                e = bbody.nearest_edge_point(z.x, z.y, polys)    # cheap: <= the union's
+                q = bbody.nearest_boundary_point(z.x, z.y, polys) \
+                    if e is not None and e[2] <= tol else None
+                if q is None or q[2] > tol:
+                    keep.append(z)
+                    continue
+            if m is not None:
+                k = (round(z.x, 1), round(z.y, 1))
+                if k not in m.nogo_edge_ignored:
+                    m.nogo_edge_ignored.add(k)
+                    self._log('info', '%s (%.2f, %.2f) r %.2f is %s: beyond the recorded '
+                                      'perimeter, does not block'
+                              % (z.label or z.state, z.x, z.y, z.r,
+                                 '%.2f m outside the area' % out if out > 0.0 else
+                                 'on the area line (%.2f m inside, <= %.2f)' % (q[2], tol)))
+        return keep
 
     def _nogo_living_note(self, zs):
         """Remember where living-class zones were in the last nogo_living_memory_s."""
@@ -439,7 +488,8 @@ class NogoMixin:
         detour 2 m from the trunk put the nose out)."""
         m = self.mission
         holes = self._nogo_area_holes(m.area_idx)
-        discs = [z for z in self._nogo_discs(marks=False) if not nogo.zone_in_plan(z, holes)]
+        discs = [z for z in self._nogo_discs(marks=False, perimeter=False)
+                 if not nogo.zone_in_plan(z, holes)]
         i, pose = self.inputs, self.inputs.pose
         if self._policy() == 'static' and i.obstacle_distance is not None and \
                 i.obstacle_bearing is not None and pose is not None and len(pose) >= 3:

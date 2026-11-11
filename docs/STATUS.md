@@ -1915,3 +1915,18 @@ Details: `analysis/2026-11-06_field_weave_diagnosis.md`.
   mainly rejects pose noise. FTC (higher Kpsi, no sampling residual) and pose-latency
   compensation (offline: 0.1 s less delay, -18 to -34 %) are the levers the field fit
   supports.
+
+## West edge stuck: join direction, edge-start approach, perimeter marks (2026-11-11, branch ws/edge1111, unit-tested; sim gate pending)
+
+Field 2026-11-11 area 3, two STUCK_NEEDS_HELP at the west edge (side slope, downhill out) and
+repeated edge skips there (`analysis/2026-11-11_west_edge_stuck.md`). `_join_leg` offset each
+pose by its neighbours' normal, which at a vertex whose leg starts with the sideways inset step
+pointed along the edge: the pivot turned out through the outside and the robot drove along the
+line (front corner 0.46 m out). The join is now one vector (the start heading's inward
+normal). An edge start more than `edge_start_gap_m` (0.40) away gets the approach transit
+instead of a diagonal leg; no final-approach hop within `edge_approach_hop_min_m` (0.15) of an
+approach point. Static marks / pending zones centred outside the area or within
+`nogo_edge_ignore_m` (0.25) of its line no longer block pivots or exclude stretches (potted
+plants 0.38 m outside the line had blocked every pivot at that corner). Owner decisions listed
+in the analysis (on-line objects, the spot rule's missing time window, collision-monitor stops
+inside the line). Sim world `owner_area3_edge1111`.

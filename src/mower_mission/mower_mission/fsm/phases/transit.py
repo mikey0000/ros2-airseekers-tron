@@ -786,6 +786,16 @@ class TransitMixin:
         if not self.p.path_conditioning or tol <= 0.0 or d <= tol or pose is None or \
                 len(pose) < 3 or m.transit_target is None or m.final_approach:
             return False
+        j = m.join
+        if j is not None and j[0] == m.sub_i and j[1] == m.start_local and \
+                d <= float(self.p.edge_approach_hop_min_m):
+            # the target is an edge approach point (a waypoint inside, beside the start):
+            # the tangent join starts there and absorbs the small miss; a hop would only
+            # turn the robot on the spot first (field 2026-11-11: 69 deg toward the outside
+            # on a side slope for 0.08 m)
+            self._log('info', 'transit ended %.2f m from the edge approach point: no final '
+                              'approach hop, joining the lap from here' % d)
+            return False
         m.final_approach = True
         m.final_approach_reverse = self._final_approach_reverses(pose, d)
         delta = geo.wrap_angle(self._final_approach_heading(pose) - float(pose[2]))

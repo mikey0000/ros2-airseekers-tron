@@ -113,6 +113,7 @@ behavior_tree_node:
     nogo_edge_costmap_backup_near_m: 0.80   # robot this close to the cells: back up first
     nogo_edge_costmap_backup_m: 0.50
     nogo_living_memory_s: 60.0        # a static mark this recently under a person / animal zone is it
+    nogo_edge_ignore_m: 0.25          # static mark / pending zone centred outside the area or within this of its line: beyond the perimeter, does not block (< 0 = off)
     nogo_plan_grow_m: 0.25            # zone hole + this: the nose (0.60 m) vs the 0.40 keepout
 
     # --- rain ------------------------------------------------------------
@@ -559,6 +560,8 @@ behavior_tree_node:
     pivot_way_gain_m: 0.05               # coverage pivot turns the interior way if its swept body is this much further in
     edge_approach_inset_m: 0.30          # transit to an edge-lap start / resume point ends this far inside
     edge_approach_near_m: 0.25
+    edge_start_gap_m: 0.40               # edge start farther than this (<= transit_gap_m): transit to its approach point + join, not a diagonal leg (0 = off)
+    edge_approach_hop_min_m: 0.15        # transit ended this close to an edge approach point: no final approach hop (0 = always hop)
     # area setting tangent_approach (2026-11-03, docs/analysis/2026-11-03_turns.md appendix B):
     # the route to a sub-path start ends on a straight of tangent_approach_m along its first leg
     # (base_link >= tangent_approach_base_m inside the line, body <= tangent_approach_body_m
