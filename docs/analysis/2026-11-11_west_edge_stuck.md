@@ -113,9 +113,13 @@ tracking or slope fault. Perimeter objects are real and stay obstacles.
   the tracker's half width plus 0.10 m. Its position is not changed. Interior marks,
   zones and keepouts are unchanged.
 * Edge laps now bend inward round perimeter marks (`nogo_edge_perimeter_marks`), blade on,
-  by body reach + `nogo_edge_clearance_m` - face distance, at most
-  `nogo_edge_mark_max_offset_m` (0.30 m). Before, the edge detour took zones only. Interior
-  marks still stay out of it (their range scatter made trunk_x1's detour 2 m wide).
+  by body reach + `nogo_edge_mark_clearance_m` (0.20) - face distance. The bend is clamped
+  at `nogo_edge_mark_max_offset_m` (0.40 m), not dropped when the need is larger. It ramps
+  in and out at 3 m per m of offset and holds the offset `nogo_edge_mark_along_pad_m`
+  (0.5 m) longer on either side, because marks ranged from 2-3 m scatter along the lap. Each
+  of these was added after a failed sim run (below). Before, the edge detour took zones
+  only. Interior marks still stay out of it (their range scatter made trunk_x1's detour
+  2 m wide).
 
 **Fix 5: no repeated retries back to the same object** (fsm/phases/pivots.py
 `_skip_piece`, fsm/holds.py `_stretch_blocked`).
@@ -205,6 +209,21 @@ at base_link. Keepouts are never filtered by position.
    unmown until the next mow, instead of being retried after each START. Either flag can
    be set to false.
 
-## Sim verdicts
+## Sim verdicts (seed 2, -d -l, -x 2)
 
-(filled in below)
+| run | world | result |
+|---|---|---|
+| edge1111_area3 (v1, commit 40a3a49) | plants 0.38 m out | FAIL: the perimeter filter ignored the marks; the lap-0 body hit plant_south twice -> STUCK |
+| edge1111_area3_v2 | plants 0.6 m out (realistic) | FAIL (gate): no contact, no STUCK, no retry loop, MOWING_COMPLETE (lawn cut 98.7 %), docking still running at the 3600 s limit. One BOUNDARY OUT at (-31.79, -11.38): front_left 0.46 m at the lap-0 -> lap-1 inset-step vertex on the slope, where yaw drifted 102 -> 117 deg (outward) as the chunk ended at the vertex. The plants are 2.5 m away; this is slope tracking, not obstacle handling |
+| edge1111_inside_v2 | plants 0.38 m out (inside the overhang) | FAIL: 0.28 m detour with 0.10 m clearance; an 18 deg yaw error on the slope met the pot -> STUCK |
+| edge1111_inside_v3 | same | FAIL: no contact, but the detour came only beside the pot (need > cap) and aborted; route-corner pivot near the pot refused -> STUCK |
+| edge1111_inside_v4 | same | FAIL: the detour came early (clamped), but the pot lay ~0.5 m later along the lap than its marks: met on the return ramp -> STUCK |
+| edge1111_inside_v5 | same | FAIL: laps 0 and 1 now clear the pot by detour, but the lap-2 detour (0.40 m) aborted beside it. In the transit after the skip, the route-corner pivot near the pot ran "as planned" after its sweep retries and touched it (2 bumps) -> STUCK |
+| real_run5_slope | | not run (the gate above did not pass) |
+
+Open after these runs:
+1. The route-corner gate pivots "as planned" when its sweep retries run out, even with a
+   static disc in the sweep. It should skip or re-route instead.
+2. Aborted edge-detour follows beside the object (the collision monitor stops MPPI on the
+   bend).
+3. The slope excursion at the lap-0 -> lap-1 inset-step vertex in the main world.
