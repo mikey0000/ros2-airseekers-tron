@@ -1915,3 +1915,47 @@ Details: `analysis/2026-11-06_field_weave_diagnosis.md`.
   mainly rejects pose noise. FTC (higher Kpsi, no sampling residual) and pose-latency
   compensation (offline: 0.1 s less delay, -18 to -34 %) are the levers the field fit
   supports.
+
+## Cross pattern: cross angle, run label, cross pass in the preview (2026-11-11, branch ws/cross1111, unit + GUI tests; sim pending)
+
+Owner report: with the pattern set to cross they do not see the second pass at the other angle,
+and they want a start angle and a crossover angle.
+
+**What was there.** The mission already mows cross as two runs per repeat (`_build_runs`), the
+second at +90 deg (on an AUTO angle via the bridge's `perpendicular` re-plan), and moves to run 2
+when run 1 finishes cleanly (`outcome.py`). But:
+- `~/mow_plan` only ever holds the current run's plan, so the live map shows one row set.
+- On AUTO both runs report `run_mow_angle_deg` -1, so nothing in the GUI showed which run was
+  being mowed or at which angle. Only the dashboard hero showed "run n/m", and the map didn't.
+- The preview (2026-10-22 fix) plans both row sets but draws them in one colour.
+- A run 1 that ends with failed or blocked stretches goes to the next area without run 2
+  (`outcome.py`: the run index is kept, and the next START resumes run 1). In the field that
+  looks like "no second pass". This is unchanged: it would need a decision on what resume means
+  for a cross.
+
+**Changes.**
+- Settings: cross turns run 2 by `alternate_angle_offset_deg` (one key for both modes, so no
+  new key; default 90 gives today's behaviour). The GUI shows "Start direction" and "Cross
+  angle" (5-175) in cross mode, and "Angle change per mow" in alternate. A cross angle of 0 / 180
+  is refused by the GUI and the Go backend, and the mission takes it as 90 with a warning. On
+  AUTO only 90 uses the perpendicular flag; other angles are measured from 0 deg, as in
+  alternate. Bridge unchanged: it already handles the flag only as +90.
+- Mission: `run_line_angles_deg` on `~/active_area_settings` gives the row direction of every
+  run: a fixed angle as set, an auto one from the first planned swath. It is re-published when
+  a plan arrives. Preview segments carry `run`, and each area carries `run_line_angles_deg`.
+- GUI: "Run 1/2 at 105°, next at 15°" on the map progress card, the phone progress bar and the
+  hero. The preview draws cross-pass swaths in the info colour and lists both passes with their
+  angles.
+- Not done: the upcoming run's lines during a live mow. Run 2 is planned only when it starts,
+  and planning it ahead would mean a second planner goal mid-mow on the shared
+  coverage_server parameters.
+
+Tests: mission `test_cross_*`, `test_run_line_angles_*`,
+`test_active_settings_report_every_run_row_angle_on_auto`, preview run tags; Go
+`TestAreaSettings_CrossAngle`; vitest `AreaSettingsForm.test.tsx`, `runLabel.test.ts`,
+MowProgressCard / PlanPreviewCard / areaSettings cases. `scripts/ci_test.sh` PASS. Go and vitest
+failures are the same as on master (12 Go, 3 vitest under full-suite load).
+
+Sim world `src/mower_sim/worlds/real_run5_cross.yaml` (Area 1 on cross, AUTO + 90). Gate run
+pending (the host was not idle):
+`SIM_GATE_OUT=../simout_cross1111 ./scripts/sim_gate.sh -w src/mower_sim/worlds/real_run5_cross.yaml -n cross-l-s1 -l -x 3 -s 1 -t 4000`.

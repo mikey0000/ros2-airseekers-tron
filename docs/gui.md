@@ -281,6 +281,18 @@ Paths below are under `third_party/mowglinext/gui/`.
   counter-clockwise. `AnglePicker` draws it that way on a north-up rose
   (`utils/areaSettings.ts angleFromPoint`). Effective order: area value, else the slope-aware
   angle (area `slope_mode`), else the global `mow_angle_deg`, else the planner's choice.
+* **Cross pattern (2026-11-11).** In cross mode the area settings sheet labels `mow_angle_deg`
+  "Start direction" and shows `alternate_angle_offset_deg` as "Cross angle" (5-175 deg,
+  default 90); alternate keeps "Angle change per mow" on the same key, so no new settings key.
+  A cross angle of 0 / 180 is refused by the form (`utils/areaSettings.ts
+  invalidAreaSettingKey`) and the backend (`pkg/api/area_settings.go`); the mission takes it as
+  90. With an Auto start direction only 90 deg follows the automatic rows; any other cross
+  angle is measured from east (the hint says so). The map's progress card, the phone progress
+  bar and the dashboard hero show "Run 1/2 at 105 deg, next at 15 deg" (`utils/runLabel.ts`)
+  from `run_line_angles_deg` on `activeAreaSettings`. The plan preview draws the cross pass's
+  swaths in the info colour (segment `run` > 0) and the card lists first and cross pass with
+  their row angles. The upcoming run's lines are not drawn during a live mow: the mission
+  plans a run only when it starts it.
 * **Recorded-vertex quality.** `GET /api/mowglinext/recording-quality`
   (`pkg/api/recording_quality.go`) lists the mission's sidecars from
   `/ros2_ws/maps/record_quality`; `web/src/utils/recordingQuality.ts` turns them into vertex
