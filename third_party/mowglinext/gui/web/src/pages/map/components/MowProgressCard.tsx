@@ -17,6 +17,8 @@ interface Props {
     /** Phone: one compact bar line instead of the card. */
     compact?: boolean;
     areaName?: string;
+    /** Which run of the area is mowed (utils/runLabel.ts), e.g. "Run 1/2 at 105°, next at 15°". */
+    runLabel?: string | null;
 }
 
 /** True when the progress describes a planned area worth showing. */
@@ -34,7 +36,7 @@ const Swatch: React.FC<{color: string; label: string; dashed?: boolean}> = ({col
  * Live mow progress: percent, sub-path n/m, elapsed, ETA and length left
  * (desktop card), or a compact bar line (phone).
  */
-export const MowProgressCard: React.FC<Props> = ({progress: p, colors, compact, areaName}) => {
+export const MowProgressCard: React.FC<Props> = ({progress: p, colors, compact, areaName, runLabel}) => {
     const {t} = useTranslation();
     const sub = p.sub_paths > 0 ? `${Math.min(p.sub_path + 1, p.sub_paths)}/${p.sub_paths}` : "–";
     const eta = formatDuration(p.eta_s);
@@ -46,6 +48,7 @@ export const MowProgressCard: React.FC<Props> = ({progress: p, colors, compact, 
                 <Progress percent={pct} size="small" showInfo={false} strokeColor={colors.mowed}
                           style={{flex: 1, margin: 0, minWidth: 60}}/>
                 <span style={{whiteSpace: 'nowrap', fontWeight: 600}}>{pct} %</span>
+                {runLabel && <span data-testid="mow-progress-run" style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0}}>{runLabel}</span>}
                 <span style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>
                     {t('mowProgress.compact', {sub, eta, left})}
                 </span>
@@ -63,6 +66,7 @@ export const MowProgressCard: React.FC<Props> = ({progress: p, colors, compact, 
             <div style={{fontWeight: 600, marginBottom: 4}}>
                 {areaName ? t('mowProgress.titleArea', {name: areaName}) : t('mowProgress.title')}
             </div>
+            {runLabel && <div data-testid="mow-progress-run" style={{marginBottom: 2}}>{runLabel}</div>}
             <Progress percent={pct} size="small" strokeColor={colors.mowed} style={{margin: '0 0 6px'}}/>
             {row(t('mowProgress.subPath'), sub, 'mow-progress-sub')}
             {row(t('mowProgress.elapsed'), formatDuration(p.elapsed_s))}

@@ -15,6 +15,9 @@ export const AreaSettingsSummary: React.FC<{
     if (settings.mow_angle_deg !== undefined) {
         chips.push(settings.mow_angle_deg < 0 ? t("areaSettings.chipAngleAuto") : t("areaSettings.chipAngle", {value: Math.round(settings.mow_angle_deg)}));
     }
+    if (settings.path_mode === "cross" && settings.alternate_angle_offset_deg !== undefined) {
+        chips.push(t("areaSettings.chipCross", {value: Math.round(settings.alternate_angle_offset_deg)}));
+    }
     if (settings.perimeter_laps !== undefined) chips.push(t("areaSettings.chipLaps", {count: settings.perimeter_laps}));
     if (settings.cut_speed_mps !== undefined) chips.push(t("areaSettings.mps", {value: settings.cut_speed_mps.toFixed(2)}));
     if (settings.repeat !== undefined && settings.repeat > 1) chips.push(t("areaSettings.times", {count: settings.repeat}));
