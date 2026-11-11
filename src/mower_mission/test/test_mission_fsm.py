@@ -1741,6 +1741,117 @@ def test_cross_on_auto_angle_uses_perpendicular_flag():
     assert goals == [(-1.0, False), (-1.0, True)] * 2
 
 
+def _cross_goals(h, n):
+    goals = []
+    for _ in range(n):
+        g = h.goal(f.ACT_PLAN)
+        goals.append((g['mow_angle_deg'], g['perpendicular']))
+        mow_area_once(h)
+    return goals
+
+
+def test_cross_angle_turns_the_second_run_from_the_start_angle():
+    # owner 2026-11-11: a start angle and a cross angle (the shared offset key)
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 105.0,
+                           'alternate_angle_offset_deg': 90.0}}
+    start_until_planning(h)
+    assert _cross_goals(h, 2) == [(105.0, False), (15.0, False)]
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0,
+                           'alternate_angle_offset_deg': 45.0, 'repeat': 2}}
+    start_until_planning(h)
+    assert _cross_goals(h, 4) == [(30.0, False), (75.0, False)] * 2
+
+
+def test_cross_default_offset_is_today_90_deg():
+    # saved settings without the key keep the 90 deg cross (built-in default 90)
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 20.0}}
+    start_until_planning(h)
+    assert _cross_goals(h, 2) == [(20.0, False), (110.0, False)]
+
+
+def test_cross_on_auto_angle_with_other_offset_is_taken_from_0_deg():
+    # only +90 has the bridge's auto perpendicular flag; any other turn on an AUTO angle
+    # follows the alternate rule (from the map x axis)
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'cross', 'alternate_angle_offset_deg': 45.0}}
+    start_until_planning(h)
+    assert _cross_goals(h, 2) == [(-1.0, False), (45.0, False)]
+
+
+def test_cross_angle_0_or_180_falls_back_to_90():
+    for off in (0.0, 180.0):
+        h = Harness()
+        h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 10.0,
+                               'alternate_angle_offset_deg': off}}
+        m = h.mark()
+        start_until_planning(h)
+        assert any('repeats the first rows' in e.text for e in h.since(m, f.Log))
+        assert _cross_goals(h, 2) == [(10.0, False), (100.0, False)]
+
+
+def _rows_plan(angle_deg, n=2):
+    """A typed plan whose swaths run at angle_deg (one drivable sub-path from the origin)."""
+    a = math.radians(angle_deg)
+    c, s = math.cos(a), math.sin(a)
+    sws = [[(2.5 - k * s * 0.5 + c * t, 1.5 + k * c * 0.5 + s * t, a) for t in (0.0, 1.0, 2.0)]
+           for k in range(n)]
+    sub = [p for sw in sws for p in sw]
+    return {'success': True, 'drivable_subpaths': [sub], 'segments': sws,
+            'segment_types': [f.SEGMENT_SWATH] * n, 'full_path': sub}
+
+
+def test_active_settings_report_every_run_row_angle_on_auto():
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'cross'}}
+    m = h.mark()
+    start_until_planning(h)
+    act = h.since(m, f.PublishAreaSettings)[-1].settings
+    assert (act['run'], act['runs'], act['run_line_angles_deg']) == (1, 2, [None, None])
+    h.fsm.inputs.pose = (2.5, 1.5, 0.0)
+    m = h.mark()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, _rows_plan(105.0))
+    act = h.since(m, f.PublishAreaSettings)[-1].settings
+    assert act['run_line_angles_deg'] == [105.0, 15.0]
+    assert act['run_mow_angle_deg'] == -1.0
+    for _ in range(10):
+        if h.name == 'PLANNING':
+            break
+        follow_current(h)
+    assert h.name == 'PLANNING' and h.fsm.mission.run_i == 1
+    act = h.since(m, f.PublishAreaSettings)[-1].settings
+    assert (act['run'], act['run_line_angles_deg']) == (2, [105.0, 15.0])
+
+
+def test_run_line_angles_fixed_and_learned_from_the_perpendicular_run():
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0,
+                           'alternate_angle_offset_deg': 60.0}}
+    start_until_planning(h)
+    assert h.fsm.run_line_angles() == [30.0, 90.0]
+    # AUTO, resumed in the perpendicular run: run 1's rows follow from run 2's plan
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'cross'}}
+    start_until_planning(h)
+    h.fsm.mission.run_i = 1
+    h.fsm.mission.line_angles = {1: 20.0}
+    assert h.fsm.run_line_angles() == [110.0, 20.0]
+
+
+def test_swath_angle_deg_folds_and_needs_types():
+    assert geo_swath([(0, 0), (1, 1)], 1) == 45.0
+    assert geo_swath([(1, 1), (0, 0)], 1) == 45.0
+    assert geo_swath([(0, 0), (-1, 0.0001)], 1) == 0.0
+    assert geo_swath([(0, 0), (1, 1)], 0) is None
+
+
+def geo_swath(seg, t):
+    from mower_mission.geometry import swath_angle_deg
+    return swath_angle_deg([seg], [t], 1)
+
+
 def test_alternate_rotates_each_run_and_across_sessions():
     h = Harness()
     h.area_settings = {0: {'path_mode': 'alternate', 'repeat': 2, 'mow_angle_deg': 10.0,
@@ -5056,6 +5167,9 @@ def test_preview_cross_plans_both_row_sets():
     assert len(last['segments']) == 6
     a = last['areas'][0]
     assert a['runs'] == 4 and a['preview_runs'] == 2 and a['run_angles_deg'] == [30.0, 120.0]
+    # each segment names its run: the GUI draws the second row set apart
+    assert [sg['run'] for sg in last['segments']] == [0, 0, 0, 1, 1, 1]
+    assert a['run_line_angles_deg'] == [0.0, 0.0]      # typed_plan's swaths run along x
     assert h.fsm._action is None and h.fsm._service is None
 
 

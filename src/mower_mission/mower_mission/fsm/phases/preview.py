@@ -201,7 +201,8 @@ class PreviewMixin:
         full = result.get('full_path') or [p for sp in subpaths for p in sp]
         cur['acc'].append({'rings': rings, 'swaths': swaths, 'length': length,
                            'full': list(full), 'typed': list(zip(types, segs)),
-                           'subpaths': subpaths})
+                           'subpaths': subpaths,
+                           'line': geo.swath_angle_deg(segs, types, SEGMENT_SWATH)})
         cur['run_k'] += 1
         if cur['run_k'] < len(cur['preview_runs']):
             self._preview_params(cur)          # next direction (cross: the 90 deg row set)
@@ -219,10 +220,13 @@ class PreviewMixin:
                      'swaths': sum(a['swaths'] for a in acc),
                      'length_m': round(sum(a['length'] for a in acc), 2),
                      'sub_paths': len(subpaths),
-                     'inset_m': None if inset is None else round(inset, 3)})
+                     'inset_m': None if inset is None else round(inset, 3),
+                     # planned row direction of each previewed run (None: no typed swath)
+                     'run_line_angles_deg': [a['line'] for a in acc]})
         full = [p for a in acc for p in a['full']]
-        # typed segments of a run with no segment_types are drawn from its sub-paths
-        typed = [ts for a in acc for ts in (a['typed'] or
+        # typed segments of a run with no segment_types are drawn from its sub-paths;
+        # each carries its run (index into preview_runs: the GUI tells the row sets apart)
+        typed = [(t, s, k) for k, a in enumerate(acc) for t, s in (a['typed'] or
                  [(SEGMENT_SWATH, sp) for sp in a['subpaths']])]
         pv['results'].append((info, full, typed, subpaths))
         self._preview_next()
@@ -247,15 +251,16 @@ class PreviewMixin:
         full, segments, transits, prev_end = [], [], [], None
         for _info, path, typed, subpaths in planned:
             full.extend(path)
-            for t, s in typed:
+            for t, s, k in typed:
                 segments.append({'type': 'ring' if t == SEGMENT_RING else 'swath',
-                                 'points': pts(s)})
+                                 'points': pts(s), 'run': k})
             for sp in subpaths:
                 if prev_end is not None and geo.dist(prev_end, sp[0]) > 1e-3:
                     transits.append(pts([prev_end, sp[0]]))
                 prev_end = sp[-1]
             if not typed:
-                segments.extend({'type': 'swath', 'points': pts(sp)} for sp in subpaths)
+                segments.extend({'type': 'swath', 'points': pts(sp), 'run': 0}
+                                for sp in subpaths)
         insets = [i['inset_m'] for i in infos if i.get('inset_m') is not None]
         summary = {
             'id': pv['id'] if pv else self._preview_id, 'status': status,

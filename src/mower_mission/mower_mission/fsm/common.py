@@ -1568,6 +1568,7 @@ class Mission:
     height_override_mm: Optional[int] = None    # live deck height change (this mow only)
     runs: list = field(default_factory=list)    # [{'angle': deg|-1, 'perpendicular': bool}]
     run_i: int = 0
+    line_angles: dict = field(default_factory=dict)   # run index -> planned row angle (deg)
     detours: int = 0                            # per sub-path
     detour: Optional[dict] = None               # in-flight detour {'from', 'to', 'skip', 'why'}
     stretch: Optional[tuple] = None             # re-queued (abs_from, abs_to) being re-tried
