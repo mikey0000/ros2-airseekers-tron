@@ -14,7 +14,8 @@
 #   swath_overlap_m             float  default 0.02
 #   edge_first                  bool   default true (false = swaths, then perimeter)
 #   repeat                      int    default 1
-#   alternate_angle_offset_deg  float  default 90
+#   alternate_angle_offset_deg  float  default 90 (alternate: step per run; cross: the
+#                                      second run's turn from the first, 0 / 180 -> 90)
 # The object REPLACES the stored settings of that area (send {} to reset it to
 # the defaults). Keys set to null are dropped. Unknown keys and out-of-range
 # values are rejected (success=false, message says why).

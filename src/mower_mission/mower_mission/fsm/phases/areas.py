@@ -7,7 +7,8 @@ from mower_mission.fsm.common import (ACT_PLAN, AREA_SETTINGS_DEFAULTS, AreaCurs
     BLADE_POLICIES, CONDITIONED_KEY, CUTTER_HEIGHT_MAX_MM, CUTTER_HEIGHT_MIN_MM, EDGE_MODES,
     MOTION_PHASES, OBSTACLE_DETECTION_LEVELS, PARAM_NODE_CONTROLLER, PARAM_NODE_COVERAGE,
     PARAM_NODE_DET_RANGE, PARAM_NODE_OBSTACLE_GUARD, PATH_MODES, PIVOT_SUB,
-    PublishAreaSettings, PublishPlan, ROUTE_ORDERS, ROW_LINK_MODES, SRV_CUTTER_HEIGHT, SRV_GET_AREA_SETTINGS,
+    PublishAreaSettings, PublishPlan, ROUTE_ORDERS, ROW_LINK_MODES, SEGMENT_SWATH,
+    SRV_CUTTER_HEIGHT, SRV_GET_AREA_SETTINGS,
     SRV_SET_PARAMS, STEREO_STALE_SUB, SUCCEEDED, TURN_TYPES, UNAVAILABLE, absolute_to_local,
     coverage_route_params, geo, json, math, subpath_offsets)  # noqa: F401
 
@@ -126,6 +127,16 @@ class AreasMixin:
             self._log('warn', 'unknown path_mode %r: zigzag' % st['path_mode'])
             st['path_mode'] = 'zigzag'
         st['repeat'] = max(1, int(st['repeat']))
+        try:
+            off = math.fmod(float(st['alternate_angle_offset_deg']), 180.0) % 180.0
+        except (TypeError, ValueError):
+            off = AREA_SETTINGS_DEFAULTS['alternate_angle_offset_deg']
+        if st['path_mode'] == 'cross' and min(off, 180.0 - off) < 1e-6:
+            # a cross angle of 0 / 180 deg mows the same rows twice
+            self._log('warn', 'cross angle %r deg repeats the first rows: 90'
+                      % st['alternate_angle_offset_deg'])
+            off = 90.0
+        st['alternate_angle_offset_deg'] = off
         if st['obstacle_detection'] not in OBSTACLE_DETECTION_LEVELS:
             self._log('warn', 'unknown obstacle_detection %r: standard' % st['obstacle_detection'])
             st['obstacle_detection'] = 'standard'
@@ -157,15 +168,17 @@ class AreasMixin:
     def _build_runs(self, st, area_name=None):
         """One entry per PlanCoverage goal of this area, in mowing order.
 
-        cross: two plans per repeat, the second at +90 deg. alternate: the
-        angle turns by alternate_angle_offset_deg on every run, continuing
-        across sessions (alternate_counts). On an AUTO angle a +90 deg turn is
-        the goal's ``perpendicular`` flag (the bridge learns the auto angle);
-        any other turn is taken from 0 deg (the map x axis).
+        cross: two plans per repeat, the second turned by alternate_angle_offset_deg (the
+        GUI's "cross angle", default 90) from the first. alternate: the angle turns by
+        alternate_angle_offset_deg on every run, continuing across sessions
+        (alternate_counts). On an AUTO angle a +90 deg turn is the goal's ``perpendicular``
+        flag (the bridge learns the auto angle); any other turn is taken from 0 deg (the
+        map x axis), in both modes.
         """
         base = float(st['mow_angle_deg'])
         mode = st['path_mode']
         n = int(st['repeat'])
+        off = float(st['alternate_angle_offset_deg'])
 
         def run(rot):
             rot = math.fmod(rot, 180.0)
@@ -178,13 +191,35 @@ class AreasMixin:
             return {'angle': rot, 'perpendicular': False}
 
         if mode == 'cross':
-            return [r for _ in range(n) for r in (run(0.0), run(90.0))]
+            return [r for _ in range(n) for r in (run(0.0), run(off))]
         if mode == 'alternate':
-            off = float(st['alternate_angle_offset_deg'])
             done = int(self.alternate_counts.get(
                 self._area_name() if area_name is None else area_name, 0))
             return [run((done + k) * off) for k in range(n)]
         return [run(0.0) for _ in range(n)]
+
+    def run_line_angles(self):
+        """Row direction (deg, [0, 180)) of each run of the current area, None where it is
+        not known yet: a fixed angle as planned, an AUTO run (+ its perpendicular twin) from
+        the planned rows of any auto run of this area (m.line_angles)."""
+        m = self.mission
+        if m is None or not m.runs:
+            return []
+        auto = None
+        for i, a in sorted(m.line_angles.items()):
+            if i < len(m.runs) and float(m.runs[i]['angle']) < 0.0:
+                auto = (a - (90.0 if m.runs[i]['perpendicular'] else 0.0)) % 180.0
+        out = []
+        for i, r in enumerate(m.runs):
+            if i in m.line_angles:
+                out.append(round(m.line_angles[i], 1))
+            elif float(r['angle']) >= 0.0:
+                out.append(round(float(r['angle']) % 180.0, 1))
+            elif auto is not None:
+                out.append(round((auto + (90.0 if r['perpendicular'] else 0.0)) % 180.0, 1))
+            else:
+                out.append(None)
+        return out
 
     def display_sub_state(self):
         """sub_state as reported: a fresh stale-stereo costmap warning wins while driving
@@ -225,6 +260,7 @@ class AreasMixin:
         m.settings = st
         self._push_obstacle_detection(st['obstacle_detection'])
         m.runs = self._build_runs(st)
+        m.line_angles = {}
         if m.run_i >= len(m.runs):
             m.run_i = 0
         hmm = self.height_mm(st['cutter_height_mm'])
@@ -256,6 +292,9 @@ class AreasMixin:
             'area_index': m.area_idx, 'area_name': self._area_name(),
             'run': m.run_i + 1, 'runs': len(m.runs),
             'run_mow_angle_deg': run['angle'], 'run_perpendicular': run['perpendicular'],
+            # rows of every run in deg (None = auto, not planned yet): "run 1/2 at 105 deg,
+            # next at 15 deg" in the GUI
+            'run_line_angles_deg': self.run_line_angles(),
             'operation_width_m': round(self._swath_spacing(m.settings), 4)})
         return out
 
@@ -324,6 +363,11 @@ class AreasMixin:
         m.lengths = [c[-1] for c in m.cum]
         full = result.get('full_path') or [p for sp in subpaths for p in sp]
         self._fx.append(PublishPlan(list(full)))
+        line = geo.swath_angle_deg(result.get('segments') or [], result.get('segment_types') or [],
+                                   SEGMENT_SWATH)
+        if line is not None:
+            m.line_angles[m.run_i] = line
+            self._fx.append(PublishAreaSettings(self.active_settings()))
         self._plan_shown = True
         self._preview_shown = False
         fp = geo.plan_fingerprint(subpaths)

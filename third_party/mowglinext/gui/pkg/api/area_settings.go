@@ -183,7 +183,21 @@ func validateAreaSettings(s map[string]any) error {
 			return fmt.Errorf("unknown setting %q", k)
 		}
 	}
+	// alternate_angle_offset_deg is the cross angle in cross mode: 0 / 180 would mow
+	// the first pass's rows again (the mission falls back to 90 then).
+	if mode, _ := s["path_mode"].(string); mode == "cross" {
+		if off, ok := s["alternate_angle_offset_deg"].(float64); ok && crossAngleRepeatsRows(off) {
+			return fmt.Errorf("alternate_angle_offset_deg (cross angle) must not be 0 or 180 with path_mode cross: that repeats the first pass")
+		}
+	}
 	return nil
+}
+
+// crossAngleRepeatsRows reports a cross angle of 0 or 180 deg (the second pass on
+// the first pass's rows).
+func crossAngleRepeatsRows(deg float64) bool {
+	r := math.Mod(math.Mod(deg, 180)+180, 180)
+	return math.Min(r, 180-r) < 1e-6
 }
 
 func isServiceNotAdvertised(err error) bool {

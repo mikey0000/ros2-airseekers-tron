@@ -28,6 +28,16 @@ describe("areaSettings", () => {
         expect(invalidAreaSettingKey({cut_speed_mps: 0.25})).toBeNull();
     });
 
+    it("refuses a cross angle that repeats the first pass (0 / 180)", () => {
+        const cross = {...AREA_SETTINGS_DEFAULTS, path_mode: "cross" as const};
+        expect(invalidAreaSettingKey({...cross, alternate_angle_offset_deg: 0})).toBe("alternate_angle_offset_deg");
+        expect(invalidAreaSettingKey({...cross, alternate_angle_offset_deg: 180})).toBe("alternate_angle_offset_deg");
+        expect(invalidAreaSettingKey({...cross, alternate_angle_offset_deg: 45})).toBeNull();
+        expect(invalidAreaSettingKey({...cross})).toBeNull();     // default 90 = today's cross
+        expect(invalidAreaSettingKey({...AREA_SETTINGS_DEFAULTS, path_mode: "alternate",
+            alternate_angle_offset_deg: 0})).toBeNull();
+    });
+
     it("parses std_msgs/String JSON", () => {
         expect(parseStringMsgJson({data: '{"a":1}'})).toEqual({a: 1});
         expect(parseStringMsgJson({data: "nope"})).toBeUndefined();

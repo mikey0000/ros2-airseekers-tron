@@ -1596,7 +1596,10 @@
     "areaLine": "{{rings}} rings, {{swaths}} swaths, {{length}} m ({{mode}})",
     "areaFailed": "failed: {{message}}",
     "clear": "Clear preview",
-    "hide": "Hide"
+    "hide": "Hide",
+    "swathsFirst": "Swaths, first pass",
+    "swathsCross": "Swaths, cross pass",
+    "swathsLater": "Swaths, later passes"
   },
   "mapToolbarMobile": {
     "undock": "Undock",
@@ -4320,9 +4323,15 @@
     "activeFor": "Mowing {{area}} with",
     "custom": "Custom",
     "inherited": "Default",
-    "run": "run {{run}}/{{runs}}",
+    "run": "Run {{run}}/{{runs}}",
     "swathWidthDefault": "Default: {{value}} m.",
-    "swathWidthStandard": "Standard from the blade disc: {{value}} m."
+    "swathWidthStandard": "Standard from the blade disc: {{value}} m.",
+    "runAt": "Run {{run}}/{{runs}} at {{angle}}°",
+    "runNextAt": ", next at {{angle}}°",
+    "startAngle": "Start direction",
+    "crossAngle": "Cross angle",
+    "crossAngleHint": "The second pass turns its rows by this angle from the first pass (90° = square cross-hatch). With an Auto start direction only 90° follows the automatic rows; any other cross angle is measured from east (0°).",
+    "chipCross": "cross {{value}}°"
   },
   "startSheet": {
     "title": "Start mowing",

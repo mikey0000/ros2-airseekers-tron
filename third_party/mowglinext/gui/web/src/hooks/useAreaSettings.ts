@@ -210,6 +210,8 @@ export type ActiveAreaSettings = Partial<AreaSettings> & {
     run?: number;
     runs?: number;
     runMowAngleDeg?: number;
+    /** Row direction of every run of the area (deg); null = auto, not planned yet. */
+    runLineAnglesDeg?: (number | null)[];
 };
 
 /** Effective settings the mission is mowing with right now (null when idle: {}). */
@@ -231,5 +233,8 @@ export function parseActiveAreaSettings(data: Record<string, unknown> | null | u
         run: num(data.run),
         runs: num(data.runs),
         runMowAngleDeg: num(data.run_mow_angle_deg),
+        runLineAnglesDeg: Array.isArray(data.run_line_angles_deg)
+            ? data.run_line_angles_deg.map((a) => num(a) ?? null)
+            : undefined,
     };
 }

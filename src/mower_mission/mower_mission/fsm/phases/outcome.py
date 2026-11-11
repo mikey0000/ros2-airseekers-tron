@@ -171,6 +171,16 @@ class OutcomeMixin:
                   + ('' if not blocked else ', %s' % blocked_text(len(blocked))))
         self._tally_area(ac, failed)
         self._area_cut_report()
+        if blocked and not failed and m.runs and m.run_i + 1 < len(m.runs):
+            # only obstacle-blocked stretches left and another run (cross / repeat) to go:
+            # the next run mows the same ground again, so go on instead of ending the area.
+            # The stretches are not resumable once this run's plan is replaced.
+            m.blocked = [b for b in m.blocked if b[0] != m.area_idx]
+            self._log('warn', 'area %d: run %d/%d left %s: going on to run %d' % (
+                m.area_idx, m.run_i + 1, len(m.runs), blocked_text(len(blocked)),
+                m.run_i + 2))
+            self._incident('run_blocked_continue', blocked_text(len(blocked)))
+            blocked = []
         if failed or blocked:
             # not complete: keep it out of completed_areas, keep its run index, and
             # point the cursor at the first missing pose so START resumes there.

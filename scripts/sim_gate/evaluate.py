@@ -370,10 +370,13 @@ def window(pts, cum, i, half):
     return pts[lo:hi + 1]
 
 
-def edge_joins(D):
-    """{sub: [(local, side, inset, D)]} from the mission's "edge start join" log lines."""
+def edge_joins(D, t_lo=-math.inf, t_hi=math.inf):
+    """{sub: [(local, side, inset, D)]} from the mission's "edge start join" log lines
+    (logged in [t_lo, t_hi): the sub indices of one mow_plan, a cross / repeat run each)."""
     joins = {}
     for r in D.get('rosout', []):
+        if not t_lo <= r[0] < t_hi:
+            continue
         msg = r[3] if len(r) > 3 else ''
         mj = re.search(r'edge start join: sub (\d+) local (\d+) side ([+-]\d+) inset '
                        r'([\d.]+) over ([\d.]+) m', str(msg))
@@ -589,16 +592,37 @@ def main(run, world):
     # I_TRACK_M passes. TRANSIT samples are judged absolute (<= I_TRANSIT_M, the soft nose
     # trip). The absolute maxima are reported as before.
     I_TRACK_M, I_TRANSIT_M = 0.10, 0.40
-    pmsg = D['mow_plan'][-1][1] if D['mow_plan'] else None
-    psubs = json.loads(pmsg)['subpaths'] if pmsg else []
-    ptypes = (json.loads(pmsg).get('types') if pmsg else None) or []
-    _js = edge_joins(D)
-    psubs = [joined([(q[0], q[1]) for q in sp], _js[k]) if k in _js else sp
-             for k, sp in enumerate(psubs)]
-    pcums = [G.cumulative_lengths([(q[0], q[1]) for q in sp]) for sp in psubs]
+    # one ~/mow_plan per cross / repeat run (and per resume): judge a sample against the plan
+    # live at its time, not the last one (a cross's run 1 was scored against run 2's rows)
+    mplans = sorted(D['mow_plan'], key=lambda p: p[0])
+    mplan_t = [p[0] for p in mplans]
+
+    def mplan_idx(t):
+        return max(0, bisect.bisect_right(mplan_t, t) - 1) if mplans else None
+
+    def mplan_window(j):
+        return (mplan_t[j] if j > 0 else -math.inf,
+                mplan_t[j + 1] if j + 1 < len(mplans) else math.inf)
+
+    _pplans = {}
+
+    def pplan(j):
+        if j not in _pplans:
+            msg = json.loads(mplans[j][1])
+            subs = msg['subpaths']
+            js = edge_joins(D, *mplan_window(j))
+            subs = [joined([(q[0], q[1]) for q in sp], js[k]) if k in js else sp
+                    for k, sp in enumerate(subs)]
+            _pplans[j] = (subs, [G.cumulative_lengths([(q[0], q[1]) for q in sp])
+                                 for sp in subs], msg.get('types') or [])
+        return _pplans[j]
 
     def plan_pose(t, x, y, yaw=None):
         h = hl_at(t)
+        j = mplan_idx(t)
+        if j is None:
+            return None
+        psubs, pcums, ptypes = pplan(j)
         if h is None or h[1] != 'MOWING' or h[4] is None or h[4] < 0 or \
                 h[4] >= len(psubs) or h[5] is None or h[5] < 0:
             return None
@@ -742,27 +766,28 @@ def main(run, world):
     # ---- (e) corners
     corners = []
     gtT = [r[0] for r in gt]
-    plan_msg = D['mow_plan'][-1][1] if D['mow_plan'] else None
-    subpaths = json.loads(plan_msg)['subpaths'] if plan_msg else []
-    for k, sp in enumerate(subpaths):
-        pts = [(p[0], p[1]) for p in sp]
-        cum = G.cumulative_lengths(pts)
-        for i, turn in G.route_corners(pts, CORNER_RAD):
-            win = window(pts, cum, i, 1.6)
-            dev, n = 0.0, 0
-            for r in gt:
-                h = hl_at(r[0])
-                if h is None or h[1] != 'MOWING' or h[4] != k or h[5] < 0:
-                    continue
-                if abs(cum[min(h[5], len(cum) - 1)] - cum[i]) > 1.5:
-                    continue
-                if math.hypot(r[1] - pts[i][0], r[2] - pts[i][1]) > CORNER_NEAR:
-                    continue
-                n += 1
-                dev = max(dev, poly_dist((r[1], r[2]), win))
-            if n:
-                corners.append(['cov', k, i, round(pts[i][0], 2), round(pts[i][1], 2),
-                                round(math.degrees(turn)), round(dev, 3), n])
+    for pj in range(len(mplans)):
+        tw0, tw1 = mplan_window(pj)
+        gtw = [r for r in gt if tw0 <= r[0] < tw1]
+        for k, sp in enumerate(json.loads(mplans[pj][1])['subpaths']):
+            pts = [(p[0], p[1]) for p in sp]
+            cum = G.cumulative_lengths(pts)
+            for i, turn in G.route_corners(pts, CORNER_RAD):
+                win = window(pts, cum, i, 1.6)
+                dev, n = 0.0, 0
+                for r in gtw:
+                    h = hl_at(r[0])
+                    if h is None or h[1] != 'MOWING' or h[4] != k or h[5] < 0:
+                        continue
+                    if abs(cum[min(h[5], len(cum) - 1)] - cum[i]) > 1.5:
+                        continue
+                    if math.hypot(r[1] - pts[i][0], r[2] - pts[i][1]) > CORNER_NEAR:
+                        continue
+                    n += 1
+                    dev = max(dev, poly_dist((r[1], r[2]), win))
+                if n:
+                    corners.append(['cov', k, i, round(pts[i][0], 2), round(pts[i][1], 2),
+                                    round(math.degrees(turn)), round(dev, 3), n])
     plans = [p for p in D['plan'] if p[0] >= t0]
     croutes = [(t, json.loads(m)['poses']) for t, m in D.get('croute', []) if t >= t0]
     if croutes:
@@ -845,44 +870,59 @@ def main(run, world):
                             'mowing_pivot_s': round(pivm, 1), 'mowing_moving_s': round(movm, 1)}
 
     # ---- (h) cross-track by segment type
-    types_all = json.loads(plan_msg).get('types') if plan_msg else None
     # (h) against the path actually sent (round 4): an edge-start tangent join ("edge start
     # join: sub K local L side S inset I over D m", mission_fsm._join_leg) offsets the leg's
-    # first D m toward the interior; rebuild it here so the join is not counted as error
-    joins = edge_joins(D)
-    prep = []
-    for k, sp in enumerate(subpaths):
-        pts = [(p[0], p[1]) for p in sp]
-        if k in joins:
-            pts = joined(pts, joins[k])
-        cum = G.cumulative_lengths(pts)
-        ty = (types_all[k] if types_all and k < len(types_all) else '') or ''
-        if len(ty) != len(pts):
-            # raw plan: corner neighbourhoods by the drawn vertices, arcs by local radius
-            ty = []
-            vx = [i for i, _t in G.route_corners(pts, math.radians(20))]
-            for i in range(len(pts)):
-                if any(abs(cum[i] - cum[v]) <= 0.3 for v in vx):
-                    ty.append('c')
-                    continue
-                lo = max(0, i - 3)
-                hi = min(len(pts) - 1, i + 3)
-                if hi - lo >= 2 and cum[hi] - cum[lo] > 1e-6:
-                    h1 = math.atan2(pts[i][1] - pts[lo][1], pts[i][0] - pts[lo][0]) \
-                        if i > lo else None
-                    h2 = math.atan2(pts[hi][1] - pts[i][1], pts[hi][0] - pts[i][0]) \
-                        if hi > i else None
-                    if h1 is not None and h2 is not None and abs(
-                            G.wrap_angle(h2 - h1)) / (0.5 * (cum[hi] - cum[lo])) >= 0.5:
-                        ty.append('a')
+    # first D m toward the interior; rebuild it here so the join is not counted as error.
+    # Per ~/mow_plan (a cross / repeat run each), the one live at the sample's time.
+    _hprep = {}
+
+    def hprep(pj):
+        if pj not in _hprep:
+            msg = json.loads(mplans[pj][1])
+            _hprep[pj] = (msg.get('types'),
+                          xt_prep(msg['subpaths'], msg.get('types'),
+                                  edge_joins(D, *mplan_window(pj))))
+        return _hprep[pj]
+
+    def xt_prep(subpaths, types_all, joins):
+        prep = []
+        for k, sp in enumerate(subpaths):
+            pts = [(p[0], p[1]) for p in sp]
+            if k in joins:
+                pts = joined(pts, joins[k])
+            cum = G.cumulative_lengths(pts)
+            ty = (types_all[k] if types_all and k < len(types_all) else '') or ''
+            if len(ty) != len(pts):
+                # raw plan: corner neighbourhoods by the drawn vertices, arcs by local radius
+                ty = []
+                vx = [i for i, _t in G.route_corners(pts, math.radians(20))]
+                for i in range(len(pts)):
+                    if any(abs(cum[i] - cum[v]) <= 0.3 for v in vx):
+                        ty.append('c')
                         continue
-                ty.append('l')
-            ty = ''.join(ty)
-        prep.append((pts, cum, ty))
+                    lo = max(0, i - 3)
+                    hi = min(len(pts) - 1, i + 3)
+                    if hi - lo >= 2 and cum[hi] - cum[lo] > 1e-6:
+                        h1 = math.atan2(pts[i][1] - pts[lo][1], pts[i][0] - pts[lo][0]) \
+                            if i > lo else None
+                        h2 = math.atan2(pts[hi][1] - pts[i][1], pts[hi][0] - pts[i][0]) \
+                            if hi > i else None
+                        if h1 is not None and h2 is not None and abs(
+                                G.wrap_angle(h2 - h1)) / (0.5 * (cum[hi] - cum[lo])) >= 0.5:
+                            ty.append('a')
+                            continue
+                    ty.append('l')
+                ty = ''.join(ty)
+            prep.append((pts, cum, ty))
+        return prep
     names = {'l': 'line', 'a': 'arc', 'p': 'pivot_vertex', 'c': 'corner', 'P': 'pivoting'}
     xt = {}
     for r in gt[::2]:
         h = hl_at(r[0])
+        pj = mplan_idx(r[0])
+        if pj is None:
+            continue
+        types_all, prep = hprep(pj)
         if h is None or h[1] != 'MOWING' or h[4] is None or h[4] < 0 or h[4] >= len(prep) \
                 or h[5] < 0 or str(h[2]).startswith('boundary'):
             continue

@@ -244,13 +244,20 @@ parameter. Then, with the blade off:
 Runs: each area is planned and mowed once per run, in order:
 
 * `zigzag`, `spiral`, `contour_only`: `repeat` runs at the same angle.
-* `cross`: two plans per repeat, at the angle and the angle + 90 deg.
+* `cross`: two plans per repeat, at the angle and the angle + `alternate_angle_offset_deg`
+  (GUI "Cross angle", default 90; 0 or 180 would repeat the first rows and is taken as 90).
 * `alternate`: `repeat` runs, the angle turned by `alternate_angle_offset_deg` on every run,
   continuing across sessions: the number of finished alternate runs per area name is kept in
   `alternate_state_path` (JSON).
 * On an AUTO angle (-1) a +90 deg turn is sent as the goal's `perpendicular=true` (the bridge
   learns the auto angle and re-plans at +90); any other turn uses the offset from 0 deg (map
-  x axis).
+  x axis). Same rule for `cross` and `alternate`.
+* `~/active_area_settings` carries `run` / `runs`, the run's goal angle (`run_mow_angle_deg`,
+  -1 = auto) and `run_line_angles_deg`: the row direction of every run of the area, a fixed
+  angle as set, an auto one from the planned swaths (first SEGMENT_SWATH heading) once a run
+  of the area was planned, else null. It is re-published when a plan arrives. The plan
+  preview tags each summary segment with its `run` (index into the previewed directions) and
+  adds `run_line_angles_deg` per area.
 
 Between runs the blade goes off and the area's resume cursor row is reset; the run in
 progress is stored as an extra `area_run <idx> <run>` line in the resume file (ignored by

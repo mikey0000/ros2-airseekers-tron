@@ -145,7 +145,7 @@ areas:
 | `swath_overlap_m` | float | 0-0.1 | 0.02 | swath spacing = cut width - this |
 | `edge_first` | bool | | true | false = swaths first, then the perimeter laps |
 | `repeat` | int | 1-10 | 1 | mow the area N times per session |
-| `alternate_angle_offset_deg` | float | 0-180 | 90 | `alternate`: angle step per run (and per session); `cross` is always two passes 90 deg apart |
+| `alternate_angle_offset_deg` | float | 0-180 | 90 | `alternate`: angle step per run (and per session); `cross`: the second pass's turn from the first (GUI "Cross angle"; the mission takes 0 / 180 as 90) |
 
 `set_area_settings` takes a JSON object and **merges** it into the stored values of that
 area (or the defaults for 255): a key set to `null` is removed (back to the default), and
