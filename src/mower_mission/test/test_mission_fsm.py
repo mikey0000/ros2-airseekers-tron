@@ -3180,6 +3180,57 @@ def test_skipped_stretch_still_blocked_ends_incomplete():
     assert cur.available and not h.blade
 
 
+def test_cross_run_with_only_a_blocked_stretch_goes_on_to_the_next_run():
+    # owner 2026-11-11: a cross whose first run ends with a stretch still blocked must
+    # still mow the cross pass instead of ending the area (and docking)
+    h = Harness(return_home_on_incomplete=False)
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0}}
+    sp0, sp1 = mowing_two_swaths(h)
+    static_abort_and_detour(h, sp0)
+    h.finish(f.ACT_FOLLOW)
+    h.finish(f.ACT_NAV)
+    h.tick()
+    h.finish(f.ACT_FOLLOW)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    h.finish(f.ACT_NAV)
+    h.tick()
+    m = h.mark()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)             # chair still there
+    assert h.name == 'PLANNING' and h.fsm.mission.run_i == 1
+    assert h.goal(f.ACT_PLAN)['mow_angle_deg'] == 120.0
+    assert not h.fsm.mission.blocked
+    assert any('going on to run 2' in e.text for e in h.since(m, f.Log))
+    cur = ResumeCursor.loads(h.saved)
+    assert cur.area_runs[0] == 1 and not cur.areas[0].skipped
+
+
+def test_last_run_with_a_blocked_stretch_still_ends_incomplete():
+    h = Harness(return_home_on_incomplete=False)
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0}}
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    mow_area_once(h)                              # run 1 clean
+    assert h.fsm.mission.run_i == 1
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    sp0, sp1 = line(0, 0, 10, 0, n=21), line(10, 1, 0, 1, n=21)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp0, sp1]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['poses'][0] == sp0[0]
+    sp0, sp1 = tuple(h.fsm.mission.subpaths)
+    static_abort_and_detour(h, sp0)
+    h.finish(f.ACT_FOLLOW)
+    h.finish(f.ACT_NAV)
+    h.tick()
+    h.finish(f.ACT_FOLLOW)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    h.finish(f.ACT_NAV)
+    h.tick()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'MOWING_INCOMPLETE'
+    assert h.fsm.sub_state.startswith('1 stretch blocked by obstacles (')
+
+
 def test_dynamic_obstacle_stops_waits_and_resumes_from_last_pose():
     h = Harness()
     sp0, _ = mowing_two_swaths(h)

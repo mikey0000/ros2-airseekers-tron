@@ -1930,8 +1930,12 @@ when run 1 finishes cleanly (`outcome.py`). But:
 - The preview (2026-10-22 fix) plans both row sets but draws them in one colour.
 - A run 1 that ends with failed or blocked stretches goes to the next area without run 2
   (`outcome.py`: the run index is kept, and the next START resumes run 1). In the field that
-  looks like "no second pass". This is unchanged: it would need a decision on what resume means
-  for a cross.
+  looks like "no second pass": the 2026-11-11 mow of area 3 ended run 1 at 99.3 % with 1 stretch
+  blocked by obstacles and docked. Owner decision 2026-11-11: when a run ends with only
+  obstacle-blocked stretches and another run (cross / repeat) is left, go on to the next run,
+  which mows the same ground again; the blocked stretches are logged (incident
+  `run_blocked_continue`) and dropped. Failed sub-paths still end the area as before, and the
+  last run's blocked stretches still end it MOWING_INCOMPLETE.
 
 **Changes.**
 - Settings: cross turns run 2 by `alternate_angle_offset_deg` (one key for both modes, so no
