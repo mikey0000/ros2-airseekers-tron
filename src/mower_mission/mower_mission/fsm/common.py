@@ -1543,6 +1543,7 @@ class Params:
     nogo_edge_mark_max_offset_m: float = 0.40
     nogo_edge_mark_clearance_m: float = 0.20   # body side to the mark (slope yaw error)
     nogo_edge_mark_ramp_per_m: float = 3.0     # shallow ramp in / out
+    nogo_edge_mark_along_pad_m: float = 0.5    # mark range scatter along the lap
     nogo_plan_grow_m: float = 0.25           # zone hole radius + this (nose 0.60 vs 0.40 keepout)
 
     @classmethod

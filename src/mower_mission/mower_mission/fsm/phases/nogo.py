@@ -572,7 +572,8 @@ class NogoMixin:
             # downhill side on the slope swung the front corner 0.19 m out): more clearance,
             # a shallow ramp in and out
             kw = {'max_offset_m': min(float(p.nogo_edge_max_offset_m),
-                                      float(p.nogo_edge_mark_max_offset_m)), 'clamp': True}
+                                      float(p.nogo_edge_mark_max_offset_m)), 'clamp': True,
+                  'along_pad_m': float(p.nogo_edge_mark_along_pad_m)}
         if cm:
             kw = {'max_offset_m': max(float(p.nogo_edge_max_offset_m),
                                       float(p.nogo_edge_costmap_max_offset_m)),

@@ -250,7 +250,7 @@ def plan_pivot(x: float, y: float, yaw: float, delta: float, discs: Sequence,
 def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width: float = 0.235,
                 clearance: float = 0.10, lookahead_m: float = 3.0, ramp_m: float = 0.8,
                 max_offset_m: float = 1.2, ramp_per_m: float = 0.0, end_offset_m: float = 0.0,
-                clamp: bool = False):
+                clamp: bool = False, along_pad_m: float = 0.0):
     """Bend the edge lap ``poses`` from local ``i0`` inward around the ``discs`` within
     ``lookahead_m``: each pose beside a disc moves toward the area interior until the body
     side clears the disc by ``clearance``, ramped in and out (cosine) over ``ramp_m``.
@@ -264,7 +264,10 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
     merges onto the lap from there tangentially, as the boundary rejoin does). ``clamp``: a
     need above ``max_offset_m`` bends by ``max_offset_m`` instead of giving up (perimeter
     marks, 2026-11-11: their range scatter at 2-3 m put one disc 0.1 m further in and the
-    detour came only once the robot was beside the pot)."""
+    detour came only once the robot was beside the pot). ``along_pad_m``: a disc counts as
+    beside the body this much further before / after the body box (the along-track range
+    scatter of marks ranged from 2-3 m: the inside world's pot lay 0.5 m later than its
+    marks and the robot met it on the return ramp)."""
     if i0 >= len(poses) - 1 or not discs:
         return None
     cum = [0.0]
@@ -291,7 +294,7 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
         for z in discs:
             dx, dy = z.x - q[0], z.y - q[1]
             along = dx * math.cos(h) + dy * math.sin(h)
-            if along < -0.15 or along > 0.65:        # beside the body box (-0.10 .. 0.60)
+            if along < -0.15 - along_pad_m or along > 0.65 + along_pad_m:   # beside the body box
                 continue
             # disc offset toward the interior, and how far the body must stay from it
             beside.append((dx * nx * sgn + dy * ny * sgn, z.r + half_width + clearance))
