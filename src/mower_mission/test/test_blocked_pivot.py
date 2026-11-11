@@ -84,7 +84,7 @@ def test_blocked_pivot_within_threshold_follows_the_leg():
 
 
 def test_blocked_pivot_in_end_of_area_retry_is_reported_blocked():
-    h = _blocked()
+    h = _blocked(skipped_retry_once=False)        # the old outcome; the new one: test below
     m = h.fsm.mission
     h.finish(f.ACT_SPIN, f.ABORTED)
     stretch = h.fsm.cursor.area(m.area_idx).skipped[0]

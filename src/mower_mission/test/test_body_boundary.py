@@ -746,7 +746,7 @@ def test_needs_help_reports_the_current_pose_not_the_trip_origin():
 
 
 def test_side_slope_withdraws_the_front_corner_allowance_logged_once():
-    h = mowing_h([line(1, 2, 4, 2)], (1.0, 2.0, 0.0))
+    h = mowing_h([line(1, 2, 4, 2)], (1.0, 2.0, 0.0), edge_slope_grace_s=0.0)
     pose = (2.0, 5.07, math.radians(15))       # front_left 0.45 out, the rest under limits
     ev = h.fsm._hb_body_eval(pose, 'soft')
     assert ev['excess'] < 0.0 and 0.35 < max(ev['outs'].values()) < 0.55
@@ -1078,3 +1078,53 @@ def test_final_approach_hop_still_runs_beyond_the_hop_minimum():
     h = _arrive_at_approach(0.08)
     h.fsm.p.edge_approach_hop_min_m = 0.0
     assert h.fsm._route_final_approach(0.08) is True
+
+
+def _bend_lap(turn_deg):
+    """North 0.15 m inside square(0, 0, 5)'s west edge, then a clockwise R 0.5 arc of
+    ``turn_deg`` inside the join's 1.5 m, then straight on."""
+    pts = [(0.15, 3.5 + 0.05 * k) for k in range(18)]                  # to (0.15, 4.35)
+    cx, cy, R = 0.65, 4.35, 0.5
+    n = int(turn_deg / 5)
+    for k in range(1, n + 1):
+        a = math.pi - math.radians(5 * k)
+        pts.append((cx + R * math.cos(a), cy + R * math.sin(a)))
+    h = math.radians(90 - turn_deg)
+    ex, ey = pts[-1]
+    pts += [(ex + 0.05 * k * math.cos(h), ey + 0.05 * k * math.sin(h)) for k in range(1, 20)]
+    return [(x, y, 0.0) for x, y in pts]
+
+
+@pytest.mark.parametrize('turn', [90, 120])
+def test_join_offset_never_points_outward_across_a_bend(turn):
+    # review 2026-11-11: the fixed inward vector loses its inward component where the lap
+    # turns 90+ deg inside edge_join_m (about 3 cm outward at 120); it is clamped to the
+    # lap's local inward normal
+    lap = _bend_lap(turn)
+    h = mowing_h([line(1, 3, 4, 3), lap], (2.0, 2.0, 0.0), path_conditioning=True)
+    m = h.fsm.mission
+    m.sub_i, m.start_local = 1, 0
+    m.join = (1, 0, -1, 0.30)                  # right of north = the interior
+    legs = h.fsm._join_leg([tuple(q) for q in lap], 1, 0)
+    for k, (q, o) in enumerate(zip(legs, lap)):
+        a, b = lap[max(0, k - 2)], lap[min(len(lap) - 1, k + 2)]
+        hd = math.atan2(b[1] - a[1], b[0] - a[0])
+        inward = (q[0] - o[0]) * math.sin(hd) - (q[1] - o[1]) * math.cos(hd)   # right side
+        assert inward >= -0.01, (k, inward)
+        assert bb.point_outside(q[0], q[1], [square(0, 0, 5)['outer']]) == 0.0
+
+
+def test_slope_switch_itself_does_not_trip_only_a_growing_excursion():
+    # review 2026-11-11 (field STUCK #2): roll crossed 8 deg with front_left 0.36 m out and
+    # the front limit fell to 0.35 in the same tick. For edge_slope_grace_s the corner may
+    # stay where it was at the switch (+ 0.05); growing past that, or after the grace, trips
+    h = mowing_h([line(1, 2, 4, 2)], (1.0, 2.0, 0.0))
+    pose = (2.0, 5.07, math.radians(15))       # front_left 0.45 out
+    h.fsm.inputs.tilt_roll_deg, h.fsm.inputs.tilt_stamp = 9.5, h.t
+    assert h.fsm._hb_body_eval(pose, 'soft')['excess'] < 0.0          # the switch tick
+    assert h.fsm._hb_body_eval(pose, 'soft')['excess'] < 0.0
+    grown = (2.0, 5.15, math.radians(15))      # front_left 0.08 m further out
+    assert h.fsm._hb_body_eval(grown, 'soft')['excess'] > 0.0
+    h.fsm._now += 10.1
+    h.fsm.inputs.tilt_stamp = h.fsm._now
+    assert h.fsm._hb_body_eval(pose, 'soft')['excess'] > 0.0          # grace over

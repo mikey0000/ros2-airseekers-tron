@@ -1116,6 +1116,7 @@ class Params:
     # the same spot twice still ends in STUCK_NEEDS_HELP)
     hard_boundary_spot_max: int = 2
     hard_boundary_spot_m: float = 1.0
+    boundary_spot_window_s: float = 600.0   # ... within this many seconds (<= 0 = whole mission; owner)
     # base_link check (drawn paths) from the mission's own area snapshot in TRANSIT / MOWING
     # (immune to a GUI map reload); ~/outside_m in dock phases / without a snapshot
     hard_boundary_snapshot: bool = True
@@ -1248,6 +1249,17 @@ class Params:
     pivot_creep_max_m: float = 0.2
     pivot_creep_share: float = 0.5
     edge_slope_hold_s: float = 5.0
+    # The slope switch itself does not trip: for edge_slope_grace_s after it the front corners
+    # keep min(soft front limit, their outside distance at the switch + edge_slope_grace_grow_m)
+    # (field 2026-11-11: roll crossed 8 deg with front_left 0.36 m out -> instant trip). 0 = off.
+    # A piece skipped for a static obstacle (pivot sweep blocked by a static disc, bumper
+    # skip) is excluded at once (blocked_static), not queued for the end-of-area retry; any
+    # other skipped stretch still blocked on its one retry is excluded too
+    # (skipped_retry_once), so no START drives back to the same spot (field 2026-11-11).
+    static_skip_excludes: bool = True
+    skipped_retry_once: bool = True
+    edge_slope_grace_s: float = 10.0
+    edge_slope_grace_grow_m: float = 0.05
     # --- Spin drift (field 2026-10-21 07:05:32: a 64 deg route-corner Spin slid 0.40 m on the
     # west-edge slope, then the drive out tripped the boundary). base_link more than
     # spin_drift_m from where a pivot Spin started: cancel it, log, re-plan the approach
@@ -1521,15 +1533,14 @@ class Params:
     nogo_edge_costmap_backup_near_m: float = 0.80
     nogo_edge_costmap_backup_m: float = 0.50
     nogo_living_memory_s: float = 60.0       # static marks this recently under a living zone
-    # A static (non-living) mark / candidate / pending zone centred outside the allowed region
-    # or within this of its boundary is an object beyond the recorded perimeter (the owner
-    # drove the line; lap 0 has base_link on it and the sides 0.235 m over): it does not
-    # block the pre-pivot sweep check, the edge-lap detour or the plan-time exclusions
-    # (field 2026-11-11: potted plants 0.38 m outside the west edge, inflated to r 0.56 marks
-    # centred on the line, skipped the edge laps there and sent the end-of-area retries back
-    # to that corner). Accepted keepouts and person / animal zones always count; the
-    # collision monitor and the bumper are unchanged. < 0 = off.
-    nogo_edge_ignore_m: float = 0.25
+    # Perimeter objects (review 2026-11-11): a static mark centred within nogo_perimeter_band_m
+    # of the region edge (either side) is used at its true size (r - shrink) by the pivot
+    # sweep / detour, and edge laps bend inward round it (nogo_edge_perimeter_marks) by at most
+    # nogo_edge_mark_max_offset_m, blade on. 0 / false = off.
+    nogo_perimeter_band_m: float = 0.6
+    nogo_perimeter_mark_shrink_m: float = 0.05
+    nogo_edge_perimeter_marks: bool = True
+    nogo_edge_mark_max_offset_m: float = 0.30
     nogo_plan_grow_m: float = 0.25           # zone hole radius + this (nose 0.60 vs 0.40 keepout)
 
     @classmethod
@@ -1647,7 +1658,6 @@ class Mission:
     nogo_route_aborts: set = field(default_factory=set)
     nogo_living_wait: Any = None                # {'xy', 'since'}: route-corner living wait
     nogo_living_spots: list = field(default_factory=list)   # [(x, y, r, t)] living zones
-    nogo_edge_ignored: set = field(default_factory=set)     # (x, y) 0.1 m keys logged as beyond the perimeter
     nogo_turns: int = 0                         # pivots re-routed by the sweep check
     nogo_detour: Any = None                     # edge detour in flight
     nogo_detoured: set = field(default_factory=set)

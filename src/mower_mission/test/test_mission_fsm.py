@@ -3050,7 +3050,7 @@ def test_static_obstacle_detours_and_resumes_beyond_then_requeues_stretch():
 
 
 def test_skipped_stretch_still_blocked_ends_incomplete():
-    h = Harness(return_home_on_incomplete=False)
+    h = Harness(return_home_on_incomplete=False, skipped_retry_once=False)
     sp0, sp1 = mowing_two_swaths(h)
     a, b = static_abort_and_detour(h, sp0)
     h.finish(f.ACT_FOLLOW)
@@ -5125,6 +5125,10 @@ def test_emergency_silence_watchdog_armed_only_after_first_message():
 # =====================================================================
 def _skips_h(subpaths, pose, zs=None, **params):
     from mower_mission import nogo
+    # the 2026-11-01 retry-pass behaviour (2026-11-11 static_skip_excludes /
+    # skipped_retry_once have their own tests)
+    params.setdefault('static_skip_excludes', False)
+    params.setdefault('skipped_retry_once', False)
     h = Harness(**params)
     h.areas = [square(0, 0, 5)]
     i = h.fsm.inputs
@@ -5655,3 +5659,33 @@ def test_retried_stretch_blocked_static_stays_excluded():
     h._apply(h.fsm._end())
     assert h.fsm.cursor.available is False or h.name == 'RETURNING_HOME'
     assert m.excluded_count == 1 and not m.blocked and not m.ignored_short_m
+
+
+# ---- 2026-11-11 west edge: no repeated retries back to the same object ----
+
+
+def test_skipped_stretch_still_blocked_on_its_one_retry_is_excluded_not_requeued():
+    # field 2026-11-11: the same corner was re-tried at every area end and after every
+    # START. With skipped_retry_once a stretch still blocked on its retry (any cause) is
+    # excluded with the reason (blocked_static), never queued again
+    h, m = _pass_h(skipped_retry_once=True)
+    for st in (h.st0, h.st1):
+        assert m.stretch == st
+        h.fsm._begin(h.t)
+        h.fsm._stretch_blocked('follow_path aborted at pose %d' % (st[0] + 1))
+        h._apply(h.fsm._end())
+    assert not m.blocked and m.excluded_count == 2
+    assert any('still blocked on its one retry' in e.text for e in h.since(0, f.Log))
+    assert h.name == 'RETURNING_HOME' and not h.fsm.cursor.available   # nothing to resume
+
+
+def test_sweep_blocked_skip_by_a_static_disc_is_excluded_at_once():
+    sp0 = line(0.5, 2, 4.5, 2, n=41)
+    h = _skips_h([sp0, line(0.5, 3, 4.5, 3)], (4.5, 4.5, 0.0), static_skip_excludes=True)
+    m = h.fsm.mission
+    _exhaust_transit(h)
+    ac = h.fsm.cursor.areas[0]
+    k = _ix(h, 2.5)
+    assert ac.skipped == [] and ac.blocked_static == [(0, k)]
+    assert m.start_local == k and h.name == 'TRANSIT'
+    assert any('excluded at once (static obstacle' in e.text for e in h.since(0, f.Log))

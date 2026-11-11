@@ -79,7 +79,23 @@ class BoundaryGuardMixin:
                                float(p.hard_boundary_body_hard_m),
                                float(p.hard_boundary_body_soft_front_m))
         if mode != 'hard' and self._edge_slope():
-            lim['front'] = min(lim['front'], lim['side'])   # no convex-bend allowance on a slope
+            front = min(lim['front'], lim['side'])   # no convex-bend allowance on a slope
+            g = float(p.edge_slope_grace_s)
+            if g > 0.0 and pose is not None and \
+                    self._now - getattr(self, '_edge_slope_since', self._now) < g:
+                # the switch itself never trips (review 2026-11-11, field STUCK #2: roll
+                # crossed 8.0 deg and the front limit fell from 0.55 to 0.35 in the same
+                # tick, with front_left already 0.36 m out): for edge_slope_grace_s the
+                # front corners may stay where they were at the switch, plus
+                # edge_slope_grace_grow_m; only a growing excursion trips
+                f0 = getattr(self, '_edge_slope_front0', None)
+                if f0 is None:
+                    ev0 = bbody.evaluate(pose, self._region(), {k: 0.0 for k in lim})
+                    f0 = max(ev0['outs'].get('front_left', 0.0),
+                             ev0['outs'].get('front_right', 0.0)) if ev0 else 0.0
+                    self._edge_slope_front0 = f0
+                front = max(front, min(lim['front'], f0 + float(p.edge_slope_grace_grow_m)))
+            lim['front'] = front
         # plan-relative (soft): near a corner whose planned swept body is already out by
         # body_m (lap 0 on a tight driven bend, owner option (c)), any point may reach
         # body_m + hard_boundary_plan_margin_m (tracking p99 + margin) before it trips
@@ -118,6 +134,7 @@ class BoundaryGuardMixin:
             self._edge_slope_on = on
             if on:
                 self._edge_slope_since = self._now
+                self._edge_slope_front0 = None      # measured at the next body check
                 self._log('warn', 'boundary: side slope (roll %.1f deg > %.1f): front corners '
                                   'get the side limit %.2f m (no convex-bend allowance)'
                           % (float(i.tilt_roll_deg), thr,
@@ -282,7 +299,7 @@ class BoundaryGuardMixin:
         if not entry and not grace:
             self._hb_count += 1
             if pose is not None:
-                self._hb_spots.append((float(pose[0]), float(pose[1])))
+                self._hb_spots.append((float(pose[0]), float(pose[1]), self._now))
         if pose is None:
             self._log('error', 'BOUNDARY OUT: %s, no pose (%d/%d this mission)'
                       % (what, self._hb_count, int(self.p.hard_boundary_max_aborts)))

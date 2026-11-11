@@ -70,3 +70,27 @@ class StuckSpotStore:
             self.events = [e for e in self.events if e not in near]
         self.save()
         return out
+
+
+def stuck_event_spot(x: float, y: float, now: float, last_incident=None, last_contact=None,
+                     skip_kinds=('boundary',), skip_window_s: float = 30.0,
+                     contact_window_s: float = 10.0, contact_radius_m: float = 1.0):
+    """Where a STUCK_NEEDS_HELP entry at robot pose (x, y) is filed, or None to not file it.
+
+    Review 2026-11-11 (field: a pending 1.0 m keepout 0.11 m inside the line, placed from two
+    boundary spot-rule stops whose bumper contact had been ~0.2 m OUTSIDE it): a stop that
+    follows a ``skip_kinds`` incident (a boundary excursion: no obstacle) within
+    ``skip_window_s`` is no trap spot; one that follows a bumper contact within
+    ``contact_window_s`` and ``contact_radius_m`` is filed at the contact point, not at
+    base_link. ``last_incident`` = (kind, t); ``last_contact`` = (t, cx, cy)."""
+    if last_incident is not None and last_incident[0] in tuple(skip_kinds or ()) and \
+            now - float(last_incident[1]) <= float(skip_window_s):
+        contact = last_contact is not None and now - float(last_contact[0]) <= \
+            float(contact_window_s)
+        if not contact:
+            return None
+    if last_contact is not None and now - float(last_contact[0]) <= float(contact_window_s) \
+            and math.hypot(float(last_contact[1]) - x, float(last_contact[2]) - y) <= \
+            float(contact_radius_m):
+        return float(last_contact[1]), float(last_contact[2])
+    return x, y

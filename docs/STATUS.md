@@ -1916,17 +1916,24 @@ Details: `analysis/2026-11-06_field_weave_diagnosis.md`.
   compensation (offline: 0.1 s less delay, -18 to -34 %) are the levers the field fit
   supports.
 
-## West edge stuck: join direction, edge-start approach, perimeter marks (2026-11-11, branch ws/edge1111, unit-tested; sim gate pending)
+## West edge stuck: join direction, edge-start approach, perimeter objects (2026-11-11, branch ws/edge1111, unit + sim)
 
 Field 2026-11-11 area 3, two STUCK_NEEDS_HELP at the west edge (side slope, downhill out) and
-repeated edge skips there (`analysis/2026-11-11_west_edge_stuck.md`). `_join_leg` offset each
-pose by its neighbours' normal, which at a vertex whose leg starts with the sideways inset step
-pointed along the edge: the pivot turned out through the outside and the robot drove along the
-line (front corner 0.46 m out). The join is now one vector (the start heading's inward
-normal). An edge start more than `edge_start_gap_m` (0.40) away gets the approach transit
-instead of a diagonal leg; no final-approach hop within `edge_approach_hop_min_m` (0.15) of an
-approach point. Static marks / pending zones centred outside the area or within
-`nogo_edge_ignore_m` (0.25) of its line no longer block pivots or exclude stretches (potted
-plants 0.38 m outside the line had blocked every pivot at that corner). Owner decisions listed
-in the analysis (on-line objects, the spot rule's missing time window, collision-monitor stops
-inside the line). Sim world `owner_area3_edge1111`.
+repeated edge skips there (`analysis/2026-11-11_west_edge_stuck.md`).
+- `_join_leg` offset each pose by its neighbours' normal, which at a vertex whose leg starts
+  with the sideways inset step pointed along the edge. The pivot turned out through the outside
+  and the robot drove along the line (front corner 0.46 m out). The join is now one vector (the
+  start heading's inward normal), clamped never to point outward of the lap's local normal.
+- An edge start more than `edge_start_gap_m` (0.40) away gets the approach transit instead of
+  a diagonal leg. No final-approach hop within `edge_approach_hop_min_m` (0.15) of an approach
+  point.
+- Perimeter objects stay obstacles. Static marks within 0.6 m of the line are used at their
+  true size, and edge laps bend inward round them (at most 0.30 m, blade on).
+- Static skips are excluded at once. Other skipped stretches get one retry, then are
+  excluded, so there is no per-START loop.
+- A STUCK after a boundary excursion is not filed as a stuck spot; after a bumper contact it
+  is filed at the contact point.
+- Slope-switch grace: the front limit change alone never trips.
+- `boundary_spot_window_s` 600 (owner decision).
+
+Sim worlds: `owner_area3_edge1111` and `owner_area3_edge1111_inside`.

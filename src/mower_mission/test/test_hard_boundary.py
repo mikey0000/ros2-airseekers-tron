@@ -440,3 +440,21 @@ def test_resume_in_straight_uses_slow_maneuver_speed():
     mv = h.fsm._hb.get('mv')
     if mv is not None:
         assert abs(abs(mv['v']) - h.fsm.p.slow_maneuver_mps) < 1e-9
+
+
+def test_spot_rule_only_counts_excursions_within_the_window():
+    # review / owner 2026-11-11: both field STUCKs were a second excursion 6 and 46 min after
+    # the first at the same spot, each recovered in one move. boundary_spot_window_s 600:
+    # an older excursion there no longer counts (the mission total still does)
+    h = transit_h()
+    drive_east(h, 1.91)
+    run_retrace(h)
+    h.tick(dt=0.5, n=8)
+    assert h.pending_action(f.ACT_NAV)
+    h.fsm._hb_spots = [(x, y, t - 601.0) for (x, y, t) in h.fsm._hb_spots]
+    m = h.mark()
+    drive_east(h, 1.95)
+    assert h.fsm._hb is not None
+    run_retrace(h)
+    assert h.name != 'STUCK_NEEDS_HELP'
+    assert not any('left the boundary 2 times' in e.text for e in h.since(m, f.Log))

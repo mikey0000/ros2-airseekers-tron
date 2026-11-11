@@ -176,7 +176,7 @@ class TransitMixin:
                   % (cum[end] - cum[frm], m.area_idx, m.sub_i, frm, end, n + 1,
                      int(p.sweep_blocked_max_skips), why))
         self._incident('sweep_blocked_skip', '%s, %.1f m skipped' % (why, cum[end] - cum[frm]))
-        self._skip_piece(frm, end, 'sweep blocked (%s)' % why)
+        self._skip_piece(frm, end, 'sweep blocked (%s)' % why, static=True)
         return True
 
     def _route_planned(self, ok, resp):

@@ -113,7 +113,10 @@ behavior_tree_node:
     nogo_edge_costmap_backup_near_m: 0.80   # robot this close to the cells: back up first
     nogo_edge_costmap_backup_m: 0.50
     nogo_living_memory_s: 60.0        # a static mark this recently under a person / animal zone is it
-    nogo_edge_ignore_m: 0.25          # static mark / pending zone centred outside the area or within this of its line: beyond the perimeter, does not block (< 0 = off)
+    nogo_perimeter_band_m: 0.6        # static mark centred within this of the area edge = a perimeter object ...
+    nogo_perimeter_mark_shrink_m: 0.05  # ... used at r - this (true size + 0.05) by sweep / detour
+    nogo_edge_perimeter_marks: true   # edge laps bend inward round perimeter marks ...
+    nogo_edge_mark_max_offset_m: 0.30 # ... by at most this
     nogo_plan_grow_m: 0.25            # zone hole + this: the nose (0.60 m) vs the 0.40 keepout
 
     # --- rain ------------------------------------------------------------
@@ -490,6 +493,7 @@ behavior_tree_node:
     hard_boundary_max_aborts: 6        # per mission (step 3 round 2: was 2)
     hard_boundary_spot_max: 2          # ... and per spot (excursions within hard_boundary_spot_m)
     hard_boundary_spot_m: 1.0
+    boundary_spot_window_s: 600.0     # spot rule counts excursions only this recent (<= 0 = whole mission)
     hard_boundary_snapshot: true       # base_link check from the mission area snapshot (TRANSIT / MOWING)
     # boundary lines (virtual walls, 2026-11-02, walls.py; /map_server_node/boundary_lines):
     # footprint more than boundary_line_trip_m into a line (+- width_m / 2) = a hard-boundary
@@ -545,6 +549,10 @@ behavior_tree_node:
     edge_slope_roll_deg: 8.0               # |roll| above: front corners get the side limit (0 = off)
     edge_slope_roll_hyst_deg: 2.0          # off only below roll_deg - hyst ...
     edge_slope_hold_s: 5.0                 # ... and after this long on (no flapping at a fade edge)
+    static_skip_excludes: true             # piece skipped for a static obstacle: excluded at once, no end-of-area retry
+    skipped_retry_once: true               # skipped stretch still blocked on its one retry: excluded, never re-tried per START
+    edge_slope_grace_s: 10.0               # after the switch: front corners may stay at their outside distance then ...
+    edge_slope_grace_grow_m: 0.05          # ... plus this (only a growing excursion trips; 0 s = off)
     # coverage pivot on a side slope (|roll| > pivot_creep_roll_deg, 0 = off): pivot to face
     # upslope, drive up by the expected pivot creep, then pivot onto the leg
     pivot_creep_roll_deg: 6.0

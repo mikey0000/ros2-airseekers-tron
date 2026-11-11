@@ -399,9 +399,13 @@ class PivotsMixin:
             m.edge_laps[ck] = res
         return m.edge_laps[ck]
 
-    def _skip_piece(self, frm, end, why):
+    def _skip_piece(self, frm, end, why, static=False):
         """Record local ``frm`` -> ``end`` of the current sub-path as skipped (re-tried once at
-        the area end, else reported blocked / uncut) and go on after it."""
+        the area end, else reported blocked / uncut) and go on after it. ``static`` (a pivot
+        sweep blocked by a static disc, a bumper skip): with static_skip_excludes the piece
+        is excluded at once (blocked_static, reason logged) instead of queued for the
+        end-of-area retry, which would only drive back to the same object (field
+        2026-11-11: the west-edge corner re-tried after every START)."""
         m = self.mission
         self._blk = None
         self._soft_blade_off('skip')
@@ -409,7 +413,16 @@ class PivotsMixin:
             self._stretch_blocked(why)
             return
         last = self._seg_last()
-        if end > frm:
+        if end > frm and static and self.p.static_skip_excludes:
+            offs, _ = subpath_offsets(m.subpaths)
+            st = (offs[m.sub_i] + int(frm), offs[m.sub_i] + int(end))
+            ac = self.cursor.area(m.area_idx)
+            if st not in ac.blocked_static:
+                ac.blocked_static.append(st)
+            self._persist()
+            self._log('warn', 'area %d: stretch %s excluded at once (static obstacle: %s), '
+                              'not re-tried' % (m.area_idx, st, why))
+        elif end > frm:
             self._record_skip(frm, end)
         if end >= last:
             m.step = None
@@ -421,7 +434,7 @@ class PivotsMixin:
         m.pivot_done, m.corner_end = None, None
         self._dispatch(force_transit=True)
 
-    def _edge_skip(self, frm, why, end=None):
+    def _edge_skip(self, frm, why, end=None, static=False):
         """An edge-lap segment is blocked by a real obstacle: end it like stock (no in-place
         retry), skip to the next leg / at most edge_blocked_skip_m."""
         m, pose = self.mission, self.inputs.pose
@@ -437,7 +450,7 @@ class PivotsMixin:
                           '(%.2f, %.2f): %s), mission total %.1f m'
                   % (length, m.area_idx, m.sub_i, frm, end, x, y, why, m.edge_skipped_m))
         self._incident('edge_blocked', '%s, %.1f m skipped' % (why, length))
-        self._skip_piece(frm, end, 'edge blocked (%s)' % why)
+        self._skip_piece(frm, end, 'edge blocked (%s)' % why, static=static)
 
     def _edge_block_tick(self):
         """collision_monitor STOP held edge_blocked_hold_s while following an edge lap (not a

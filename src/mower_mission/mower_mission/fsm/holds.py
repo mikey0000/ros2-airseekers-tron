@@ -1020,7 +1020,11 @@ class HoldsMixin:
             self._blade_off('end-of-area retry failed')
             self._area_done()
             return
-        if self._static_block():
+        once = bool(self.p.skipped_retry_once)
+        if once or self._static_block():
+            # skipped_retry_once: a stretch still blocked on its one retry is excluded with
+            # the reason, never queued again for the next area end / START (field
+            # 2026-11-11: the same corner re-tried after every START)
             ac = self.cursor.area(m.area_idx)
             st = tuple(m.stretch)
             if st in ac.skipped:
@@ -1028,8 +1032,9 @@ class HoldsMixin:
             if st not in ac.blocked_static:
                 ac.blocked_static.append(st)
             self._persist()
-            self._log('warn', 'area %d: stretch %s blocked by a static obstacle on the path '
-                      '(%s): excluded (blocked_static)' % (m.area_idx, st, why))
+            self._log('warn', 'area %d: stretch %s %s (%s): excluded (blocked_static)'
+                      % (m.area_idx, st, 'blocked by a static obstacle on the path'
+                         if self._static_block() else 'still blocked on its one retry', why))
             self._incident('stretch_blocked_static', why)
             m.stretch, m.stretch_end, m.step = None, None, None
             self._blade_off('stretch blocked')

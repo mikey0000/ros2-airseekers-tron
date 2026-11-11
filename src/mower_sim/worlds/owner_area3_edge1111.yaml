@@ -3,12 +3,14 @@
 # (-29.4, -14.9) and (-31.7, -11.7):
 #   * a 9 deg side slope, downhill west (out of the area), as the field's -8..-10 deg roll
 #     on the edge laps there;
-#   * two potted plants 0.38 m outside the line (the median of the field's 183 ranged
-#     'potted plant' detections there), seen by the detector and by stereo.
-# Expect: no pre-pivot "sweeps potted plant / mark" blocks or edge skips at that edge (the
-# marks lie on the line: "beyond the recorded perimeter, does not block"), edge-start joins
-# from the approach point into the lap, no BOUNDARY OUT / STUCK at the west edge.
-# Gate: sim_gate.sh -w src/mower_sim/worlds/owner_area3_edge1111.yaml -d -s 2 -x 2 -t 3600
+#   * two potted plants (r 0.2) centred 0.6 m outside the line, near face 0.4 m out: the
+#     field's lap-0 retry drove past the real plant with the front corner 0.30-0.38 m out
+#     and no contact, and the owner drove the line, so the real face is beyond ~0.38 m.
+#     Seen by the detector and by stereo.
+# Expect: no contact, no STUCK / BOUNDARY OUT at the west edge, no skip-and-retry loop
+# there (pivot sweeps against the plants' true size; a lap that would touch bends inward).
+# The plants placed inside the overhang: owner_area3_edge1111_inside.yaml.
+# Gate: sim_gate.sh -w src/mower_sim/worlds/owner_area3_edge1111.yaml -d -l -s 2 -x 2 -t 3600
 # Area settings as the field's (soft edge layout, 3 edge laps, edge first, mow angle 120,
 # 0.3 m/s), but a single pass (the field ran cross, repeat 2): the west edge laps run first.
 name: owner_area3_edge1111
@@ -23,9 +25,9 @@ area_settings:
            mow_angle_deg: 120.0, cut_speed_mps: 0.3, route_order: boustrophedon,
            blade_policy: continuous}
 obstacles:
-  - {name: plant_south, type: cylinder, x: -30.58, y: -14.37, radius: 0.20, height: 0.60,
+  - {name: plant_south, type: cylinder, x: -30.70, y: -14.55, radius: 0.20, height: 0.60,
      detect: {label: potted plant, score: 0.6}}
-  - {name: plant_mid, type: cylinder, x: -31.19, y: -13.78, radius: 0.20, height: 0.60,
+  - {name: plant_mid, type: cylinder, x: -31.37, y: -13.92, radius: 0.20, height: 0.60,
      detect: {label: potted plant, score: 0.6}}
 terrain:
   regions:

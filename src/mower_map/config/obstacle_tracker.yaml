@@ -157,3 +157,8 @@ obstacle_tracker:
     stuck_states: [STUCK_NEEDS_HELP]
     incident_topic: /mission/incident
     stuck_incident_kinds: [stuck]
+    # 2026-11-11: no stuck spot from a STUCK_NEEDS_HELP that follows a boundary excursion
+    # (no obstacle); one after a bumper contact is filed at the contact point
+    stuck_skip_incident_kinds: [boundary]
+    stuck_skip_window_s: 30.0
+    stuck_contact_window_s: 10.0

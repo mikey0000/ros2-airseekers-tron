@@ -103,9 +103,9 @@ class SpinDriftGuardMixin:
         frm = min(max(frm, 0), self._seg_last())
         m.pivot_done, m.pivot_target, m.corner_end, m.step = None, None, None, None
         if self._edge_lap(m.sub_i):
-            self._edge_skip(frm, why)
+            self._edge_skip(frm, why, static=True)
         else:
-            self._skip_piece(frm, self._skip_end(frm), why)
+            self._skip_piece(frm, self._skip_end(frm), why, static=True)
         return True
 
     def _hb_cmd(self, pose):
@@ -237,14 +237,20 @@ class SpinDriftGuardMixin:
             n, lim = self._hb_count, int(self.p.hard_boundary_max_aborts)
             if not k.get('counted', True):
                 n, lim = 0, max(1, lim)
+            # boundary_spot_window_s (review 2026-11-11): only excursions this recent count
+            # toward the spot rule (field: both STUCKs were a second excursion 6 and 46 min
+            # after the first, each recovered in one move); <= 0 = the whole mission
+            win = float(self.p.boundary_spot_window_s)
             spot = 0 if not k.get('counted', True) or k.get('grace') else sum(
                 1 for q in self._hb_spots
-                if math.hypot(q[0] - ox, q[1] - oy) <= float(self.p.hard_boundary_spot_m))
+                if math.hypot(q[0] - ox, q[1] - oy) <= float(self.p.hard_boundary_spot_m)
+                and (win <= 0.0 or len(q) < 3 or self._now - q[2] <= win))
             slim = int(self.p.hard_boundary_spot_max)
             if slim > 0 and spot >= slim:
                 self._hb_stop()
-                self._hb_needs_help('left the boundary %d times within %.1f m'
-                                    % (spot, float(self.p.hard_boundary_spot_m)), (ox, oy))
+                self._hb_needs_help('left the boundary %d times within %.1f m%s'
+                                    % (spot, float(self.p.hard_boundary_spot_m),
+                                       ' and %.0f s' % win if win > 0.0 else ''), (ox, oy))
                 return
             past = k['driven'] - k['inside_at'] if k['inside_at'] is not None else 0.0
             self._log('info', 'boundary: back inside after reversing %.2f m (%.2f m past the '

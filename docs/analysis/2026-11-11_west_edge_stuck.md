@@ -82,9 +82,12 @@ point itself (0.30 m).
   blocked every pre-pivot sweep at that corner: "(e) ... no clear alternative: skip the
   leg", the route-corner retries 1/3-3/3 with 3 / 10 / 30 s waits, and "edge blocked:
   skip 1.4 m (... 758 -> 786 ...)". That skip is what fault 1a's join started from.
-* **The bumper keepout.** The fault 1a bump created a pending keepout `(-31.28, -12.48)
-  r 1.00` (0.11 m inside). After START it blocked all 8 route-corner sweeps of the
-  retries. Stretch 2288-2329 was excluded and the mow ended MOWING_INCOMPLETE (99.3 %).
+* **The pending 1.0 m keepout.** `(-31.28, -12.48) r 1.00` (0.11 m inside) is the
+  obstacle tracker's repeated-stuck-spot proposal: the mean of the two STUCK_NEEDS_HELP
+  positions, (-31.37, -12.02) and (-31.19, -12.94). Both stops were boundary spot-rule
+  stops, not obstacles; the one bumper contact there (fault 1a) was about 0.2 m outside
+  the line. After START the keepout blocked all 8 route-corner sweeps of the retries.
+  Stretch 2288-2329 was excluded and the mow ended MOWING_INCOMPLETE (99.3 %).
 * **"follow_path aborted, collision ahead"** happened three times at (-29.26, -15.03),
   (-29.45, -14.62) and (-29.39, -14.45). Each was a collision-monitor `stop_zone` (stereo
   points 0.15-1.2 m high, 0.60-0.83 m ahead). The local costmap at the first abort had
@@ -95,18 +98,64 @@ point itself (0.30 m).
 * Every skipped stretch was re-tried at the end of the area and again after each START.
   That is why the mower kept going back to that corner.
 
-**Fix 4 (fsm/phases/nogo.py `_nogo_inside_perimeter`, param `nogo_edge_ignore_m` 0.25).**
-The blocking consumers of the zone set are the pre-pivot sweep check (coverage pivots,
-K-turns, route corners) and the plan-time mark exclusions. They now ignore a static
-object (mark, candidate or pending zone) whose centre is outside the
-allowed region or within 0.25 m inside its boundary. The owner recorded that line by
-driving it, and lap 0 runs with base_link on it and the sides 0.235 m over, so nothing
-can stand there. Person / animal zones and owner-accepted keepouts always count. The
-edge-lap detour still sees these objects and bends the lap inward round them when a
-detour fits. The collision monitor, the bumper, and the obstacle-guard decisions are
-unchanged. Each ignored object is logged once: "... beyond the recorded perimeter, does
-not block". With the field discs, every block above goes. The plant zone, the three plant
-marks and the bumper keepout are all within 0.25 m of the line or outside it.
+**Rejected first fix.** Commit 40a3a49 ignored static objects centred within 0.25 m of
+the line. The sim (`owner_area3_edge1111` v1, plants r 0.2 centred 0.38 m out, near face
+0.18 m out) proved it wrong: the lap-0 body, which overhangs 0.235 m, hit plant_south
+twice and the mow ended STUCK_NEEDS_HELP. The base_link excursion of that run (0.238 m,
+from t 432 s) started 3 s after the first contact, during the stuck escape; it was not a
+tracking or slope fault. Perimeter objects are real and stay obstacles.
+
+**Fix 4: perimeter objects at their true size, laps bend inward round them**
+(fsm/phases/nogo.py `_nogo_true_perimeter`, `_nogo_edge_discs`).
+* A static mark centred within `nogo_perimeter_band_m` (0.6) of the region's edge, on
+  either side, is a perimeter object. The pivot sweep check and the edge detour use it at
+  r - `nogo_perimeter_mark_shrink_m` (0.05): the detected half width plus 0.05 m, instead of
+  the tracker's half width plus 0.10 m. Its position is not changed. Interior marks,
+  zones and keepouts are unchanged.
+* Edge laps now bend inward round perimeter marks (`nogo_edge_perimeter_marks`), blade on,
+  by body reach + `nogo_edge_clearance_m` - face distance, at most
+  `nogo_edge_mark_max_offset_m` (0.30 m). Before, the edge detour took zones only. Interior
+  marks still stay out of it (their range scatter made trunk_x1's detour 2 m wide).
+
+**Fix 5: no repeated retries back to the same object** (fsm/phases/pivots.py
+`_skip_piece`, fsm/holds.py `_stretch_blocked`).
+* `static_skip_excludes` (true): a piece skipped for a static obstacle (a pivot sweep
+  blocked by a static disc, a route-corner sweep-blocked skip, a bumper skip) is excluded
+  at once (blocked_static, reason logged). It is not queued for the end-of-area retry.
+* `skipped_retry_once` (true): any other skipped stretch (for example a collision-monitor
+  stop) is retried once at the end of the area. If it is still blocked it is excluded
+  with the reason ("still blocked on its one retry"). It is never queued again after a
+  START.
+
+**Fix 6: stuck-spot keepouts only from obstacles** (mower_map/obstacle_tracker_stuck.py
+`stuck_event_spot`, obstacle_tracker_node.py). A STUCK_NEEDS_HELP within
+`stuck_skip_window_s` (30 s) of a `boundary` incident is not filed as a stuck spot, because
+there was no obstacle. A stop within `stuck_contact_window_s` (10 s) and 1 m of a bumper
+contact is filed at the contact point (the bumper cloud, 0.4 m ahead of base_link), not
+at base_link. Keepouts are never filtered by position.
+
+## Review follow-ups (2026-11-11)
+
+* **Slope switch grace** (fsm/guards/boundary.py `_hb_body_eval`). When roll crosses
+  `edge_slope_roll_deg`, the front limit used to fall from 0.55 to 0.35 in the same tick,
+  and a corner already 0.36-0.47 m out tripped at once (field STUCK #2; the switch was
+  logged 4-10 ms before the trip). For `edge_slope_grace_s` (10 s) after the switch, the
+  front corners keep min(0.55, their outside distance at the switch +
+  `edge_slope_grace_grow_m` 0.05). Only a growing excursion trips.
+* **Spot rule window** (fsm/guards/spin_drift.py). `boundary_spot_window_s` (600 s): only
+  excursions this recent count toward "left the boundary 2 times within 1.0 m". In the
+  field, the first excursions were 6 and 46 min earlier. **Owner decision**: the default
+  of 600 s was proposed to the owner and is not yet confirmed. <= 0 restores the
+  whole-mission rule.
+* **Join clamp** (mowing.py `_join_leg`). Where the lap turns 90 deg or more inside
+  `edge_join_m`, the fixed join vector would lose its inward component (about 3 cm
+  outward at 120 deg). Each offset is now clamped to be non-negative along the lap's local
+  inward normal (chord over +-0.10 m). This also covers the boundary rejoin and the
+  edge-detour rejoin, which use the same join.
+* **Follow-up, not done.** The route-corner and final-approach spins do not use the
+  interior-way choice (`_pivot_way`) or the slope pre-drive (`_slope_pivot`). The -77 deg
+  final-approach spin at 1794360166 slid 0.27 m out. The new edge-start transit runs from
+  ~16 `_dispatch` callers: watch the sim for extra transits.
 
 ## Tests
 
@@ -117,32 +166,45 @@ marks and the bumper keepout are all within 0.25 m of the line or outside it.
   `..._gap_leaves_a_set_join_alone`,
   `test_no_final_approach_hop_onto_a_near_edge_approach_point`,
   `test_final_approach_hop_still_runs_beyond_the_hop_minimum`. The first, second and fifth
-  fail on master.
-* `test_nogo.py`: the field discs mirrored onto a square, with
-  `test_static_discs_on_or_beyond_the_area_line_do_not_block`,
-  `test_perimeter_filter_tolerance_and_off_switch`,
-  `test_plan_time_exclusion_ignores_marks_on_the_area_line`.
-* Sim world `src/mower_sim/worlds/owner_area3_edge1111.yaml`: the area 3 polygon, a 9 deg
-  slope downhill west along the west edge, and two detector-visible potted plants 0.38 m
-  outside the line.
+  fail on master. Also `test_join_offset_never_points_outward_across_a_bend[90, 120]` and
+  `test_slope_switch_itself_does_not_trip_only_a_growing_excursion`. The old slope test
+  runs with `edge_slope_grace_s` 0.
+* `test_hard_boundary.py`: `test_spot_rule_only_counts_excursions_within_the_window`.
+* `test_nogo.py`: `test_perimeter_marks_keep_their_place_at_true_size_interior_marks_unchanged`,
+  `test_edge_lap_bends_inward_round_a_perimeter_mark_the_body_would_touch`,
+  `test_edge_lap_ignores_a_perimeter_mark_the_body_cannot_touch`.
+* `test_mission_fsm.py`:
+  `test_skipped_stretch_still_blocked_on_its_one_retry_is_excluded_not_requeued` and
+  `test_sweep_blocked_skip_by_a_static_disc_is_excluded_at_once`. The 2026-11-01
+  retry-pass tests run with both new flags off.
+* `mower_map/test/test_obstacle_tracker_stuck.py`:
+  `test_stuck_spot_after_a_boundary_excursion_is_not_filed_contact_goes_to_the_contact`.
+* Sim worlds, both with the area 3 polygon and a 9 deg slope downhill west along the
+  west edge:
+  * `owner_area3_edge1111.yaml`: plants r 0.2 centred 0.6 m out (near face 0.4 m). The
+    field evidence puts the real face beyond ~0.38 m: the lap-0 retry at 1794363861-877
+    passed with the front corner 0.30-0.38 m out and no contact.
+  * `owner_area3_edge1111_inside.yaml`: the same plants centred 0.38 m out (near face
+    0.18 m), i.e. placed inside the lap-0 overhang after the line was recorded. It passes
+    when the lap bends inward with no contact.
 
 ## Owner decisions
 
-1. **`nogo_edge_ignore_m` 0.25.** A small object lying on the edge line itself, such as a
-   stone dropped there, no longer stops a pivot or skips an edge stretch. The lap bends
-   round it if the edge detour fits; otherwise the bumper / stuck rules apply. Setting 0
-   ignores only objects centred outside the line. Setting < 0 restores the old behaviour.
-2. **The boundary spot rule** (`hard_boundary_spot_max` 2 within `hard_boundary_spot_m`
-   1.0) has no time window. Both STUCKs came from a second excursion that was recovered
-   in one move: the first excursion was 374 s earlier in one case and 46 min earlier in
-   the other. A window, for example 10 min, is an owner call. It is not changed here.
-3. **Collision-monitor stops at (-29.3..-29.5, -14.5..-15.0).** The points lie inside the
-   recorded line. Please check the spot for overhanging foliage. No software change is
-   made: these points come from the physical safety layer.
-4. **Lap-0 joins on a side slope.** The cosine join (0.30 m over 1.5 m) plans the front
-   corner up to 0.33 m out. The side-slope front limit is 0.35, and the tracking lag on a
-   slope eats that margin. A longer join (about 3.3 m for an 8 deg merge) would fix it,
-   but it costs edge cut at every lap start. Not changed.
-5. **Pivot creep was 0.06-0.10 m/s today** on that slope (the 0.31 m slide during a
+1. **`boundary_spot_window_s` 600 s** (see above).
+2. **Collision-monitor stops at (-29.3..-29.5, -14.5..-15.0).** The points lie inside the
+   recorded line. Please check the spot for overhanging foliage. These stretches now get
+   one retry and are then excluded, with the reason in the log.
+3. **Lap-0 joins on a side slope.** The cosine join (0.30 m over 1.5 m) plans the front
+   corner up to 0.33 m out, against the 0.35 side-slope limit. A longer join (about 3.3 m
+   for an 8 deg merge) would fix it, but costs edge cut at every lap start. Not changed.
+4. **Pivot creep was 0.06-0.10 m/s today** on that slope (the 0.31 m slide during a
    30 deg pivot, with the wheels spinning at -0.7 rad/s commanded). The creep model
    assumes 0.045 m/s at 10 deg. Wet turf is likely.
+5. **Excluding stretches at once.** With `static_skip_excludes` and `skipped_retry_once`
+   on, an object that was only there for a while (a toy, a hose) leaves its stretch
+   unmown until the next mow, instead of being retried after each START. Either flag can
+   be set to false.
+
+## Sim verdicts
+
+(filled in below)

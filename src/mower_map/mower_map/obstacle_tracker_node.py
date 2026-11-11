@@ -88,7 +88,7 @@ from mowgli_interfaces.srv import ClearObstacle, GetMowingArea, PromoteObstacle,
 from mower_map.obstacle_snapshot import prune_snapshots, snapshot_ids, sync_snapshots
 from mower_map.areas import point_in_polygon
 from mower_map.nogo_zones import PathCursor, Zone, ZoneSet
-from mower_map.obstacle_tracker_stuck import StuckSpotStore
+from mower_map.obstacle_tracker_stuck import StuckSpotStore, stuck_event_spot
 from mower_map.obstacle_tracker_core import TrackerCore, TrackerParams, keepout_entry
 from mower_common.sub_pump import node_clock
 
@@ -232,6 +232,12 @@ PARAMS = {
     'stuck_states': ['STUCK_NEEDS_HELP'],            # HighLevelStatus.state_name entries
     'incident_topic': '/mission/incident',          # mission terrain incidents (JSON)
     'stuck_incident_kinds': ['stuck'],              # stuck guard escape (wheel slip)
+    # 2026-11-11: a STUCK_NEEDS_HELP right after one of these incident kinds (a boundary
+    # excursion, no obstacle) is not filed; after a bumper contact it is filed at the
+    # contact point (obstacle_tracker_stuck.stuck_event_spot)
+    'stuck_skip_incident_kinds': ['boundary'],
+    'stuck_skip_window_s': 30.0,
+    'stuck_contact_window_s': 10.0,
 }
 
 # TrackerParams keys are a subset of PARAMS; keep the mapping explicit so a
@@ -409,6 +415,8 @@ class ObstacleTrackerNode(Node):
         self._cursor = PathCursor(back_m=float(self.p('plan_back_m')))
         self._bumper_hits = []
         self._bumper_time = -1e9
+        self._last_contact = None          # (monotonic, x, y) last bumper contact, map
+        self._last_incident = None         # (kind, monotonic) last /mission/incident
         self._settings_json = ''
         self._area_blocked = set()
         self._blocked_logged = None
@@ -565,7 +573,19 @@ class ObstacleTrackerNode(Node):
         if name != self._high_name:
             self._high_name = name
             if name in list(self.p('stuck_states') or []) and self._robot_pose is not None:
-                self._stuck_event(self._robot_pose[0], self._robot_pose[1], name)
+                spot = stuck_event_spot(
+                    self._robot_pose[0], self._robot_pose[1], self._clk.now(),
+                    self._last_incident, self._last_contact,
+                    list(self.p('stuck_skip_incident_kinds') or []),
+                    float(self.p('stuck_skip_window_s')),
+                    float(self.p('stuck_contact_window_s')))
+                if spot is None:
+                    self.get_logger().info('%s at (%.2f, %.2f) after a %s incident: no '
+                                           'obstacle, not filed as a stuck spot' % (
+                                               name, self._robot_pose[0], self._robot_pose[1],
+                                               self._last_incident[0]))
+                else:
+                    self._stuck_event(spot[0], spot[1], name)
             if bool(self.p('drop_pending_at_session_end')) and \
                     name in list(self.p('session_end_states') or []):
                 self._drop_pending(name)
@@ -576,9 +596,13 @@ class ObstacleTrackerNode(Node):
             kind, x, y = str(d.get('kind', '')), d.get('x'), d.get('y')
         except (ValueError, AttributeError):
             return
+        self._last_incident = (kind, self._clk.now())
         if kind in list(self.p('stuck_incident_kinds') or []) and x is not None \
                 and y is not None:
-            self._stuck_event(float(x), float(y), kind)
+            spot = stuck_event_spot(float(x), float(y), self._clk.now(), None,
+                                    self._last_contact,
+                                    contact_window_s=float(self.p('stuck_contact_window_s')))
+            self._stuck_event(spot[0], spot[1], kind)
 
     def _stuck_event(self, x, y, kind):
         """File a stuck event; a repeated spot becomes a pending no-go proposal."""
@@ -620,6 +644,7 @@ class ObstacleTrackerNode(Node):
             return
         self._bumper_time = now
         self._bumper_hits.append((float(pts[:, 0].mean()), float(pts[:, 1].mean())))
+        self._last_contact = (now, float(pts[:, 0].mean()), float(pts[:, 1].mean()))
 
     def _on_area_settings(self, msg):
         self._settings_json = msg.data

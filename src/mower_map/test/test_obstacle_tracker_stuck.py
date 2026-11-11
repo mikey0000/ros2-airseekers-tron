@@ -65,3 +65,17 @@ def test_stuck_zone_respects_ignore_and_needs_an_area():
     core.confirm_promoted(t.id, 1.0)
     core.ignore(t.id)
     assert core.add_stuck_zone(5.1, 5.0, 2.0, LAWN) is None
+
+
+def test_stuck_spot_after_a_boundary_excursion_is_not_filed_contact_goes_to_the_contact():
+    # field 2026-11-11: two boundary spot-rule stops made a 1.0 m keepout 0.11 m inside the
+    # line, while the one bumper contact there had been ~0.2 m outside it
+    from mower_map.obstacle_tracker_stuck import stuck_event_spot
+    assert stuck_event_spot(1.0, 2.0, 100.0, ('boundary', 96.0), None) is None
+    assert stuck_event_spot(1.0, 2.0, 100.0, ('boundary', 50.0), None) == (1.0, 2.0)
+    assert stuck_event_spot(1.0, 2.0, 100.0, ('stuck', 99.0), None) == (1.0, 2.0)
+    # a contact within 10 s and 1 m: filed there (also after a boundary incident)
+    assert stuck_event_spot(1.0, 2.0, 100.0, ('boundary', 96.0), (92.0, 1.0, 2.55)) == \
+        (1.0, 2.55)
+    assert stuck_event_spot(1.0, 2.0, 100.0, None, (80.0, 1.0, 2.55)) == (1.0, 2.0)
+    assert stuck_event_spot(1.0, 2.0, 100.0, None, (95.0, 3.0, 2.0)) == (1.0, 2.0)

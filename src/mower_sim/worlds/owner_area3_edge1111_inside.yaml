@@ -1,0 +1,39 @@
+# 2026-11-11 field mow on area 3 ("further backyard lawn" = owner_far's Area 6, same
+# polygon; docs/analysis/2026-11-11_west_edge_stuck.md). The west edge between
+# (-29.4, -14.9) and (-31.7, -11.7):
+#   * a 9 deg side slope, downhill west (out of the area), as the field's -8..-10 deg roll
+#     on the edge laps there;
+#   * two potted plants (r 0.2) centred 0.38 m outside the line, near face 0.18 m out:
+#     objects put down INSIDE the lap-0 body overhang (0.235 m) after the line was
+#     recorded. Seen by the detector and by stereo. (v1 of this world, 2026-11-11: the
+#     lap-0 body hit plant_south twice -> STUCK.)
+# Expect: the edge laps bend inward round them (blade on), no contact, no STUCK /
+# BOUNDARY OUT at the west edge, no skip-and-retry loop there.
+# Gate: sim_gate.sh -w src/mower_sim/worlds/owner_area3_edge1111_inside.yaml -d -l -s 2 -x 2 -t 3600
+# Area settings as the field's (soft edge layout, 3 edge laps, edge first, mow angle 120,
+# 0.3 m/s), but a single pass (the field ran cross, repeat 2): the west edge laps run first.
+name: owner_area3_edge1111_inside
+datum: {lat: 48.0, lon: 9.0}
+areas_file: owner_far_areas.dat
+areas_select: [Area 1, lawn section, Area 6, Dock path, Path 2, Path 3, Path 4]
+lawn_area: Area 6
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+area_settings:
+  Area 6: {edge_layout: soft, edge_mode: soft, edge_laps: 3, edge_first: true,
+           mow_angle_deg: 120.0, cut_speed_mps: 0.3, route_order: boustrophedon,
+           blade_policy: continuous}
+obstacles:
+  - {name: plant_south, type: cylinder, x: -30.58, y: -14.37, radius: 0.20, height: 0.60,
+     detect: {label: potted plant, score: 0.6}}
+  - {name: plant_mid, type: cylinder, x: -31.19, y: -13.78, radius: 0.20, height: 0.60,
+     detect: {label: potted plant, score: 0.6}}
+terrain:
+  regions:
+    - name: west_edge_area3
+      polygon: [[-32.6, -15.6], [-29.2, -15.6], [-29.2, -14.6], [-30.0, -13.6],
+                [-30.5, -12.6], [-30.8, -10.6], [-32.6, -10.6]]   # the lap band + 0.9 m in
+      slope_deg: 9.0
+      downhill_deg: 200.0
+      fade_m: 0.4
+battery: {voltage: 25.0, percentage: 0.9}

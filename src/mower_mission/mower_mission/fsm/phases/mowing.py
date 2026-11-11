@@ -195,7 +195,19 @@ class MowingMixin:
                 out.append(tuple(q))
                 continue
             w = off * 0.5 * (1.0 + math.cos(math.pi * cum[i] / D))
-            out.append((q[0] + w * nx, q[1] + w * ny) + tuple(q[2:]))
+            vx, vy = w * nx, w * ny
+            # clamp (review 2026-11-11): where the lap turns away within the join (an arc
+            # of 90+ deg inside edge_join_m) the fixed vector must never point outward of
+            # the lap's own local inward normal there (chord over +-0.10 m: no sample zig)
+            a = geo._point_at(poses, cum, max(0.0, cum[i] - 0.10))
+            b = geo._point_at(poses, cum, min(cum[-1], cum[i] + 0.10))
+            if math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-6:
+                h = math.atan2(b[1] - a[1], b[0] - a[0])
+                lx, ly = -math.sin(h) * sgn, math.cos(h) * sgn
+                d = vx * lx + vy * ly
+                if d < 0.0:
+                    vx, vy = vx - d * lx, vy - d * ly
+            out.append((q[0] + vx, q[1] + vy) + tuple(q[2:]))
         res = []
         for i, q in enumerate(out):
             if len(q) >= 3:
