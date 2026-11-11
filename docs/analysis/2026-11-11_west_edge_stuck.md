@@ -148,9 +148,8 @@ at base_link. Keepouts are never filtered by position.
   `edge_slope_grace_grow_m` 0.05). Only a growing excursion trips.
 * **Spot rule window** (fsm/guards/spin_drift.py). `boundary_spot_window_s` (600 s): only
   excursions this recent count toward "left the boundary 2 times within 1.0 m". In the
-  field, the first excursions were 6 and 46 min earlier. **Owner decision**: the default
-  of 600 s was proposed to the owner and is not yet confirmed. <= 0 restores the
-  whole-mission rule.
+  field, the first excursions were 6 and 46 min earlier. **Owner decision**
+  (2026-11-11): 600 s confirmed. <= 0 restores the whole-mission rule.
 * **Join clamp** (mowing.py `_join_leg`). Where the lap turns 90 deg or more inside
   `edge_join_m`, the fixed join vector would lose its inward component (about 3 cm
   outward at 120 deg). Each offset is now clamped to be non-negative along the lap's local
@@ -194,10 +193,12 @@ at base_link. Keepouts are never filtered by position.
 
 ## Owner decisions
 
-1. **`boundary_spot_window_s` 600 s** (see above).
+1. **`boundary_spot_window_s` 600 s**: confirmed by the owner 2026-11-11.
 2. **Collision-monitor stops at (-29.3..-29.5, -14.5..-15.0).** The points lie inside the
-   recorded line. Please check the spot for overhanging foliage. These stretches now get
-   one retry and are then excluded, with the reason in the log.
+   recorded line. Owner (2026-11-11): foliage probably overhangs there, and object
+   avoidance should go around it without re-planning. Open: a collision-monitor stop
+   should start a local detour on the inward side and rejoin the lap, not skip or
+   retry the stretch. The sim test needs overhanging foliage passed without a stop.
 3. **Lap-0 joins on a side slope.** The cosine join (0.30 m over 1.5 m) plans the front
    corner up to 0.33 m out, against the 0.35 side-slope limit. A longer join (about 3.3 m
    for an 8 deg merge) would fix it, but costs edge cut at every lap start. Not changed.
