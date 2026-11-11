@@ -565,7 +565,12 @@ class NogoMixin:
         def inside(x, y):
             return bb.point_outside(x, y, polys) <= 0.0
         kw = {}
-        if not cm and discs and all(z.state == 'mark' for z in discs):
+        mark_only = not cm and discs and all(z.state == 'mark' for z in discs)
+        if mark_only:
+            # a perimeter mark (sim 2026-11-11 inside world: a 0.28 m detour with 0.10 m
+            # clearance and a 0.8 m ramp still met the pot: an 18 deg yaw error toward the
+            # downhill side on the slope swung the front corner 0.19 m out): more clearance,
+            # a shallow ramp in and out
             kw = {'max_offset_m': min(float(p.nogo_edge_max_offset_m),
                                       float(p.nogo_edge_mark_max_offset_m))}
         if cm:
@@ -576,13 +581,15 @@ class NogoMixin:
         def bend(extra):
             return nogo.edge_detour(sp, prog, discs + cm, inside,
                                     half_width=float(p.robot_width_m) / 2.0,
-                                    clearance=float(p.nogo_edge_clearance_m),
+                                    clearance=float(p.nogo_edge_mark_clearance_m
+                                                    if mark_only else p.nogo_edge_clearance_m),
                                     lookahead_m=float(p.nogo_edge_lookahead_m),
                                     **dict({'max_offset_m': float(p.nogo_edge_max_offset_m)},
                                            **dict(kw, **extra)))
         # costmap: the shallowest return that keeps the body inside (a long ramp near a
         # corner can reach out); then the plain ramp. Zones: one try as before.
-        per = float(p.nogo_edge_costmap_ramp_per_m) if cm else 0.0
+        per = float(p.nogo_edge_costmap_ramp_per_m) if cm else \
+            float(p.nogo_edge_mark_ramp_per_m) if mark_only else 0.0
         # costmap: end 0.10 m (boundary_recover_margin_m) inside the lap, merge from there
         end_off = max(0.0, float(p.boundary_recover_margin_m)) if cm else 0.0
         tries = [{'ramp_per_m': r, 'end_offset_m': end_off}

@@ -1540,7 +1540,9 @@ class Params:
     nogo_perimeter_band_m: float = 0.6
     nogo_perimeter_mark_shrink_m: float = 0.05
     nogo_edge_perimeter_marks: bool = True
-    nogo_edge_mark_max_offset_m: float = 0.30
+    nogo_edge_mark_max_offset_m: float = 0.40
+    nogo_edge_mark_clearance_m: float = 0.20   # body side to the mark (slope yaw error)
+    nogo_edge_mark_ramp_per_m: float = 3.0     # shallow ramp in / out
     nogo_plan_grow_m: float = 0.25           # zone hole radius + this (nose 0.60 vs 0.40 keepout)
 
     @classmethod

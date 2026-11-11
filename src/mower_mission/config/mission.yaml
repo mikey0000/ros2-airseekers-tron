@@ -116,7 +116,9 @@ behavior_tree_node:
     nogo_perimeter_band_m: 0.6        # static mark centred within this of the area edge = a perimeter object ...
     nogo_perimeter_mark_shrink_m: 0.05  # ... used at r - this (true size + 0.05) by sweep / detour
     nogo_edge_perimeter_marks: true   # edge laps bend inward round perimeter marks ...
-    nogo_edge_mark_max_offset_m: 0.30 # ... by at most this
+    nogo_edge_mark_max_offset_m: 0.40 # ... by at most this
+    nogo_edge_mark_clearance_m: 0.20  # ... keeping the body side this far from it
+    nogo_edge_mark_ramp_per_m: 3.0    # ... ramped in / out over 3 m per m of offset
     nogo_plan_grow_m: 0.25            # zone hole + this: the nose (0.60 m) vs the 0.40 keepout
 
     # --- rain ------------------------------------------------------------

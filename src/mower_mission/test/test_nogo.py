@@ -805,7 +805,7 @@ def test_edge_lap_bends_inward_round_a_perimeter_mark_the_body_would_touch():
     assert a is not None and a.purpose == 'nogo_detour'
     poses = h.goal(f.ACT_FOLLOW)['poses']
     off = max(q[1] for q in poses)
-    assert 0.10 < off <= 0.30 + 1e-6           # 0.235 + 0.10 - (0.38 - 0.25) = 0.205
+    assert 0.20 < off <= 0.40 + 1e-6           # 0.235 + 0.20 - (0.38 - 0.25) = 0.305
     assert any('detour inward' in t for t in logs(h, mk))
 
 
@@ -813,7 +813,7 @@ def test_edge_lap_ignores_a_perimeter_mark_the_body_cannot_touch():
     h = _edge_h()
     h.fsm.inputs.pose = (1.0, 0.0, 0.0)
     h.tick(n=2)
-    zones(h, marks=[Z(2.5, -0.60, 0.25, state='mark')])   # face 0.40 m out: clear
+    zones(h, marks=[Z(2.5, -0.75, 0.25, state='mark')])   # face 0.55 m out: body side 0.32 clear
     h.tick(dt=1.0, n=2)
     a = h.fsm._action
     assert a is None or a.purpose != 'nogo_detour'
