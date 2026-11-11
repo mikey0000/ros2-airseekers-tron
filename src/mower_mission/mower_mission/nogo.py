@@ -249,7 +249,8 @@ def plan_pivot(x: float, y: float, yaw: float, delta: float, discs: Sequence,
 
 def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width: float = 0.235,
                 clearance: float = 0.10, lookahead_m: float = 3.0, ramp_m: float = 0.8,
-                max_offset_m: float = 1.2, ramp_per_m: float = 0.0, end_offset_m: float = 0.0):
+                max_offset_m: float = 1.2, ramp_per_m: float = 0.0, end_offset_m: float = 0.0,
+                clamp: bool = False):
     """Bend the edge lap ``poses`` from local ``i0`` inward around the ``discs`` within
     ``lookahead_m``: each pose beside a disc moves toward the area interior until the body
     side clears the disc by ``clearance``, ramped in and out (cosine) over ``ramp_m``.
@@ -260,7 +261,10 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
     returns to the lap at a shallow angle; sim 2026-11-04: a 1.31 m offset over a 1.2 m
     ramp rejoined steeply and the robot overshot 0.14 m outside the line). ``end_offset_m``
     > 0: the detour ends where the return ramp is down to that inward offset (the caller
-    merges onto the lap from there tangentially, as the boundary rejoin does)."""
+    merges onto the lap from there tangentially, as the boundary rejoin does). ``clamp``: a
+    need above ``max_offset_m`` bends by ``max_offset_m`` instead of giving up (perimeter
+    marks, 2026-11-11: their range scatter at 2-3 m put one disc 0.1 m further in and the
+    detour came only once the robot was beside the pot)."""
     if i0 >= len(poses) - 1 or not discs:
         return None
     cum = [0.0]
@@ -306,7 +310,7 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
                     o, moved = push, True
             if not moved or o > max_offset_m:
                 break
-        need[k] = o
+        need[k] = min(o, max_offset_m) if clamp else o
     if max(need) <= 1e-3:
         return None
     if max(need) > max_offset_m:

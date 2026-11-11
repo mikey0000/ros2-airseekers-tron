@@ -574,7 +574,9 @@ def test_edge_detour_ignores_marks_and_too_large_offsets():
     h.fsm.inputs.pose = (1.0, 0.0, 0.0)
     h.tick(n=2)
     m0 = h.mark()
-    zones(h, marks=[Z(2.6, 0.1, 0.1, state='mark')])       # 60 s marks: never a detour
+    # interior 60 s marks: never a detour (perimeter marks, within nogo_perimeter_band_m of
+    # the line, do since 2026-11-11: test_edge_lap_bends_inward_round_a_perimeter_mark...)
+    zones(h, marks=[Z(2.6, 0.7, 0.5, state='mark')])
     h.tick(dt=1.1)
     zones(h, Z(2.6, 0.4, 0.25, 2, 'stone', 'candidate'))   # needs 0.99 m > 0.60: none
     h.tick(dt=1.1)
@@ -817,3 +819,16 @@ def test_edge_lap_ignores_a_perimeter_mark_the_body_cannot_touch():
     h.tick(dt=1.0, n=2)
     a = h.fsm._action
     assert a is None or a.purpose != 'nogo_detour'
+
+
+def test_perimeter_mark_detour_is_clamped_not_dropped_when_the_need_exceeds_the_cap():
+    # sim 2026-11-11 (inside world v3): one scattered mark 0.1 m further in made the need
+    # exceed the cap; the detour came only once the robot was beside the pot
+    h = _edge_h()
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)
+    h.tick(n=2)
+    zones(h, marks=[Z(2.5, -0.20, 0.30, state='mark')])   # needs 0.49 > 0.40
+    h.tick(dt=1.0, n=2)
+    a = h.pending_action(f.ACT_FOLLOW)
+    assert a is not None and a.purpose == 'nogo_detour'
+    assert abs(max(q[1] for q in h.goal(f.ACT_FOLLOW)['poses']) - 0.40) < 0.02
