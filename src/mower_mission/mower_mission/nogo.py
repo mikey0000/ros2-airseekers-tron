@@ -296,7 +296,7 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
         cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
     ramp_cap = max(ramp_m, ramp_per_m * max_offset_m)
     n = 0
-    while n < len(cum) and cum[n] <= lookahead_m + ramp_cap + 1.0:
+    while n < len(cum) and cum[n] <= lookahead_m + ramp_cap + 1.5 + along_pad_m:
         n += 1
     seg = [tuple(q) for q in poses[i0:i0 + n]]
     if len(seg) < 3:
@@ -313,20 +313,31 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
         else:
             sgn = 1.0 if inside(q[0] + 0.3 * nx, q[1] + 0.3 * ny) else -1.0
         sides.append((nx * sgn, ny * sgn, h))
-        # a disc within the lookahead is still beside the body box (0.65 m + along_pad_m
-        # ahead of the pose) for poses up to that much further on: hold the bend there too
-        # (sim 2026-11-12 inside v6: a detour started 3 m before the pot, its bend ended at
-        # the 2.5 m lookahead, and the return ramp took the nose into the pot)
-        if cum[k] > lookahead_m + 0.80 + along_pad_m:
-            continue
-        beside = []
-        for z in discs:
+
+    def beside_of(k, zs):
+        q, (nx, ny, h) = seg[k], sides[k]
+        out = []
+        for z in zs:
             dx, dy = z.x - q[0], z.y - q[1]
             along = dx * math.cos(h) + dy * math.sin(h)
             if along < -0.15 - along_pad_m or along > 0.65 + along_pad_m:   # beside the body box
                 continue
             # disc offset toward the interior, and how far the body must stay from it
-            beside.append((dx * nx * sgn + dy * ny * sgn, z.r + half_width + clearance))
+            out.append((z, dx * nx + dy * ny, z.r + half_width + clearance))
+        return out
+    # the discs beside the body within the lookahead; the bend holds for as long as any of
+    # them is beside it, past the lookahead too (sim 2026-11-12 inside v6 / v7: the need
+    # stopped at the lookahead, 0.4-0.8 m before the pot, and the return ramp took the nose
+    # into it)
+    near = []
+    for k in range(len(seg)):
+        if cum[k] > lookahead_m:
+            break
+        for z, _l, _r in beside_of(k, discs):
+            if not any(z is y for y in near):
+                near.append(z)
+    for k in range(len(seg)):
+        beside = [(lat, reach) for _z, lat, reach in beside_of(k, near)]
         # the least inward offset whose body clears every disc beside the pose: a chain of
         # discs (costmap cells of a branch, 2026-11-04) pushes past each in turn; one disc
         # gives lat_in + reach as before
