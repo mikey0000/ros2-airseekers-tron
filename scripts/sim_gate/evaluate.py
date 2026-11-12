@@ -691,7 +691,12 @@ def main(run, world):
         pp = plan_pose(r[0], r[1], r[2], r[3])
         if pp is None:
             continue
-        ideal = body_split(body, pp[0], pp[1], r[3] if (pv or pp[3]) else pp[2], polys, pv)
+        hd = pp[2]
+        if math.cos(hd - r[3]) < 0.0:
+            # a segment driven in reverse (strip retraces, K-turn legs): the planned body
+            # faces against the segment (2026-11-13: the nose was judged at the tail's place)
+            hd += math.pi
+        ideal = body_split(body, pp[0], pp[1], r[3] if (pv or pp[3]) else hd, polys, pv)
         e = sp[1] - (ideal[1] if ideal else 0.0)
         if e > exc[sp[0]][0]:
             exc[sp[0]] = [e, at + [round(ideal[1] if ideal else 0.0, 3)]]

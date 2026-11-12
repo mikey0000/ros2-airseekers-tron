@@ -91,13 +91,19 @@ class OutcomeMixin:
         m.missed_m += missed
 
     def _mowed_text(self):
-        """'99.8 % mowed, 0.23 m skipped as too short' (mowed_m / planned_m of the area
-        runs finished so far); '' before any area finished."""
+        """'cut 97.1 % of the area (mowed raster), 99.8 % of the planned path mowed, 0.23 m
+        skipped as too short': the cut share of the finished areas' mowable polygons from the
+        mowed rasters (field 2026-11-13: 46 % cut was reported as 98.8 % mowed), then
+        mowed_m / planned_m of the area runs finished so far; '' before any area finished."""
         m = self.mission
         if m is None or m.planned_m <= 0:
             return ''
         mowed = max(0.0, m.planned_m - m.missed_m - m.ignored_short_m)
-        txt = '%.1f %% mowed' % (100.0 * mowed / m.planned_m)
+        txt = '%.1f %% of the planned path mowed' % (100.0 * mowed / m.planned_m)
+        cut = sum(c for c, _t in m.cut_m2.values())
+        total = sum(t for _c, t in m.cut_m2.values())
+        if total > 0.0:
+            txt = 'cut %.1f %% of the area (mowed raster), %s' % (100.0 * cut / total, txt)
         if m.ignored_short_m > 0:
             txt += ', %.2f m skipped as too short' % m.ignored_short_m
         return txt
@@ -295,7 +301,9 @@ class OutcomeMixin:
             'excluded_count %d, excluded_m %.1f (static obstacles)' % (m.excluded_count,
                                                                       m.excluded_m)
         pct = self._mowed_text()
-        if pct and (text or m.ignored_short_m > 0 or m.missed_m > 0):
+        # always with the cut share once a raster reported one (field 2026-11-13); the path
+        # share alone only when something was left
+        if pct and (text or m.ignored_short_m > 0 or m.missed_m > 0 or m.cut_m2):
             text = '%s, %s' % (text, pct) if text else pct
         self._go('MOWING_COMPLETE', text)
         self.mission = None

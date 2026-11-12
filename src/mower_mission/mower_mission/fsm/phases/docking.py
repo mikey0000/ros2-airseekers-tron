@@ -142,23 +142,37 @@ class DockingMixin:
     def _dock_join_record(self, poses):
         """A transit route was planned: remember where it entered the area of its goal (the
         first route pose inside that area at least dock_join_inset_m from its edge, i.e. on
-        an in-area graph leg) when it started outside that area."""
+        an in-area graph leg; in an area too narrow for that, its deepest pose inside) when
+        it started outside that area."""
         if len(poses) < 2 or not self._region_areas:
             return
         a, b = poses[0], poses[-1]
         inset = float(self.p.dock_join_inset_m)
+        tol = float(getattr(self.p, 'dock_join_edge_tol_m', 0.0) or 0.0)
         for idx, area in self._region_areas.items():
             outer = [tuple(q[:2]) for q in (area.get('outer') or [])]
-            if len(outer) < 3 or not geo.point_in_polygon(b, outer) or \
-                    geo.point_in_polygon(a, outer):
+            # the goal within dock_join_edge_tol_m outside counts as in the area (a strip
+            # pass starts with its tail past the end: sim 2026-11-13, 0.002 m outside)
+            if len(outer) < 3 or geo.point_in_polygon(a, outer) or not (
+                    geo.point_in_polygon(b, outer) or geo.distance_to_ring(b, outer) <= tol):
                 continue
+            # a narrow area (a strip: no point is dock_join_inset_m in) gets the deepest
+            # route pose inside it instead (sim 2026-11-13: the strip plan ended in a
+            # corner the route graph does not reach, the inbound route's end it does)
+            deepest = None
             for q in poses:
-                if geo.point_in_polygon(q, outer) and \
-                        geo.distance_to_ring(q, outer) >= inset - 1e-6:
-                    entries = getattr(self, '_dock_join_entries', None) or {}
-                    entries[idx] = (float(q[0]), float(q[1]))
-                    self._dock_join_entries = entries
+                if not geo.point_in_polygon(q, outer):
+                    continue
+                d = geo.distance_to_ring(q, outer)
+                if d >= inset - 1e-6:
+                    deepest = (d, q)
                     break
+                if deepest is None or d > deepest[0]:
+                    deepest = (d, q)
+            if deepest is not None:
+                entries = getattr(self, '_dock_join_entries', None) or {}
+                entries[idx] = (float(deepest[1][0]), float(deepest[1][1]))
+                self._dock_join_entries = entries
             return
 
     def _dock_join_areas(self, pose):

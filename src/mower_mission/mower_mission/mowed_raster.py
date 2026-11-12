@@ -172,13 +172,19 @@ class MowedRaster:
                 out[r] |= (cx >= a) & (cx < b)
         return out
 
+    def cut_m2(self, outer, holes=()):
+        """(cut, mowable) m2 of the mowable polygon."""
+        mask = self.mowable_mask(outer, holes)
+        cell = self.res * self.res
+        return (int(np.count_nonzero(mask & self.data)) * cell,
+                int(np.count_nonzero(mask)) * cell)
+
     def percent(self, outer, holes=()):
         """Cut share (%) of the mowable polygon; None for an empty polygon."""
-        mask = self.mowable_mask(outer, holes)
-        n = int(np.count_nonzero(mask))
-        if n == 0:
+        cut, total = self.cut_m2(outer, holes)
+        if total <= 0.0:
             return None
-        return 100.0 * int(np.count_nonzero(mask & self.data)) / n
+        return 100.0 * cut / total
 
     def missed_patches(self, outer, holes, blade_width, min_m2):
         """[(area m2, x, y)] uncut parts of the mowable polygon the blade fits into (an

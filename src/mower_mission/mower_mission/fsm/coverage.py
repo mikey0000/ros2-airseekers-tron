@@ -150,9 +150,14 @@ class CoverageMixin:
         if raster is None:
             return
         outer, holes = self._mowable_polygon(m.area_idx)
-        pct = raster.percent(outer, holes)
-        if pct is None:
+        cut, total = raster.cut_m2(outer, holes)
+        if total <= 0.0:
             return
+        pct = 100.0 * cut / total
+        # the finish message's cut share; of several runs of one area (cross, repeat: a new
+        # raster each) the best one counts
+        if cut >= m.cut_m2.get(m.area_idx, (0.0, total))[0]:
+            m.cut_m2[m.area_idx] = (cut, total)
         self._log('info', 'area %d: %.1f %% of the mowable area cut (mowed raster)'
                   % (m.area_idx, pct))
         min_m2 = float(self.p.missed_patch_min_m2)

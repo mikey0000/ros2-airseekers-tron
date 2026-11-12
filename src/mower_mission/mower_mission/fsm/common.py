@@ -244,6 +244,17 @@ NAV2_INACTIVE_KEY = 'nav2_inactive'
 # (MissionFSM.plan_conditioning_job + condition_plan): {'subpaths', 'cond', 'cond_errors',
 # 'logs'}; without it _on_plan conditions inline (unit tests, sim without the node split)
 CONDITIONED_KEY = 'conditioned'
+# A narrow-strip plan of the coverage bridge (mower_coverage_bridge strip.py STRIP_TAG; the
+# message of a merged plan names it per run): forward passes and reverse retraces planned with
+# the body model, driven as planned (no turn joins, no conditioning), and an obstacle no
+# detour passes stops the mower instead of skipping the pass
+# (docs/analysis/2026-11-13_narrow_strip.md).
+STRIP_PLAN_TAG = 'strip plan:'
+
+
+def is_strip_plan(result):
+    """The /plan_coverage result dict is a narrow-strip plan."""
+    return STRIP_PLAN_TAG in str((result or {}).get('message') or '')
 NAV2_DOWN = 'navigation stack not active (Nav2 lifecycle not running)'
 
 
@@ -1616,6 +1627,8 @@ class Mission:
     excluded_count: int = 0                     # blocked_static stretches of completed areas
     ignored_short_m: float = 0.0                # skipped stretches < stretch_min_retry_m dropped
     planned_m: float = 0.0                      # planned metres of finished area runs
+    strip: bool = False                         # the current plan is a narrow-strip plan
+    cut_m2: dict = field(default_factory=dict)  # area -> (cut, mowable) m2, mowed raster
     missed_m: float = 0.0                       # of those, metres left unmowed (any reason)
     edge_laps: dict = field(default_factory=dict)   # (area, sub) -> is an edge lap
     # 2026-10-23 option C (fsm/phases/nogo.py)
@@ -1770,6 +1783,14 @@ def condition_plan(job):
     area, region, prm = job['area'], job['region'], job['prm']
     n_in = len(job['subpaths'])
     out, cond, cond_errors, logs = [], {}, {}, []
+    if job.get('strip'):
+        # the strip planner already checked every pose against the body limits; turn joins
+        # would merge its forward pass / reverse retrace pairs, fillets and K-turns would
+        # add the pivots it avoids
+        logs.append(('info', 'area %d: strip plan: %d sub-path(s) driven as planned (no '
+                             'conditioning)' % (area, n_in)))
+        return {'n_in': n_in, 'subpaths': [list(sp) for sp in job['subpaths']], 'cond': {},
+                'cond_errors': {}, 'logs': logs, 'corner_body': []}
     # swath-end Reeds-Shepp turns (forward / reverse legs of 0.3-0.9 m) -> the swath ->
     # connector -> swath geometry they connect (roadmap 3.2: one tracker path per swath
     # pair, the turn included; conditioned below: fillets where they fit, else pivots)

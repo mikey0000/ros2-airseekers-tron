@@ -136,6 +136,9 @@ to [0, 180)) appears in `message`.
 | `edge_laps` | `3` | edge layout (`edge_layout` soft / hard): number of edge laps, set per area by the mission (area setting `edge_laps`), forwarded as PlanCoverage `edge_laps`; the rows move with them. Soft: laps at 0 / 0.15 / … (base_link from the line), rows (sides, ends, turns) 0.15 × `edge_laps` in: 3 = stock (rows from 0.45), 1 = rows from 0.15, 0 = rows from the line. Hard: laps at 0.45 / 0.63 / … plus the band-closing lap, rows from 0.45 + 0.18 × `edge_laps` + 0.11 (ends never under 0.745); 0 is taken as 1 (rows start >= 0.745 in, a lapless band would stay uncut). Ignored by the legacy layout (`headland_rings`). Validated 0..10 |
 | `edge_first` | `true` | `false`: the planner lays out the swaths first, then the rings innermost first; the splitter is told so (`swaths_first`) |
 | `include_rings` | `true` | `false`: the rings (perimeter / edge laps) are left out of the result (`segments`, `drivable_subpaths`, `ring_count` 0). The planner still lays them out, so the rows keep exactly the inset they have in the full plan. The mission plans the later row sets of a cross mow this way: the laps are driven once (2026-11-12) |
+| `strip_mode` | `auto` | narrow-strip mode (`strip.py`, 2026-11-13): `auto` = an area the detector finds narrow (largest inscribed circle radius < 0.385 m, at least 3× as long as wide, at least 1.4 m long) is planned as a shuttle of straight passes, and a Fields2Cover plan under `plan_coverage_min` falls back to it; `on` = every area; `off` = never |
+| `plan_coverage_min` | `0.70` | plan-quality gate: a Fields2Cover plan whose `coverage_fraction` is under this (and no strip plan covers more) is refused (goal aborted with the reason), so a fragment plan is never driven. Lawns plan 0.93-0.99; `0` = off |
+| `min_fragment_m` | `0.70` | a forward sub-path shorter than this that joins neither neighbour (a transit both ways) is left out (`splitter.drop_fragments`, named in the summary) |
 
 From `headland_rings` on, these are the per-area mowing settings. `behavior_tree_node` (mower_mission) sets
 them with `set_parameters` right before every PlanCoverage goal, together with
@@ -174,6 +177,25 @@ to the next plan.
 `mower_interfaces/srv/PlanCoverage` carries the per-area fields with IDL defaults that
 keep the old behaviour for a client that leaves them alone: `int32 headland_rings -1`,
 `string path_mode "zigzag"` (`""` = zigzag), `bool edge_first true`.
+
+## Narrow strips (2026-11-13)
+
+`strip.py`, docs/analysis/2026-11-13_narrow_strip.md. Before calling the planner the node
+measures the area; a narrow strip (or `strip_mode: on`) gets a shuttle plan instead:
+
+- straight passes along the strip (candidate axes: the minimum-area rectangle's long side,
+  the two long sides' own directions, the goal's mow angle), picked greedily by new blade
+  cut on a 0.02 m raster; every pass starts at the same (entry) end;
+- every pose keeps the soft body limits (the boundary guard's nose / tail / corner limits
+  less a tracking margin; holes: the footprint never touches them);
+- each pass is driven forward to its far end and back in reverse along the same line, the
+  next one is reached with a forward lane change (cosine S, the shortest of 0.8-2.0 m that
+  keeps the limits): no pivot inside the strip, and the plan ends at the entry end;
+- the result: forward / reverse sub-paths sharing their cusps (`splitter.split_reverse`),
+  each pass as a swath segment, `message` starting `strip plan:` (the mission drives such a
+  plan as planned), its raster cut fraction on `/coverage/plan_quality` (`strip: true`).
+
+A strip with no pass of at least 0.7 m inside the limits is refused with the reason.
 
 ## Edge layout and edge-ring turns (step 3, rounds 1-2, 2026-10-21)
 

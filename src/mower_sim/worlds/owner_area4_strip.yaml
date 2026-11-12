@@ -1,0 +1,23 @@
+# 2026-11-13 field mow of Area 4 (map area 1; owner_far_areas.dat "Area 4", same polygon):
+# a strip 6.3 m long, 0.72 m wide at the west end and 0.48 m at the east end, long axis
+# ~17.7 deg (docs/analysis/2026-11-13_narrow_strip.md). Fields2Cover planned lap 0 only
+# (coverage 0.315); the narrow-strip planner of the coverage bridge plans a shuttle of
+# straight passes instead. The south long side is the owner's drop and the north the
+# driveway; both are ordinary soft edges (owner 2026-11-13: the mapped south edge is
+# wheel-safe, the drop lies past it), so the world needs no drop line. The ends are lawn
+# (flat sim ground). Settings as the field's (zigzag, edge laps 3, laps 2, inset 0.05,
+# racetrack) with the slope-derived mow angle 17.74 the field used.
+# Gate: SIM_GATE_OUT=<abs> ./scripts/sim_gate.sh -w src/mower_sim/worlds/owner_area4_strip.yaml \
+#   -n strip -l -x 3 -s 1 -t 4000
+name: owner_area4_strip
+datum: {lat: 48.0, lon: 9.0}
+areas_file: owner_far_areas.dat
+areas_select: [Area 1, lawn section, Area 4, Dock path, Path 2, Path 3, Path 4]
+lawn_area: Area 4
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+obstacles: []
+battery: {voltage: 25.0, percentage: 0.9}
+area_settings:
+  Area 4: {edge_mode: soft, edge_laps: 3, perimeter_laps: 2, edge_margin_m: 0.05,
+           path_mode: zigzag, route_order: racetrack, mow_angle_deg: 17.74}

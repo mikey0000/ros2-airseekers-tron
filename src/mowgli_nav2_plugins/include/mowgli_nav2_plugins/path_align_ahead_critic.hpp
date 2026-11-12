@@ -99,12 +99,15 @@ inline Projection projection(float x, float y, float yaw, float v, float w, floa
 }
 
 // Number of path points the scoring uses: the furthest reached point (PathAlignCritic), plus
-// enough points to cover control_point_x beyond it, at most the points with a validity flag.
+// enough points to cover |control_point_x| beyond it, at most the points with a validity
+// flag. A negative control point (behind base_link) leads on a path driven in reverse
+// (2026-11-13, narrow-strip retraces): it is as far along the path as a positive one.
 inline size_t pathPointsUsed(
   const xt::xtensor<float, 1> & px, const xt::xtensor<float, 1> & py, size_t furthest,
   size_t n_valid, float control_point_x)
 {
   size_t n = std::min(furthest, n_valid);
+  control_point_x = std::fabs(control_point_x);
   if (control_point_x <= 0.0f) {
     return n;
   }
@@ -119,7 +122,8 @@ inline size_t pathPointsUsed(
 }
 
 // Per-sample cost (before weight / power): the mean distance between each strided trajectory
-// pose's control point and the path point at its arc length (+ control_point_x + proj.arc),
+// pose's control point and the path point at its arc length (+ |control_point_x| + proj.arc:
+// a negative control point sits behind base_link and leads a reverse drive),
 // with the pose moved by proj. This is PathAlignCritic::score's loop with the control point;
 // costs is resized to the batch.
 inline void scoreBatch(
@@ -159,7 +163,7 @@ inline void scoreBatch(
       xm1 = x;
       ym1 = y;
       traj_s += std::sqrt(dx * dx + dy * dy);
-      path_pt = mppi::utils::findClosestPathPt(s, traj_s + d + proj.arc, path_pt);
+      path_pt = mppi::utils::findClosestPathPt(s, traj_s + std::fabs(d) + proj.arc, path_pt);
       if (!valid[path_pt]) {
         continue;
       }

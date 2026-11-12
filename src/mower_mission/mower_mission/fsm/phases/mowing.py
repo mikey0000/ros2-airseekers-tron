@@ -478,7 +478,7 @@ class MowingMixin:
                           (x - w * c - w * sn, y - w * sn + w * c)])
         return polys
 
-    def _conditioning_job(self, subpaths):
+    def _conditioning_job(self, subpaths, strip=False):
         p, prm = self.p, self._cond_params()
         mode = str((self.mission.settings or {}).get('edge_mode', 'soft')).strip().lower()
         lim = float(p.path_conditioning_body_limit_hard_m if mode == 'hard'
@@ -495,14 +495,14 @@ class MowingMixin:
         prm.kturn_back_max_m = float(p.path_conditioning_kturn_back_max_m)
         return {'subpaths': [list(sp) for sp in subpaths], 'region': self._region(),
                 'prm': prm, 'leg_max_m': float(self.p.turn_leg_max_m),
-                'area': self.mission.area_idx}
+                'area': self.mission.area_idx, 'strip': bool(strip)}
 
-    def _condition_subpaths(self, subpaths, pre=None):
+    def _condition_subpaths(self, subpaths, pre=None, strip=False):
         """Apply a coverage plan's path conditioning: ``pre`` (condition_plan output the
         node computed off the lock for these sub-paths) or computed inline."""
         m = self.mission
         if pre is None or pre.get('n_in') != len(subpaths):
-            pre = condition_plan(self._conditioning_job(subpaths))
+            pre = condition_plan(self._conditioning_job(subpaths, strip))
         m.cond, m.cond_errors = dict(pre['cond']), dict(pre['cond_errors'])
         m.corner_body = list(pre.get('corner_body') or [])
         for level, text in pre['logs']:

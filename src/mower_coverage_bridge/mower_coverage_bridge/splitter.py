@@ -108,6 +108,7 @@ class SplitResult:
     segments: List[Segment]
     subpaths: List[SubPath]
     mode: str
+    dropped: List[float] = field(default_factory=list)   # fragment lengths left out
 
     @property
     def ring_count(self) -> int:
@@ -471,6 +472,25 @@ def split_reverse(subpaths: Sequence[SubPath]) -> List[SubPath]:
     return out
 
 
+def drop_fragments(subpaths: Sequence[SubPath], min_m: float):
+    """Leave out every forward sub-path shorter than ``min_m`` that joins neither neighbour
+    (a transit both ways for a scrap of cut: field 2026-11-13, Area 4's 0.1 / 0.2 m pieces).
+    Reverse legs and pieces sharing a cusp with a neighbour are kept. Returns (kept, dropped
+    lengths)."""
+    subs = list(subpaths)
+    if min_m <= 0.0:
+        return subs, []
+    kept, dropped = [], []
+    for i, s in enumerate(subs):
+        joined = (i > 0 and dist(subs[i - 1].points[-1], s.points[0]) < 1e-3) or \
+            (i + 1 < len(subs) and dist(s.points[-1], subs[i + 1].points[0]) < 1e-3)
+        if not s.reverse and not joined and s.length < min_m:
+            dropped.append(s.length)
+        else:
+            kept.append(s)
+    return kept, dropped
+
+
 def transit_gaps(subpaths: Sequence[SubPath]) -> List[float]:
     """Straight-line gap between consecutive sub-paths (blade-off transits)."""
     return [dist(subpaths[i - 1].points[-1], subpaths[i].points[0])
@@ -534,10 +554,12 @@ def plan(points: Sequence[Point],
          holes: Sequence[Sequence[Point]] = (),
          swaths_first: bool = False,
          pose_flags: Optional[Sequence[int]] = None,
-         drop_rings: bool = False) -> SplitResult:
+         drop_rings: bool = False,
+         min_fragment_m: float = 0.0) -> SplitResult:
     """Full pipeline: strip turns, segment, join into drivable sub-paths
     (re-inserting the turns), then cut reverse runs into their own sub-paths.
 
+    ``min_fragment_m``: :func:`drop_fragments`.
     ``drop_rings``: leave the ring segments out (the rows only). The planner laid the rows
     out inside its rings, so they keep the inset they have in the full plan: the second row
     set of a cross mow, whose perimeter laps the first row set's plan already drives."""
@@ -547,7 +569,8 @@ def plan(points: Sequence[Point],
     if drop_rings:
         segs = [s for s in segs if s.kind != SEGMENT_RING]
     subs = split_reverse(join_subpaths(segs, transit_gap_m, fences, holes, turns))
-    return SplitResult(segs, subs, mode)
+    subs, dropped = drop_fragments(subs, min_fragment_m)
+    return SplitResult(segs, subs, mode, dropped)
 
 
 def summary(result: SplitResult) -> str:
@@ -556,10 +579,12 @@ def summary(result: SplitResult) -> str:
     gaps = transit_gaps(result.subpaths)
     ang = swath_angle_deg(result.segments)
     rev = sum(1 for s in result.subpaths if s.reverse)
+    frag = '' if not result.dropped else '; %d fragment(s) < min_fragment_m left out (%s m)' % (
+        len(result.dropped), ', '.join('%.2f' % d for d in result.dropped))
     return ('%d ring(s) + %d swath(s) = %d segment(s) -> %d drivable sub-path(s) '
             '(%d reverse); '
             'segments %.2f m, sub-paths %.2f m (incl. %.2f m connectors), '
             '%d transit(s) %.2f m; swath angle %s; split=%s') % (
         result.ring_count, result.swath_count, len(result.segments), len(result.subpaths),
         rev, mow, drive, drive - mow, len(gaps), sum(gaps),
-        'n/a' if ang is None else '%.1f deg' % ang, result.mode)
+        'n/a' if ang is None else '%.1f deg' % ang, result.mode) + frag

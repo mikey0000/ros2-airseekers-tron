@@ -10,7 +10,7 @@ from mower_mission.fsm.common import (ACT_PLAN, AREA_SETTINGS_DEFAULTS, AreaCurs
     PublishAreaSettings, PublishPlan, ROUTE_ORDERS, ROW_LINK_MODES, SEGMENT_SWATH,
     SRV_CUTTER_HEIGHT, SRV_GET_AREA_SETTINGS,
     SRV_SET_PARAMS, STEREO_STALE_SUB, SUCCEEDED, TURN_TYPES, UNAVAILABLE, absolute_to_local,
-    condition_plan, coverage_route_params, geo, json, math, subpath_offsets)  # noqa: F401
+    condition_plan, coverage_route_params, geo, is_strip_plan, json, math, subpath_offsets)  # noqa: F401
 
 # merged plan result of several runs (_merge_plan_runs): the run index of every sub-path
 PLAN_RUNS_KEY = 'sub_runs'
@@ -477,7 +477,7 @@ class AreasMixin:
             if cond:
                 pre = res.get(CONDITIONED_KEY)
                 if pre is None or pre.get('n_in') != len(sps):
-                    pre = condition_plan(self._conditioning_job(sps))
+                    pre = condition_plan(self._conditioning_job(sps, is_strip_plan(res)))
                 off = len(pre_all['subpaths'])
                 out = [list(sp) for sp in pre['subpaths']]
                 pre_all['subpaths'].extend(out)
@@ -565,8 +565,10 @@ class AreasMixin:
             self._next_area()
             return
         m.cond, m.cond_errors = {}, {}
+        m.strip = is_strip_plan(result)
         if self.p.path_conditioning:
-            subpaths = self._condition_subpaths(subpaths, result.get(CONDITIONED_KEY))
+            subpaths = self._condition_subpaths(subpaths, result.get(CONDITIONED_KEY),
+                                                is_strip_plan(result))
             if subpaths and len(m.cond_errors) >= len(subpaths):
                 # nothing of this plan is drivable: a planning failure, not a mow that left
                 # sub-paths (field 2026-11-03: MOWING_INCOMPLETE "0.0 % mowed" + a dock run)

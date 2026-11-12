@@ -21,6 +21,7 @@
   <depend>mower_interfaces</depend>
   <depend>mowgli_interfaces</depend>
 
+  <exec_depend>python3-numpy</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>mower_coverage</exec_depend>

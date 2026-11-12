@@ -921,3 +921,22 @@ def test_low_battery_return_also_joins():
     h._apply(h.fsm._end())
     _answer_route(h, resp=_offgraph())
     assert h.pending_action(f.ACT_NAV).purpose == 'dock_join'
+
+
+def test_offgraph_join_in_a_narrow_area_uses_the_deepest_inbound_route_pose():
+    # sim 2026-11-13 (narrow-strip plan): no route pose is dock_join_inset_m (1 m) inside a
+    # 0.7 m strip, so the entry is the inbound route's deepest pose in it, here its end
+    strip = [(-17.0, 0.0), (-11.0, 0.0), (-11.0, 0.7), (-17.0, 0.7)]
+    h = Harness(auto_route=False)
+    h.fsm._region_areas = {1: {'outer': strip, 'name': 'Area 4'}}
+    h.fsm.inputs.dock_pose = DOCK
+    # the route ends 0.002 m outside the outline (a strip pass starts with its tail past
+    # the end): it still counts as ending in the area
+    h.fsm._dock_join_record([(-18.5, 0.4, 0.0), (-17.5, 0.4, 0.0), (-16.6, 0.35, 0.0),
+                             (-16.9, 0.38, 0.0), (-17.002, 0.36, 0.0)])
+    h.fsm.inputs.pose = (-16.7, 0.05, 0.0)               # the plan's end, in a corner
+    assert h.cmd(f.CMD_HOME)
+    _answer_route(h, resp=_offgraph((-16.7, 0.05)))
+    assert h.pending_action(f.ACT_NAV).purpose == 'dock_join'
+    goal = h.goal(f.ACT_NAV)['pose']
+    assert abs(goal[0] + 16.6) < 1e-6 and abs(goal[1] - 0.35) < 1e-6, goal

@@ -560,7 +560,7 @@ controller_server:
       max_robot_pose_search_dist: 2.0
       transform_tolerance: 0.5
       enforce_path_inversion: false
-      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignCritic",
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignAheadCritic",
                 "PathFollowCritic", "PathAngleCritic", "WheelFloorCritic"]
       ConstraintCritic:
         enabled: true
@@ -580,15 +580,30 @@ controller_server:
         cost_power: 1
         cost_weight: 5.0
         threshold_to_consider: 0.4
-      PathAlignCritic:
+      # 2026-11-13 (narrow-strip retraces, 6 m reverse legs; docs/analysis/
+      # 2026-11-13_narrow_strip.md): with PathAlignCritic the sim -l run weaved +-12 deg /
+      # 0.17 m on long reverse legs (turn-leg p99 0.186 m). PathAlignAheadCritic with the
+      # forward controller's damping mirrored: the control point behind base_link, the 0.2 s
+      # latency projection, weight 30 and the slow cross-track trim (|v| based, it winds in
+      # reverse too): p99 0.055 m. Revert: the old PathAlignCritic block (weight 20,
+      # use_path_orientations false).
+      PathAlignAheadCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 20.0
+        cost_weight: 30.0
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 2
         threshold_to_consider: 0.2
         offset_from_furthest: 4
-        use_path_orientations: false
+        # behind base_link: the point that leads a reverse drive (mowgli_nav2_plugins
+        # path_align_ahead: a negative control point is looked up |x| along the path), the
+        # forward controller's 0.30 mirrored, for heading damping
+        control_point_x: -0.30
+        latency_s: 0.2
+        trim_enabled: true
+        trim_tau_s: 20.0
+        trim_max_m: 0.10
+        trim_max_err_m: 0.30
       PathFollowCritic:
         enabled: true
         cost_power: 1
