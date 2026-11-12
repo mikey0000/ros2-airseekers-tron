@@ -1938,6 +1938,25 @@ repeated edge skips there (`analysis/2026-11-11_west_edge_stuck.md`).
 
 Sim worlds: `owner_area3_edge1111` and `owner_area3_edge1111_inside`.
 
+Second round (2026-11-12, owner rule: step round edge objects, rejoin, carry on):
+- A detour that aborts beside the object reverses along what it drove and bends again
+  (`nogo_edge_detour_again` 2). A held collision-monitor stop on an edge lap detours round
+  the costmap cells before any skip (`nogo_edge_costmap` now true).
+- A route-corner sweep still blocked by a static object reverses (`nogo_route_reverse_m`
+  0.6) and re-routes once, and never pivots into it.
+- Geometry fixes: the back-ups only reverse, the interior side is chosen by depth (inner
+  laps bent outward), the bend holds while a disc is beside the body (the return ramp ran
+  into the pot), the detour starts at the robot's offset, and a premature detour success
+  re-sends the rest.
+- mower_sim: `solid: false` / `z_min` foliage; stereo points outside the areas are dropped,
+  as on the robot (`stereo_drop_outside_areas`).
+- Sim (seed 2, `-d -l`): foliage v6, inside v8 and realistic v4 each met the owner
+  criterion (no contact, skip, exclusion or STUCK; mow complete and docked), but on
+  different commits. Inside v10 on the final code FAILED (a detour follow that "succeeds"
+  at once, then a nose excursion next to the pot -> STUCK). All runs fail the gate on the
+  lap-0 -> lap-1 step-vertex excursion (item 4, master baseline not run). real_run5_slope
+  not run. **Not ready for the field.** Open items: `analysis/2026-11-11_west_edge_stuck.md`.
+
 ## Cross pattern: cross angle, run label, cross pass in the preview (2026-11-11, branch ws/cross1111, unit + GUI tests; sim pending)
 
 Owner report: with the pattern set to cross they do not see the second pass at the other angle,

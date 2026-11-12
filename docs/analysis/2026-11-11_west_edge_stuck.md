@@ -228,3 +228,130 @@ Open after these runs:
 2. Aborted edge-detour follows beside the object (the collision monitor stops MPPI on the
    bend).
 3. The slope excursion at the lap-0 -> lap-1 inset-step vertex in the main world.
+
+## Second round (2026-11-12): step round it, rejoin, carry on
+
+Owner rule (2026-11-11, binding): foliage over the perimeter is expected, and an object at the
+edge is avoided locally. The mower steps round it on the inward side, rejoins the lap past it
+and carries on with the same plan. A skip, a re-plan, a retry loop or a STUCK is a failure; a
+skip is allowed only when there is no room inside the line. Master 8e30cd5 is merged in.
+
+### What changed
+
+Mission (`fsm/phases/nogo.py`, `nogo.py`, `fsm/phases/pivots.py`, `fsm/holds.py`):
+* **Detour aborted beside the object** (open item 1). `_nogo_detour_again`: the
+  robot reverses along the detour poses it drove, then the lap before them. It bends again
+  from the lap pose nearest the robot, using the local costmap's cells and the generic cap
+  (`nogo_edge_max_offset_m` 0.60, or the costmap cap 1.50) instead of the 0.40 mark cap. This
+  is done at most `nogo_edge_detour_again` (2) times per detour; after that the stretch is
+  skipped as before. A person or animal (the dynamic policy) still skips.
+* **Collision-monitor stop held on an edge lap** (open item 3). `_edge_block_tick` tries the
+  costmap edge detour (back-up first when the cells are within 0.8 m) before the skip.
+  `nogo_edge_costmap` is now **true**.
+* **Route-corner sweep still blocked by a static object** (open item 2). After the
+  maneuvers and the one re-route, the gate no longer pivots "as planned".
+  `_nogo_route_reverse` reverses straight by up to `nogo_route_reverse_m` (0.60), with the
+  body kept inside and the line behind it clear of the discs, then re-routes from there,
+  once per corner. If there is no room, or the robot already reversed there, the transit is
+  aborted without the pivot (its retries, then the sweep-blocked skip).
+* **The mission's back-ups only reverse** (`_reverse_cmd`). In foliage v1, the again back-up's
+  first target lay ahead of the robot, and `_track_cmd` drove forward into the next pot.
+* **The interior side by depth.** `edge_detour(depth=...)` takes the side whose point 0.3 m
+  off is deeper inside. On a lap 0.45 m in, both 0.3 m points are inside, so the old
+  `inside` test took the left side, which was outward on a clockwise lap: "body 0.59 m
+  beyond its limit", and the stretch was skipped (foliage v2).
+* **The bend holds while a disc is beside the body.** The need is computed over the whole
+  segment for every disc beside the body within the lookahead. Before, it stopped at the
+  2.5 m lookahead (later at lookahead + 1.3 m), so the return ramp started 0.4-0.8 m before
+  the pot and turned the nose 28-30 deg outward into it (inside v6 / v7: 13 and 17 bumper
+  contacts). This probably also explains v4's "pot met on the return ramp".
+* **The detour starts at the robot's inward offset** (`start_offset_m`), not on the lap. In
+  foliage v3, a detour started while the robot merged out from 0.10 m inside, and the nose
+  swung outward on the slope.
+* **No detour from a far progress point** (`nogo_edge_detour_start_max_m` 0.8). If neither
+  the lap point nor the detour's first pose is next to the robot, the detour is not started.
+* **A detour that "succeeds" with more than `follow_end_tolerance_m` left** sends the rest
+  (`_nogo_detour_resend`, up to `follow_premature_retries`). In foliage v1 / v5, a detour
+  after a collision-monitor back-up "reached the goal" 10 ms after it was sent.
+* **Perimeter-mark detours end `boundary_recover_margin_m` (0.10) inside the lap** and
+  merge with the tangent join, as the costmap detours do. The end comes after the last pose
+  that needs the bend, not after the peak (realistic v3, inside v9).
+* The silent refusals are now logged: no costmap cells on the lap ahead (with their age), and
+  the stretch already detoured.
+
+Sim (`mower_sim`):
+* **`solid: false`, `z_min`** obstacles. Stereo sees them (the local costmap and the
+  collision monitor), but the wheels and the bumper pass through them. New world
+  `owner_area3_edge1111_foliage.yaml`: the realistic world plus a clump of leaves, r 0.35,
+  centred 0.12 m outside the line at (-29.60, -14.85). It hangs 0.15-0.55 m above the
+  ground, where the field's collision monitor stopped three times.
+* **`stereo_drop_outside_areas`** (default on, tolerance 0.05 m), as stereo_depth's
+  `drop_marks_outside_areas` on the robot. Before, the sim's collision monitor and costmap saw
+  pots beyond the line, which the robot does not see. That caused the "aborted beside the
+  pot" stops of v3 / v5 (stop zone over the outside of a bend). Pots beyond the line are now
+  seen by the detector marks only, as in the field. This changes every sim world with
+  obstacles outside the areas.
+
+### Sim verdicts (seed 2, `-d -l -s 2 -x 2`, `-t 4500` from inside v6)
+
+| run | world | commit | result |
+|---|---|---|---|
+| edge1111_foliage_v1 | foliage | 29b4e62 | FAIL: the foliage stops were detoured, but the again back-up drove forward into plant_mid, which caused a STUCK escape and a BOUNDARY OUT rear 0.37 m; the run timed out at 3600 s (97.3 %) |
+| edge1111_foliage_v2 | foliage | 1038283 | FAIL: lap 0 stepped round the foliage (again-detour, 0.71 m). On lap 2 the detour bent outward ("0.59 m beyond its limit") and the stretch was skipped. One BOUNDARY OUT rear_left 0.35 m on a pot detour; run timed out at 3600 s (92.3 %) |
+| edge1111_foliage_v3 | foliage | interior side by depth | MOWING_COMPLETE, docked, no STUCK, no hard-boundary trip. Laps 0 and 2 stepped round the foliage, lap 1 needed no detour. One nose contact with plant_mid on a pot detour; an interior swath end at the foliage was skipped and excluded (2.0 m); 98.4 % cut |
+| edge1111_inside_v6 | inside | start offset | MOWING_COMPLETE, docked, no STUCK, but 13 contacts with plant_south (return ramp before the pot) and 1 coverage-pivot skip, excluded (2.0 m) |
+| edge1111_inside_v7 | inside | bend held to lookahead + 1.3 m | MOWING_COMPLETE, docked, 17 contacts (the ramp still began 0.4 m before the pot); again-detours cleared it each time; 0 skips |
+| **edge1111_inside_v8** | inside | 4575702 | **MOWING_COMPLETE, docked, 0 contacts (min clearance 0.188 m), no STUCK, no skip, no exclusion**, 98.3 % cut. One BOUNDARY OUT front_left 0.35 m on the lap-0 detour (on the slope), recovered in one move. base_link 0.167 m out at the lap-0 -> lap-1 step vertex (item 4) |
+| edge1111_foliage_v4 | foliage | 4575702 | FAIL: on laps 1 and 2 the foliage collision aborts skipped with no logged reason (2 stretches excluded, 4.1 m), and 1 contact with plant_mid. On the way home a route-corner Spin at the foliage was refused 3 times -> STUCK_NEEDS_HELP |
+| edge1111_foliage_v5 | foliage | refusal logging | FAIL: every foliage meeting was stepped round (laps 0, 2, and a held collision-monitor stop), but one detour "reached the goal" at once and the lap then hit plant_south 3 times (bumper skip, excluded). STUCK_NEEDS_HELP on the way home: route-corner Spin refused 3 times at (-29.40, -13.83) |
+| **edge1111_foliage_v6** | foliage | detour resend | **MOWING_COMPLETE, docked, 0 contacts (min clearance 0.074 m), no STUCK, no skip, no exclusion**, 98.8 % cut. Every foliage meeting was stepped round: on lap 0 by the again-detour (0.71 m), on lap 2 by two held collision-monitor stops (back-up, then a detour of 0.46 / 0.31 m). Two BOUNDARY OUT trips, each recovered in one move and the lap resumed: front_left 0.55 m at (-28.80, -15.29) on lap 0 on the slope, and nose 0.41 m at (-30.01, -14.17) on lap 2 right after a detour rejoin |
+| edge1111_area3_v3 | realistic | detour resend | FAIL: the longer mark detour (0.28 m) returned onto lap 0 on the slope and put front_left 0.35 m out, twice at the same spot -> spot-rule STUCK_NEEDS_HELP at 545 s. 0 contacts |
+| **edge1111_area3_v4** | realistic | mark detours end 0.10 m inside | **MOWING_COMPLETE, docked, 0 contacts, 0 hard-boundary trips, no STUCK, no skip**, 98.7 % cut. Gate FAIL only on a (0.187 m at the step vertex, item 4), e, h, i, j |
+| edge1111_inside_v9 | inside | as area3_v4 | FAIL (owner rule): a mark detour ended in a dip between two scattered marks, beside the pot; the lap-2 join drove into it (3 bumper hits, bumper skip, 2.0 m excluded). MOWING_COMPLETE, docked |
+| edge1111_inside_v10 | inside | the end waits for the last disc | FAIL: a detour "succeeded" 3 times with 1.1 m left (re-sent each time, the robot did not move); the rejoin then put the nose 0.41 m out next to the pot, and 4 boundary recovery moves (wheel slip on the slope, 3 contacts) failed -> STUCK_NEEDS_HELP at 955 s. Bag kept |
+| real_run5_slope | | | not run (the edge worlds do not pass) |
+
+No single commit has passed all three worlds yet. Foliage v6 and inside v8 met the owner
+criterion before the last two detour-end changes, and realistic v4 met it after the first
+of them. Inside v10, on the final code, failed.
+
+### Against the owner rule
+
+(v6 and v8 ran before the last two detour-end changes; inside v10 on the final code failed.)
+* **Foliage (v6):** passes the owner criterion. The mower went round the overhang on every
+  lap with no stop-skip and no STUCK, and mowed the stretch (blade on during the detours).
+* **Pot inside the overhang (v8):** passes the owner criterion. No contact, no skip, no
+  exclusion, no STUCK.
+* Neither passes the sim gate. BOUNDARY OUT on the slope (recovered), item 4's step-vertex
+  excursion, and the gate's i / h / e criteria all still fail.
+
+### Still open
+
+1. **BOUNDARY OUT on the slope around detours** (v6: 2, v8: 1, all recovered in one
+   move). A detour ramp or rejoin on the 9 deg side slope swings a front corner out. The
+   slope-aware pivot / tracking follow-up above is not done.
+2. **Item 4, the lap-0 -> lap-1 step vertex at (-31.83, -11.35)**: 0.10-0.22 m base_link
+   excursion in every run of this round, with the same yaw drift as v2. Not addressed. The
+   master baseline on this world has not been run (one sim at a time; the edge worlds took
+   priority).
+3. **Route-corner Spin refused next to costmap cells** (foliage v4 / v5 on the way home:
+   "route corner pivot aborted 3 times" -> STUCK_NEEDS_HELP). The sweep gate only knows
+   zones and marks, not costmap cells, so Nav2's Spin refuses and the existing back-off
+   path runs out. Not seen in v6; the new route-corner reverse covers static marks only.
+4. **Foliage world, run to run.** v3 / v6 pass the owner rule, v4 / v5 did not (fixed since:
+   the silent refusal is now logged, the premature detour success is re-sent). One seed
+   only; more seeds are needed before the field.
+5. **An interior swath end under the foliage** (v3, v5) is skipped by the interior detour and
+   excluded (2.0 m). That ground lies under the leaves; the owner rule covers the edge
+   laps. Owner call whether that is acceptable.
+6. **The detour follow "succeeds" at once** (foliage v1 / v5, inside v10). Re-sending the
+   rest (`_nogo_detour_resend`) does not help: in v10 it "succeeded" three more times with
+   1.1 m left and the robot did not move. The cause is in the controller / goal checker
+   (`coverage_goal_checker` is a stateful SimpleGoalChecker, xy 0.25): open. Next step:
+   read the v10 bag (kept) for the sent path against the robot pose.
+7. **Detour ends** (realistic v3 vs inside v9 / v10). Ending on the lap swings the front out
+   on the slope, and ending 0.10 m inside cut the detour short between scattered marks. The
+   last-disc rule is untested beyond v10.
+8. The sim now drops stereo points outside the areas (as the robot does). Baselines of other
+   worlds with obstacles beyond the line will change.
+
