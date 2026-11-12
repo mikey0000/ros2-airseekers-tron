@@ -1060,3 +1060,14 @@ def test_edge_detour_success_with_most_of_it_left_sends_the_rest():
     h.finish(f.ACT_FOLLOW)
     assert h.fsm.mission.start_local == end
     assert any('rejoining the lap' in t for t in logs(h, mk))
+
+
+def test_edge_detour_end_offset_waits_for_the_last_disc_not_the_peak():
+    """Sim 2026-11-12 inside v9: two marks with a dip between them; the detour ended at the
+    dip (end_offset_m) beside the second one and the join drove into it."""
+    lap = [(0.05 * k, 0.0, 0.0) for k in range(161)]
+    discs = [Z(1.0, -0.2, 0.25, state='mark'), Z(3.0, -0.35, 0.2, state='mark')]
+    res = nogo.edge_detour(lap, 0, discs, lambda x, y: y > 0, max_offset_m=0.6,
+                           lookahead_m=3.0, end_offset_m=0.10, ramp_m=0.3)
+    assert res is not None
+    assert res[0][-1][0] > 3.0 - 0.15            # not before the second disc is passed

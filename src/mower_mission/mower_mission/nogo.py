@@ -381,8 +381,13 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
     last = max(k for k in range(len(seg)) if off[k] > 1e-3)
     end = min(len(seg) - 1, last + 1)
     if end_offset_m > 0.0:
+        # after the last pose that needs the bend, not after the peak (sim 2026-11-12 inside
+        # v9: two scattered marks gave a dip under end_offset_m between them; the detour
+        # ended there, beside the pot, and the lap-2 join drove into it)
         pk = max(range(len(seg)), key=lambda k: off[k])
-        e = next((k for k in range(pk + 1, len(seg)) if off[k] <= end_offset_m), None)
+        ln = max(k for k in range(len(seg)) if need[k] > 1e-3)
+        e = next((k for k in range(max(pk, ln) + 1, len(seg)) if off[k] <= end_offset_m),
+                 None)
         if e is not None:
             end = e
             off[e] = min(end_offset_m, max(off[pk], 0.0))
