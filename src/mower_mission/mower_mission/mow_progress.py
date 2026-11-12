@@ -8,7 +8,8 @@ the plan, and an elapsed / ETA estimate.  mission_node publishes two latched
 std_msgs/String JSON topics from it:
 
 * ``~/mow_plan``: ``{plan_id, area, subpaths: [[[x, y], ...], ...], types}``, the
-  drivable sub-paths in map frame, republished only when the plan changes.
+  drivable sub-paths in map frame (metres, rounded to 1 mm), republished only when the plan
+  changes.
   Pose indices in ``~/mow_progress`` are absolute indices into the
   concatenation of these sub-paths (the resume cursor's units). ``types``: per sub-path a
   string with one of l / a / p (line / arc / pivot) per pose when it was conditioned
@@ -32,11 +33,13 @@ def plan_geometry(fsm):
     m = getattr(fsm, 'mission', None)
     if m is None or m.area_idx is None or not m.subpaths:
         return None
-    subs = [[[round(float(p[0]), 2), round(float(p[1]), 2)] for p in sp] for sp in m.subpaths]
+    # 1 mm: at 1 cm the 5 cm pose spacing turned a straight row into a +-5 mm zigzag that
+    # the GUI drew as a visible wobble at full zoom (2026-11-12).
+    subs = [[[round(float(p[0]), 3), round(float(p[1]), 3)] for p in sp] for sp in m.subpaths]
     _offs, total = subpath_offsets(m.subpaths)
     pid = '%d:%d:%d:%d' % (int(m.area_idx), int(getattr(m, 'run_i', 0)), len(subs), total)
     if subs and subs[0]:
-        pid += ':%.2f,%.2f' % tuple(subs[0][0])
+        pid += ':%.2f,%.2f' % (float(m.subpaths[0][0][0]), float(m.subpaths[0][0][1]))
     return pid, int(m.area_idx), subs
 
 
