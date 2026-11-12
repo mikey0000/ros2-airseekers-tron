@@ -204,13 +204,16 @@ protected:
   std::vector<float> cost_;
 
   // path trim (path_trim.hpp): trim_enabled, trim_tau_s, trim_max_m, trim_max_err_m,
-  // trim_min_speed, trim_leak_tau_s, k_roll, roll_topic (sensor_msgs/Imu), roll_timeout_s
+  // trim_min_speed, trim_leak_tau_s, k_roll, roll_topic (sensor_msgs/Imu), roll_timeout_s,
+  // roll_tau_s (2026-11-12: low-pass of the feed-forward roll, s; 0 = raw)
   mowgli_nav2_plugins::path_trim::Params trim_;
   mowgli_nav2_plugins::path_trim::State trim_state_;
   rclcpp::Clock::SharedPtr clock_;
   rclcpp::Time last_t_{0, 0, RCL_ROS_TIME};
   bool have_last_{false};
   float roll_timeout_s_{1.0f};
+  float roll_tau_s_{3.0f};
+  mowgli_nav2_plugins::path_trim::RollFilter roll_filter_;   // IMU callback only
   std::atomic<float> roll_{0.0f};
   std::atomic<double> roll_t_{-1.0};
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;

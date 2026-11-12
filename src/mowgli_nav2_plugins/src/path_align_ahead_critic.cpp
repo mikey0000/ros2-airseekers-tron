@@ -25,6 +25,7 @@ void PathAlignAheadCritic::initialize()
   getParam(trim_.leak_tau_s, "trim_leak_tau_s", 60.0f);
   getParam(trim_.k_roll, "k_roll", 0.0f);
   getParam(roll_timeout_s_, "roll_timeout_s", 1.0f);
+  getParam(roll_tau_s_, "roll_tau_s", 3.0f);
   std::string roll_topic;
   getParam(roll_topic, "roll_topic", std::string("/imu/data"));
   auto node = parent_.lock();
@@ -36,14 +37,16 @@ void PathAlignAheadCritic::initialize()
         const auto & q = msg->orientation;
         const double r = std::atan2(2.0 * (q.w * q.x + q.y * q.z),
         1.0 - 2.0 * (q.x * q.x + q.y * q.y));
-        roll_.store(static_cast<float>(r));
-        roll_t_.store(clock_->now().seconds());
+        const double now = clock_->now().seconds();
+        roll_.store(
+          roll_filter_.update(now, static_cast<float>(r), roll_tau_s_, roll_timeout_s_));
+        roll_t_.store(now);
       });
   }
   RCLCPP_INFO(
-    logger_, "PathAlignAheadCritic: trim %s (tau %.1f s, max %.2f m, k_roll %.2f, roll %s)",
-    trim_.enabled ? "on" : "off", trim_.tau_s, trim_.max_m, trim_.k_roll,
-    imu_sub_ ? roll_topic.c_str() : "unused");
+    logger_, "PathAlignAheadCritic: trim %s (tau %.1f s, max %.2f m, k_roll %.2f, roll %s, "
+    "roll low-pass %.1f s)", trim_.enabled ? "on" : "off", trim_.tau_s, trim_.max_m, trim_.k_roll,
+    imu_sub_ ? roll_topic.c_str() : "unused", roll_tau_s_);
   RCLCPP_INFO(
     logger_, "PathAlignAheadCritic: weight %.1f power %u, control point %.3f m ahead, "
     "step %d, offset_from_furthest %zu, latency compensation %.2f s", weight_, power_,
