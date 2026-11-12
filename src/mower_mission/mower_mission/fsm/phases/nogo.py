@@ -618,6 +618,10 @@ class NogoMixin:
         t0 = _time.monotonic()
         discs = self._nogo_edge_discs()
         cm = self._nogo_costmap_discs(prog, polys) if costmap else []
+        if costmap and not cm and self.p.nogo_edge_costmap:
+            st = self.inputs.costmap_lethal_stamp
+            self._log('warn', 'edge lap: %s: no costmap cells on the lap ahead (costmap %s)'
+                      % (why, 'none' if st is None else '%.1f s old' % (self._now - st)))
         if not discs and not cm:
             return False
         from mower_mission import body_boundary as bb
@@ -681,9 +685,10 @@ class NogoMixin:
             self._log('warn', 'edge lap detour geometry took %.2f s (%d discs, %d costmap)'
                       % (dt, len(discs), len(cm)))
         if res is None:
-            if cm:
+            if cm or costmap:
+                cap = kw.get('max_offset_m', float(p.nogo_edge_max_offset_m))
                 self._log('warn', 'edge lap: %s: no inward detour fits within %.2f m: no '
-                                  'detour' % (why, kw['max_offset_m']))
+                                  'detour' % (why, cap))
             return False
         poses, end = res
         pose = self.inputs.pose
@@ -704,6 +709,8 @@ class NogoMixin:
             return False
         key = (m.area_idx, m.sub_i, end)
         if key in m.nogo_detoured and not again:
+            self._log('warn', 'edge lap: %s: this stretch was detoured already (to pose %d)'
+                      % (why, end))
             return False
         if cm and not backed and self._nogo_detour_backup(prog, cm, why):
             return True
