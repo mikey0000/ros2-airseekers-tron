@@ -1569,6 +1569,10 @@ class Mission:
     runs: list = field(default_factory=list)    # [{'angle': deg|-1, 'perpendicular': bool}]
     run_i: int = 0
     line_angles: dict = field(default_factory=dict)   # run index -> planned row angle (deg)
+    # runs the area's current plan holds (cross: all of them, the laps once; else [run_i])
+    plan_runs: list = field(default_factory=list)
+    sub_runs: list = field(default_factory=list)      # run index of each sub-path of the plan
+    plan_acc: Optional[dict] = None             # runs planned so far while planning plan_runs
     detours: int = 0                            # per sub-path
     detour: Optional[dict] = None               # in-flight detour {'from', 'to', 'skip', 'why'}
     stretch: Optional[tuple] = None             # re-queued (abs_from, abs_to) being re-tried

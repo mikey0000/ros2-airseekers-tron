@@ -241,11 +241,20 @@ parameter. Then, with the blade off:
    (logged).
 4. **PlanCoverage** goal with the run's `mow_angle_deg` / `perpendicular`.
 
-Runs: each area is planned and mowed once per run, in order:
+Runs: each area is planned and mowed once per run, in order, except `cross`:
 
 * `zigzag`, `spiral`, `contour_only`: `repeat` runs at the same angle.
-* `cross`: two plans per repeat, at the angle and the angle + `alternate_angle_offset_deg`
+* `cross`: two runs per repeat, at the angle and the angle + `alternate_angle_offset_deg`
   (GUI "Cross angle", default 90; 0 or 180 would repeat the first rows and is taken as 90).
+  Since 2026-11-12 all runs of a cross area (every repeat) are **one plan**, planned when the
+  area starts: one PlanCoverage goal per run, in order, then the results are concatenated.
+  Only one run's goal is planned with the rings (`include_rings` true on /coverage_server: the
+  first run with `edge_first`, else the last). The other runs get `include_rings` false: the
+  bridge drops the rings and keeps the rows exactly where the full plan puts them. So the
+  perimeter / edge laps are driven once and every row set stays inside the same inner
+  boundary. The step from one run's last sub-path to the next run's first is an ordinary
+  inter-sub-path transit. Each run's result is path-conditioned on its own, and `sub_runs`
+  records the run of every sub-path. If any run fails to plan, the whole area plan fails.
 * `alternate`: `repeat` runs, the angle turned by `alternate_angle_offset_deg` on every run,
   continuing across sessions: the number of finished alternate runs per area name is kept in
   `alternate_state_path` (JSON).
@@ -262,10 +271,19 @@ Runs: each area is planned and mowed once per run, in order:
   preview tags each summary segment with its `run` (index into the previewed directions) and
   adds `run_line_angles_deg` per area.
 
-Between runs the blade goes off and the area's resume cursor row is reset; the run in
-progress is stored as an extra `area_run <idx> <run>` line in the resume file (ignored by
-upstream readers), so a STOP / rain / battery resume continues the same run. The PLANNING
-sub-state reads `area <i> <name> [<path_mode>, run k/n]`.
+Between zigzag / alternate runs the blade goes off and the area's resume cursor row is reset.
+The run in progress is stored as an extra `area_run <idx> <run>` line in the resume file
+(ignored by upstream readers), so a STOP / rain / battery resume continues the same run. In a
+cross plan it is the run whose rows are being mowed. It moves on when the first sub-path of a
+later run is next (`_advance_run`), and then the run label is re-published and the area's mowed
+raster starts empty, because the later rows cross ground the earlier rows cut. A resume in
+run k of a cross plan takes the laps and the rows of runs < k as done. The raster maps
+only run k's rows. An `area_run` cursor written before 2026-11-12 (per-run plans) is mapped
+the same way onto the one plan. At the end of a cross area, a stretch still blocked on an
+earlier run's rows is dropped when the later runs' rows sweep over it: >= 90 % of its poses
+inside their swath (`_blocked_mowed_later`). A blocked stretch on the laps still leaves the
+area incomplete. `~/mow_plan` carries `runs` (the run of each sub-path). The PLANNING
+sub-state reads `area <i> <name> [<path_mode>, run k/n]`, or `[cross, runs 1-n/n in one plan]`.
 
 `~/active_area_settings` (latched `std_msgs/String`) carries the active settings as JSON:
 every settings key plus `area_index`, `area_name`, `run`, `runs`, `run_mow_angle_deg`,

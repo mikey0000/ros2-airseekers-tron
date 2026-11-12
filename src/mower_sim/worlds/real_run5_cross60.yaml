@@ -1,0 +1,15 @@
+# real_run5 with Area 1 on a fixed-angle cross at 60 deg (2026-11-12, one-plan cross): rows at
+# 20 deg, then the second row set at 80 deg, planned at the area's start in one plan with the
+# edge laps once. Covers the fixed-angle path (no perpendicular flag); real_run5_cross covers
+# AUTO + 90. Geometry, dock and paths as real_run5 (the real map, unchanged).
+name: real_run5_cross60
+datum: {lat: 48.0, lon: 9.0}
+areas_file: real_run5_areas.dat
+areas_select: [Area 1, Dock path, Path 2, Path 3]
+lawn_area: Area 1
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+obstacles: []
+battery: {voltage: 25.0, percentage: 0.9}
+area_settings:
+  Area 1: {path_mode: cross, mow_angle_deg: 20.0, alternate_angle_offset_deg: 60.0}

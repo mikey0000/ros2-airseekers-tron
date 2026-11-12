@@ -45,6 +45,23 @@ describe('planStretches', () => {
     });
 });
 
+describe('cross plan run tags', () => {
+    it('marks the cross row set of a multi-run plan only', () => {
+        const raw = (runs: unknown) => parseMissionPlan({data: JSON.stringify({
+            plan_id: 'p2', area: 0, runs,
+            subpaths: [[[0, 0], [1, 0]], [[0, 1], [1, 1]], [[0, 2], [1, 2]]],
+        })})!;
+        const p = raw([0, 1, 2]);
+        expect(p.runs).toEqual([0, 1, 2]);
+        const s = planStretches(p, prog({plan_id: 'p2', mowed_segments: [], current_segment: null}));
+        expect(s.map((x) => x.cross)).toEqual([false, true, false]);
+        // a zigzag repeat (one run, odd index) or an older mission without tags: no cross
+        expect(planStretches(raw([1, 1, 1]), prog({plan_id: 'p2'})).some((x) => x.cross)).toBe(false);
+        expect(raw(undefined).runs).toEqual([]);
+        expect(raw([0, 1]).runs).toEqual([]);   // length mismatch
+    });
+});
+
 describe('formatDuration', () => {
     it.each([[null, '–'], [45, '45 s'], [125, '2 min'], [3900, '1 h 05 min']])('%s -> %s', (s, out) => {
         expect(formatDuration(s as number | null)).toBe(out);

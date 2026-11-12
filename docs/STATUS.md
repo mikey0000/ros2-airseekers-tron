@@ -2085,3 +2085,38 @@ Follow-up to the 2026-11-12 V2 field review (area 4, 63 rows: settled 1.65 cm rm
     first run with it on had a post-mow transit STUCK, read as spread.
 - **Next**: field A/B with `gps_tilt_compensation:=false`, the entry metrics per direction, and
   the roll regression on the 100 Hz `/imu/data`.
+
+## Cross mow as one plan: laps once (2026-11-12, branch ws/crossplan1112, unit + CI; sim pending, not field tested)
+
+Owner report 2026-11-12: on a cross mow the second row set re-planned and mowed the perimeter
+again. Details: `analysis/2026-11-12_cross_single_plan.md`.
+
+- **One plan per cross area.** At area start every run of a cross area is planned in order
+  (every repeat too) and the results are concatenated: the laps once, run 1's rows, run 2's
+  rows (... with `repeat` > 1). The run that carries the laps is the first with `edge_first`,
+  else the last. The others are planned with the new `/coverage_server` parameter
+  `include_rings: false`: the bridge drops the rings after planning, so those rows keep exactly
+  the inset of the full plan. Run 1 to run 2 is an ordinary inter-sub-path transit. Zigzag and
+  alternate are unchanged: one plan per run, laps included.
+- **AUTO / perpendicular** resolve as before. Run 1's rows are known before run 2 is planned,
+  so the "AUTO rows not planned" fallback no longer occurs for cross.
+- **Run label / tags.** `m.run_i` is the run whose rows are being mowed. It moves forward at the
+  first sub-path of a later run, which re-publishes `active_area_settings`, saves `area_run` and
+  starts a new mowed raster. `~/mow_plan` has `runs` per sub-path. The GUI draws the remaining
+  cross rows in the cross colour.
+- **Blocked stretches.** The 11-11 rule now applies within the one plan. A stretch still blocked
+  on an earlier run's rows is dropped when the later rows sweep over it. On the laps it still
+  leaves the area incomplete.
+- **Resume.** Same file format. In run k the laps and earlier runs count as done, and the raster
+  maps run k only. Old per-run cursors map onto the one plan: `area_run 1` resumes in run 2's
+  rows after its cut lead-in, and a run 1 cursor keeps its unchanged rows.
+- **No-go re-plan** mid-mow re-plans every run of the plan. A planning failure of any run fails
+  the area plan.
+
+Tests: `scripts/ci_test.sh` PASS (colcon 3929 cases, 0 failed; scripts, replay), including
+mower_mission 910 and the bridge splitter `drop_rings` cases. GUI: vitest and `tsc` pass (one
+RtkBaseCard case timed out under full-suite load and passes alone). Sim gate to run (one at a
+time):
+`SIM_GATE_OUT=../simout_crossplan1112 ./scripts/sim_gate.sh -w src/mower_sim/worlds/real_run5_cross.yaml -n crossplan-auto90-l-s1 -l -x 3 -s 1 -t 4000`
+and the new fixed 20 + 60 deg world:
+`SIM_GATE_OUT=../simout_crossplan1112 ./scripts/sim_gate.sh -w src/mower_sim/worlds/real_run5_cross60.yaml -n crossplan-fixed60-l-s1 -l -x 3 -s 1 -t 4000`.

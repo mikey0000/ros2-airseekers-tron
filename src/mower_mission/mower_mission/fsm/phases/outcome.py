@@ -3,6 +3,7 @@
 
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
+from mower_mission import mowed_raster as mr
 from mower_mission.fsm.common import (AreaCursor, CMD_START, DeleteResume, HEADING_NOT_ALIGNED,
     PublishAreaSettings, PublishResumeAvailable, ResumeCursor, SaveAlternateCounts, ZeroBurst,
     absolute_to_local, blocked_text, geo, subpath_offsets)  # noqa: F401
@@ -171,14 +172,24 @@ class OutcomeMixin:
                   + ('' if not blocked else ', %s' % blocked_text(len(blocked))))
         self._tally_area(ac, failed)
         self._area_cut_report()
-        if blocked and not failed and m.runs and m.run_i + 1 < len(m.runs):
-            # only obstacle-blocked stretches left and another run (cross / repeat) to go:
+        covered = self._blocked_mowed_later(blocked)
+        if covered:
+            # cross (one plan): a stretch of an earlier run's rows that a later run's rows of
+            # the plan drive over was mowed by them (owner 2026-11-11: go on, do not end the
+            # area for it). A blocked stretch of the laps is not: no later run drives there.
+            m.blocked = [b for b in m.blocked if b not in covered]
+            blocked = [b for b in blocked if b not in covered]
+            self._log('warn', 'area %d: %s on earlier rows mowed over by the later run(s) of '
+                              'the plan' % (m.area_idx, blocked_text(len(covered))))
+            self._incident('run_blocked_continue', blocked_text(len(covered)))
+        nxt = self._run_after_plan()
+        if blocked and not failed and nxt is not None:
+            # only obstacle-blocked stretches left and another run (repeat) to go:
             # the next run mows the same ground again, so go on instead of ending the area.
             # The stretches are not resumable once this run's plan is replaced.
             m.blocked = [b for b in m.blocked if b[0] != m.area_idx]
             self._log('warn', 'area %d: run %d/%d left %s: going on to run %d' % (
-                m.area_idx, m.run_i + 1, len(m.runs), blocked_text(len(blocked)),
-                m.run_i + 2))
+                m.area_idx, m.run_i + 1, len(m.runs), blocked_text(len(blocked)), nxt + 1))
             self._incident('run_blocked_continue', blocked_text(len(blocked)))
             blocked = []
         if failed or blocked:
@@ -192,11 +203,11 @@ class OutcomeMixin:
             self._next_area()
             return
         self._count_excluded(ac)
-        if m.runs and m.run_i + 1 < len(m.runs):
-            # repeat / cross: plan and mow the same area again.
+        if nxt is not None:
+            # repeat (zigzag / alternate): plan and mow the same area again.
             if self.blade_on:
                 self._blade_off('area run finished')
-            m.run_i += 1
+            m.run_i = nxt
             self.cursor.area_runs[m.area_idx] = m.run_i
             self.cursor.areas[m.area_idx] = AreaCursor()
             self._persist()
@@ -217,6 +228,46 @@ class OutcomeMixin:
         ac.resume_index = -1
         self._persist()
         self._next_area()
+
+    def _blocked_mowed_later(self, blocked):
+        """The entries of ``blocked`` [(area, abs_from, abs_to)] whose stretch lies on an
+        earlier run's sub-path of the plan and under the rows of its later runs: >= DONE_FRAC
+        of its poses inside the swath the later runs' sub-paths sweep (a scratch MowedRaster
+        of the planned geometry). [] for a one-run plan."""
+        m = self.mission
+        if not blocked or len(set(m.sub_runs)) < 2 or len(m.sub_runs) != len(m.subpaths):
+            return []
+        outer = m.areas.get(m.area_idx, {}).get('outer') or []
+        if len(outer) < 3:
+            return []
+        half = 0.5 * self._swath_spacing(m.settings or {})
+        sweeps = {}
+
+        def sweep(run):
+            # the swath every sub-path of the runs after ``run`` sweeps
+            if run not in sweeps:
+                r = mr.MowedRaster.for_area(outer)
+                for sp, k in zip(m.subpaths, m.sub_runs):
+                    if k > run:
+                        pts = geo.simplify_open_path([(q[0], q[1]) for q in sp], 0.01)
+                        for a, b in zip(pts[:-1], pts[1:]):
+                            r.stamp_segment(a[0], a[1], b[0], b[1], half)
+                sweeps[run] = r
+            return sweeps[run]
+
+        out = []
+        for b in blocked:
+            a, z = absolute_to_local(m.subpaths, b[1]), absolute_to_local(m.subpaths, b[2])
+            if a is None or z is None or a[0] != z[0] or z[1] <= a[1]:
+                continue
+            run = m.sub_runs[a[0]]
+            if run >= max(m.sub_runs):
+                continue
+            poses = m.subpaths[a[0]][a[1]:z[1] + 1]
+            cov = sweep(run).poses_mowed(poses, half)
+            if sum(cov) >= mr.DONE_FRAC * len(cov):
+                out.append(b)
+        return out
 
     def _count_excluded(self, ac):
         """An area finished with only blocked_static stretches left: add them to the

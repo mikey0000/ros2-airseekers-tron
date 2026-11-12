@@ -1153,7 +1153,8 @@ class MissionNode(Node):
                 self._mp_plan_id = pid
                 self._mow_plan_pub.publish(String(data=json.dumps(
                     {'plan_id': pid, 'area': geo[1], 'subpaths': geo[2],
-                     'types': mow_progress.plan_types(self.fsm)})))
+                     'types': mow_progress.plan_types(self.fsm),
+                     'runs': mow_progress.plan_runs(self.fsm)})))
             self._mow_progress_pub.publish(String(data=json.dumps(st, default=str)))
         except Exception as ex:  # noqa: BLE001 - GUI telemetry must never hurt the mission
             self.get_logger().warn('mow_progress: %s' % ex, throttle_duration_sec=30.0)

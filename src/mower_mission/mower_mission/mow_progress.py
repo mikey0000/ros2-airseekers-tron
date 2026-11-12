@@ -7,13 +7,14 @@ drivable sub-paths have been mowed, which were skipped, where the robot is on
 the plan, and an elapsed / ETA estimate.  mission_node publishes two latched
 std_msgs/String JSON topics from it:
 
-* ``~/mow_plan``: ``{plan_id, area, subpaths: [[[x, y], ...], ...], types}``, the
+* ``~/mow_plan``: ``{plan_id, area, subpaths: [[[x, y], ...], ...], types, runs}``, the
   drivable sub-paths in map frame (metres, rounded to 1 mm), republished only when the plan
   changes.
   Pose indices in ``~/mow_progress`` are absolute indices into the
   concatenation of these sub-paths (the resume cursor's units). ``types``: per sub-path a
   string with one of l / a / p (line / arc / pivot) per pose when it was conditioned
-  (path_conditioning), else ''.
+  (path_conditioning), else ''. ``runs``: per sub-path its run index (0-based; a cross plan
+  holds the laps and every run's rows, 2026-11-12).
 * ``~/mow_progress``: ``{plan_id, area, state, sub_state, sub_path, sub_paths,
   pose_index, total_poses, mowed_segments: [[from, to], ...], current_segment,
   skipped: [[from, to], ...], blade_on, percent, mowed_m, remaining_m,
@@ -37,10 +38,26 @@ def plan_geometry(fsm):
     # the GUI drew as a visible wobble at full zoom (2026-11-12).
     subs = [[[round(float(p[0]), 3), round(float(p[1]), 3)] for p in sp] for sp in m.subpaths]
     _offs, total = subpath_offsets(m.subpaths)
-    pid = '%d:%d:%d:%d' % (int(m.area_idx), int(getattr(m, 'run_i', 0)), len(subs), total)
+    # the plan's first run: a cross plan holds every run (the id stays while its runs are
+    # mowed), a zigzag / alternate repeat is a new plan of the next run
+    runs = getattr(m, 'plan_runs', None) or [getattr(m, 'run_i', 0)]
+    pid = '%d:%d:%d:%d' % (int(m.area_idx), int(runs[0]), len(subs), total)
     if subs and subs[0]:
         pid += ':%.2f,%.2f' % (float(m.subpaths[0][0][0]), float(m.subpaths[0][0][1]))
     return pid, int(m.area_idx), subs
+
+
+def plan_runs(fsm):
+    """Run index (0-based, as active_area_settings' run - 1) of each sub-path of the plan;
+    a cross plan holds the laps + the rows of every run, so the GUI can tell the row sets
+    apart. [] without a plan."""
+    m = getattr(fsm, 'mission', None)
+    if m is None or not m.subpaths:
+        return []
+    runs = list(getattr(m, 'sub_runs', None) or [])
+    if len(runs) != len(m.subpaths):
+        runs = [int(getattr(m, 'run_i', 0))] * len(m.subpaths)
+    return [int(r) for r in runs]
 
 
 def plan_types(fsm):

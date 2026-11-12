@@ -7,7 +7,7 @@ from mower_mission.fsm.common import (ACT_PLAN, CancelActions, PARAM_NODE_COVERA
     PREVIEW_ALL, PREVIEW_CLEAR, PREVIEW_PHASES, PublishPlan, PublishPreviewSummary,
     SEGMENT_RING, SEGMENT_SWATH, SRV_GET_AREA, SRV_GET_AREA_SETTINGS, SRV_SET_PARAMS,
     SUCCEEDED, accepted_area, coverage_route_params, geo)  # noqa: F401
-from mower_mission.fsm.phases.areas import auto_line_angle, resolved_run
+from mower_mission.fsm.phases.areas import auto_line_angle, resolved_run, rings_position
 
 
 class PreviewMixin:
@@ -139,6 +139,15 @@ class PreviewMixin:
         lines = {k: a['line'] for k, a in enumerate(cur['acc'])}
         return resolved_run(runs[cur['run_k']], auto_line_angle(runs, lines))
 
+    @staticmethod
+    def _preview_rings(cur):
+        """The preview run being planned carries the rings: always, except for a cross area,
+        whose runs share one plan and drive the laps once (areas.rings_position)."""
+        st = cur['settings']
+        if st['path_mode'] != 'cross':
+            return True
+        return cur['run_k'] == rings_position(len(cur['preview_runs']), st['edge_first'])
+
     def _preview_params(self, cur):
         st, run = cur['settings'], self._preview_run(cur)
         self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_COVERAGE, 'params': {
@@ -147,6 +156,7 @@ class PreviewMixin:
             'path_mode': str(st['path_mode']),
             'mow_angle_deg': float(run['angle']),
             'edge_first': bool(st['edge_first']),
+            'include_rings': self._preview_rings(cur),
             **coverage_route_params(st)}}, purpose='preview_params')
 
     def _preview_next(self):

@@ -9,6 +9,7 @@ import pytest
 from mower_mission import mission_fsm as f
 from mower_mission import mow_progress
 from mower_mission import mowed_raster as mr
+from mower_mission.geometry import plan_fingerprint
 from mower_mission.resume import AreaCursor, ResumeCursor
 from test_mission_fsm import (Harness, follow_current, line, plan, square,
                               start_until_planning)
@@ -372,3 +373,134 @@ def test_end_of_area_reports_the_cut_share_and_patches_only_when_enabled():
         assert len(patch) == want, txt
         inc = [e for e in h.since(mk, f.RecordIncident) if e.kind == 'missed_patches']
         assert len(inc) == want
+
+
+# ---------------------------------------------------------------------------
+# cross: one plan, a raster per run (2026-11-12)
+# ---------------------------------------------------------------------------
+ROWS = [line(0.5, 1.0, 4.5, 1.0, 41), line(4.5, 2.0, 0.5, 2.0, 41)]      # run 1
+COLS = [line(1.0, 0.5, 1.0, 4.5, 41), line(2.0, 4.5, 2.0, 0.5, 41)]      # run 2
+
+
+def cross_plan(h):
+    """Cross area (0 deg + 90): run 1's and run 2's PlanCoverage results, one plan."""
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(ROWS))
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(COLS))
+    assert h.fsm.mission.sub_runs == [0, 0, 1, 1]
+
+
+def test_cross_later_rows_start_with_an_empty_raster_and_resume_in_them():
+    h = Harness(path_conditioning=False)
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 0.0}}
+    h.fsm.inputs.pose = (0.5, 1.0, 0.0)
+    start_until_planning(h)
+    cross_plan(h)
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    drive(h, 0.5, 1.0, 4.5, 1.0)
+    h.finish(f.ACT_FOLLOW)
+    h.finish(f.ACT_NAV)
+    h.tick()
+    drive(h, 4.5, 2.0, 0.5, 2.0)
+    assert raster(h).cut_at([1.0, 2.0], [1.0, 2.0]).all()
+    mk = h.mark()
+    h.finish(f.ACT_FOLLOW)                      # run 1 done: run 2's rows are next
+    m = h.fsm.mission
+    assert m.run_i == 1 and m.sub_i == 2
+    # the run 1 raster crosses run 2's rows at y 1 / 2: a new one, its report logged first
+    assert not raster(h).data.any()
+    assert any('% of the mowable area cut (mowed raster)' in t for t in logs(h, mk))
+    if h.fsm._action is not None and h.fsm._action.name == f.ACT_NAV:
+        h.finish(f.ACT_NAV)
+    h.tick()
+    drive(h, 1.0, 0.5, 1.0, 2.5)
+    assert h.cmd(f.CMD_STOP)
+    saved = ResumeCursor.loads(h.saved)
+    assert saved.area_runs == {0: 1} and saved.areas[0].completed == {0, 1}
+    # across a restart: the same plan, resumed in run 2's first row after its cut lead-in
+    h = Harness(cursor=saved, path_conditioning=False)
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 0.0}}
+    start_until_planning(h)
+    assert h.fsm.mission.run_i == 1
+    cross_plan(h)
+    m = h.fsm.mission
+    assert h.fsm.cursor.areas[0].completed == {0, 1}
+    assert m.sub_i == 2 and m.subpaths[2][m.start_local][1] == pytest.approx(2.5, abs=0.15)
+    assert h.fsm.active_settings()['run'] == 2
+
+
+def old_run2_cursor(resume_index, cut_to_y):
+    """A cursor saved before 2026-11-12 in a cross area's run 2: its own plan (run 2's rows,
+    with the laps), area_run 1, and the run 2 raster cut along the first column."""
+    old = [line(0.1, 0.1, 4.9, 0.1, 41)] + COLS              # its laps + rows
+    cur = ResumeCursor()
+    cur.current_command, cur.current_area = f.CMD_START, 0
+    cur.area_runs = {0: 1}
+    ac = AreaCursor(sum(len(sp) for sp in old), plan_fingerprint(old), resume_index, {0})
+    ac.raster = mr.MowedRaster.for_area(SQUARE, mr.area_key(SQUARE))
+    ac.raster.stamp_segment(1.0, 0.5, 1.0, cut_to_y, 0.11)
+    cur.areas[0] = ac
+    return ResumeCursor.loads(cur.dumps())
+
+
+def test_old_per_run_cross_cursor_resumes_in_the_second_row_set_of_the_one_plan():
+    h = Harness(cursor=old_run2_cursor(41 + 20, 2.5), path_conditioning=False)
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 0.0}}
+    start_until_planning(h)
+    mk = h.mark()
+    cross_plan(h)
+    m = h.fsm.mission
+    # the laps and run 1 are behind it, run 2's first row continues after the cut part
+    assert m.run_i == 1 and h.fsm.cursor.areas[0].completed == {0, 1}
+    assert m.sub_i == 2 and m.subpaths[2][m.start_local][1] == pytest.approx(2.5, abs=0.15)
+    assert any('mapped onto the new plan by position' in t for t in logs(h, mk))
+    assert h.fsm.cursor.area_runs == {0: 1} and h.fsm.active_settings()['run'] == 2
+
+
+def test_old_per_run_cross_cursor_of_run_1_keeps_its_unchanged_rows():
+    cur = ResumeCursor()
+    cur.current_command, cur.current_area = f.CMD_START, 0
+    ac = AreaCursor(sum(len(sp) for sp in ROWS), plan_fingerprint(ROWS), 41, {0})
+    ac.done_fps = {plan_fingerprint([ROWS[0]])}
+    cur.areas[0] = ac
+    h = Harness(cursor=ResumeCursor.loads(cur.dumps()), path_conditioning=False)
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 0.0}}
+    start_until_planning(h)
+    cross_plan(h)
+    m = h.fsm.mission
+    assert m.run_i == 0 and h.fsm.cursor.areas[0].completed == {0} and m.sub_i == 1
+
+
+def test_no_go_replan_of_a_cross_plan_plans_every_run_and_keeps_the_earlier_ones_done():
+    h = Harness(path_conditioning=False)
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 0.0}}
+    h.fsm.inputs.pose = (0.5, 1.0, 0.0)
+    start_until_planning(h)
+    cross_plan(h)
+    m = h.fsm.mission
+    h.fsm.cursor.areas[0].completed = {0, 1}     # run 1 mowed
+    m.sub_i = 2
+    h.fsm._begin(h.t)
+    h.fsm._advance_run()
+    h._apply(h.fsm._end())
+    assert m.run_i == 1
+    h.fsm.inputs.pose = (1.0, 0.5, 0.0)
+    h.fsm.inputs.is_cutting = True
+    drive(h, 1.0, 0.5, 1.0, 2.5)
+    m.nogo_replan = {'sub': 2, 'why': 'test', 'progress': 20, 'phase': 'MOWING'}
+    h.fsm._action = None
+    mk = h.mark()
+    h.fsm._begin(h.t)
+    h.fsm._plan_area(purpose='nogo_replan')
+    h._apply(h.fsm._end())
+    new_cols = [line(1.0, 0.5, 1.0, 3.0, 26), line(2.0, 4.5, 2.0, 0.5, 41)]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([ROWS[0], line(4.5, 2.0, 2.5, 2.0, 21)]))
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(new_cols))
+    params = [e.request['params'] for e in h.since(mk, f.CallService)
+              if e.name == f.SRV_SET_PARAMS and e.request['node'] == f.PARAM_NODE_COVERAGE]
+    assert [(p['mow_angle_deg'], p['include_rings']) for p in params] == \
+        [(0.0, True), (90.0, False)]
+    assert m.sub_runs == [0, 0, 1, 1] and m.nogo_replan is None
+    # run 1's (re-shaped) rows stay done, run 2 goes on after the cut part of its column
+    assert h.fsm.cursor.areas[0].completed == {0, 1}
+    assert m.sub_i == 2 and m.subpaths[2][m.start_local][1] == pytest.approx(2.5, abs=0.15)
