@@ -22,8 +22,8 @@ void RowEntryCritic::initialize()
   getParam(params_.ramp_accel, "ramp_accel", 0.10f);
   getParam(params_.release_speed, "release_speed", 0.30f);
   getParam(params_.max_entry_m, "max_entry_m", 3.0f);
-  getParam(params_.row_min_m, "row_min_m", 1.5f);
-  getParam(params_.new_goal_m, "new_goal_m", 0.05f);
+  getParam(params_.row_min_m, "row_min_m", 1.0f);
+  getParam(params_.new_goal_m, "new_goal_m", 0.25f);
   clock_ = parent_.lock()->get_clock();
   RCLCPP_INFO(
     logger_, "RowEntryCritic: weight %.1f power %u, entry %.2f m/s until within %.1f deg of a "

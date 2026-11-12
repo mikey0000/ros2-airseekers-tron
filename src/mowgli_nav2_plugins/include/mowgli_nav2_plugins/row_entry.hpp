@@ -31,9 +31,10 @@ struct Params
   float ramp_accel{0.10f};         // m/s^2: cap rise once aligned
   float release_speed{0.30f};      // m/s: cap at or above this = hold over
   float max_entry_m{3.0f};         // m from the path start: hold over regardless
-  float row_min_m{1.5f};           // m of straight path ahead that make a row
+  float row_min_m{1.0f};           // m of straight path ahead that make a row (< the
+                                   // controller's prune_distance: MPPI's path ends there)
   float row_straight_tol{0.10f};   // rad: max segment heading off the row chord
-  float new_goal_m{0.05f};         // m: goal moved this far = a new path
+  float new_goal_m{0.25f};         // m: goal jumped this far in one cycle = a new path
 };
 
 enum class Phase { kNone, kHold, kRamp };
@@ -42,7 +43,7 @@ struct State
 {
   Phase phase{Phase::kNone};
   bool have_goal{false};
-  float gx{0.0f}, gy{0.0f};        // goal of the current path
+  float gx{0.0f}, gy{0.0f};        // goal at the previous cycle
   float sx{0.0f}, sy{0.0f};        // robot position when it started
   double t_aligned{0.0};
 };
@@ -83,10 +84,14 @@ inline float update(
   State & s, const Params & p, double now, float x, float y, float yaw, float gx, float gy,
   bool row, float row_heading)
 {
-  if (!s.have_goal || std::hypot(gx - s.gx, gy - s.gy) > p.new_goal_m) {
-    s.have_goal = true;
-    s.gx = gx;
-    s.gy = gy;
+  // A new path is a goal JUMP between consecutive cycles: MPPI hands the goal over in the
+  // odom frame, so it creeps with map -> odom (sim 2026-11-12: 5 cm in under a second on the
+  // -d -l runs) and a fixed reference would start a "new path" mid-row.
+  const bool jump = !s.have_goal || std::hypot(gx - s.gx, gy - s.gy) > p.new_goal_m;
+  s.have_goal = true;
+  s.gx = gx;
+  s.gy = gy;
+  if (jump) {
     s.sx = x;
     s.sy = y;
     // already on the row heading (a mid-row re-send, a good pivot): no hold, no ramp

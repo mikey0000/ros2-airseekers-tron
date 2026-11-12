@@ -49,17 +49,18 @@ TEST(RowEntry, HoldsUntilAlignedThenRampsAndReleases)
   re::Params p;
   re::State s;
   const float row = 0.0f;
+  // the goal creeps a few mm per cycle (map -> odom): the hold and ramp keep running
   // a new path, 8 deg off: hold at the entry speed
   EXPECT_FLOAT_EQ(re::update(s, p, 0.0, 0.0f, 0.0f, 8.0f * kDeg, 10.0f, 0.0f, true, row),
     p.entry_speed);
   EXPECT_EQ(s.phase, re::Phase::kHold);
-  EXPECT_FLOAT_EQ(re::update(s, p, 0.5, 0.05f, 0.0f, 4.0f * kDeg, 10.0f, 0.0f, true, row),
+  EXPECT_FLOAT_EQ(re::update(s, p, 0.5, 0.05f, 0.0f, 4.0f * kDeg, 10.02f, 0.0f, true, row),
     p.entry_speed);
   // within the tolerance: ramp from the entry speed at ramp_accel
-  EXPECT_FLOAT_EQ(re::update(s, p, 1.0, 0.10f, 0.0f, 2.0f * kDeg, 10.0f, 0.0f, true, row),
+  EXPECT_FLOAT_EQ(re::update(s, p, 1.0, 0.10f, 0.0f, 2.0f * kDeg, 10.04f, 0.0f, true, row),
     p.entry_speed);
   EXPECT_EQ(s.phase, re::Phase::kRamp);
-  EXPECT_NEAR(re::update(s, p, 2.0, 0.25f, 0.0f, 3.5f * kDeg, 10.0f, 0.0f, true, row),
+  EXPECT_NEAR(re::update(s, p, 2.0, 0.25f, 0.0f, 3.5f * kDeg, 10.06f, 0.0f, true, row),
     p.entry_speed + p.ramp_accel, 1e-6f);     // no fall-back to the hold once aligned
   // at the release speed: no cap any more, and it stays off for this path
   EXPECT_LT(re::update(s, p, 3.1, 0.6f, 0.0f, 0.0f, 10.0f, 0.0f, true, row), 0.0f);
@@ -80,8 +81,11 @@ TEST(RowEntry, NoHoldWhenAlignedNotARowOrTooFar)
   EXPECT_GT(re::update(s, p, 2.0, 0.0f, 0.0f, 8.0f * kDeg, -10.0f, 0.0f, true, 0.0f), 0.0f);
   EXPECT_GT(re::update(s, p, 3.0, 2.9f, 0.0f, 8.0f * kDeg, -10.0f, 0.0f, true, 0.0f), 0.0f);
   EXPECT_LT(re::update(s, p, 4.0, 3.1f, 0.0f, 8.0f * kDeg, -10.0f, 0.0f, true, 0.0f), 0.0f);
-  // a goal that moves by less than new_goal_m is the same path
-  EXPECT_LT(re::update(s, p, 5.0, 3.2f, 0.0f, 8.0f * kDeg, -10.02f, 0.0f, true, 0.0f), 0.0f);
+  // a goal that creeps (map -> odom drift) by less than new_goal_m per cycle is the same path
+  for (int k = 1; k <= 20; ++k) {
+    EXPECT_LT(re::update(s, p, 5.0 + 0.05 * k, 3.2f, 0.0f, 8.0f * kDeg,
+      -10.0f - 0.01f * static_cast<float>(k), 0.0f, true, 0.0f), 0.0f);
+  }
   // the next row (new goal) holds again
   EXPECT_FLOAT_EQ(
     re::update(s, p, 6.0, 3.2f, 0.2f, 186.0f * kDeg, 13.2f, 0.2f, true, 0.0f), p.entry_speed);

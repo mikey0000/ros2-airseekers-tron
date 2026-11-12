@@ -417,7 +417,7 @@ controller_server:
                 "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic", "WheelFloorCritic",
                 "RowEntryCritic"]
       # Row entry speed hold (2026-11-12, mowgli_nav2_plugins row_entry.hpp,
-      # docs/analysis/2026-11-12_row_straightness.md): a new path that starts with a >= 1.5 m
+      # docs/analysis/2026-11-12_row_straightness.md): a new path that starts with a >= 1.0 m
       # straight row while the heading is > 2.6 deg off it is driven at <= 0.10 m/s until the
       # heading is within 2.6 deg, then the cap rises at 0.1 m/s^2 and lets go at 0.30 (the
       # MCU clamp). At most 3 m. Field: the pivot handed over 8.3 deg rms off and MPPI was at
@@ -432,9 +432,9 @@ controller_server:
         ramp_accel: 0.10
         release_speed: 0.30
         max_entry_m: 3.0
-        row_min_m: 1.5
+        row_min_m: 1.0     # < prune_distance (1.2): MPPI's path ends there
         row_straight_tol_deg: 6.0
-        new_goal_m: 0.05
+        new_goal_m: 0.25   # goal jump per cycle that marks a new path (the goal creeps with map -> odom)
       ConstraintCritic:
         enabled: true
         cost_power: 1

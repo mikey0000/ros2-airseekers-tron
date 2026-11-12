@@ -4,7 +4,7 @@
 // Jazzy (1.3.x) loads critics as "mppi::critics::" + <name in the critics list>; parameters
 // are <controller>.RowEntryCritic.*: cost_weight (30.0), cost_power (1), entry_speed (0.10
 // m/s), heading_tol_deg (2.6), ramp_accel (0.10 m/s^2), release_speed (0.30 m/s),
-// max_entry_m (3.0), row_min_m (1.5), row_straight_tol_deg (6.0), new_goal_m (0.05).
+// max_entry_m (3.0), row_min_m (1.0), row_straight_tol_deg (6.0), new_goal_m (0.25).
 // Revert: drop "RowEntryCritic" from the critics list (or enabled: false).
 #ifndef MOWGLI_NAV2_PLUGINS__ROW_ENTRY_CRITIC_HPP_
 #define MOWGLI_NAV2_PLUGINS__ROW_ENTRY_CRITIC_HPP_
