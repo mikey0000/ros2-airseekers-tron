@@ -899,10 +899,44 @@ class NogoMixin:
         m.progress_local = prog
         return self._nogo_edge_detour(prog, why, costmap=True, backed=True, again=n + 1)
 
+    def _nogo_detour_resend(self, d):
+        """The detour follow 'succeeded' with the robot still more than follow_end_tolerance_m
+        (path length) before its end (sim 2026-11-12 foliage v1 / v5: a detour after a
+        collision-monitor back-up 'reached the goal' 10 ms after it was sent and the robot
+        drove the lap into the pot): send the rest of the detour again, up to
+        follow_premature_retries times. True = re-sent."""
+        m, p, pose = self.mission, self.p, self.inputs.pose
+        poses = d.get('poses') or []
+        n = int(d.get('premature') or 0)
+        if pose is None or len(poses) < 2 or n >= int(p.follow_premature_retries):
+            return False
+        j = min(range(len(poses)), key=lambda k: math.hypot(poses[k][0] - pose[0],
+                                                           poses[k][1] - pose[1]))
+        left = geo.path_length(poses[j:])
+        if left <= float(p.follow_end_tolerance_m) or len(poses) - j < 2:
+            return False
+        sp = m.subpaths[m.sub_i]
+        rest = [tuple(q) for q in poses[j:]]
+        rest = [(q[0], q[1], math.atan2(b[1] - q[1], b[0] - q[0]))
+                for q, b in zip(rest[:-1], rest[1:])] + \
+            [(rest[-1][0], rest[-1][1], geo.heading_of(sp, min(d['end'], len(sp) - 1)))]
+        m.nogo_detour = dict(d, premature=n + 1)
+        m.step = 'nogo_detour'
+        self._log('warn', 'edge detour succeeded with %.1f m of it left: sending the rest '
+                          '(%d/%d)' % (left, n + 1, int(p.follow_premature_retries)))
+        self._start_action(ACT_FOLLOW, {
+            'poses': rest, 'controller_id': self.coverage_controller_id(False),
+            'goal_checker_id': self.p.follow_goal_checker_id,
+            'progress_checker_id': self.p.follow_progress_checker_id},
+            self.p.follow_timeout_s, purpose='nogo_detour')
+        return True
+
     def _nogo_detour_done(self, outcome):
         m = self.mission
         d, m.nogo_detour = m.nogo_detour, None
         if d is None or self.phase not in ('MOWING', 'TRANSIT'):
+            return
+        if outcome == SUCCEEDED and self._nogo_detour_resend(d):
             return
         if outcome == SUCCEEDED:
             m.start_local = min(d['end'], self._seg_last())

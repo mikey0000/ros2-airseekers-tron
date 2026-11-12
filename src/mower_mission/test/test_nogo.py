@@ -1042,3 +1042,21 @@ def test_edge_detour_holds_the_bend_past_a_disc_near_the_end_of_the_lookahead():
     poses = res[0]
     at = [q[1] for q in poses if 2.35 <= q[0] <= 3.15]  # the disc beside the body box
     assert at and min(at) >= need - 1e-6, (min(at), need)
+
+
+def test_edge_detour_success_with_most_of_it_left_sends_the_rest():
+    """Sim 2026-11-12 foliage v1 / v5: a detour 'reached the goal' 10 ms after it was sent;
+    the mission rejoined the lap at its end and the robot drove into the pot."""
+    h, mk = _abort_on_branch(2.5, -0.3, 0.5)
+    d = h.fsm.mission.nogo_detour
+    h.fsm.inputs.pose = (d['poses'][1][0], d['poses'][1][1], 0.0)
+    h.finish(f.ACT_FOLLOW, arrive=False)
+    a = h.fsm._action
+    assert a is not None and a.purpose == 'nogo_detour', logs(h, mk)
+    assert any('sending the rest' in t for t in logs(h, mk))
+    end = h.fsm.mission.nogo_detour['end']
+    last = h.fsm.mission.nogo_detour['poses'][-1]
+    h.fsm.inputs.pose = (last[0], last[1], 0.0)
+    h.finish(f.ACT_FOLLOW)
+    assert h.fsm.mission.start_local == end
+    assert any('rejoining the lap' in t for t in logs(h, mk))
