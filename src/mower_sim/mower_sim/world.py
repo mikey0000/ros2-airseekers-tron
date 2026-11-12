@@ -257,6 +257,11 @@ class World:
         return [o for o in self.obstacles
                 if o.solid and o.distance_to_polygon(fp, t) <= margin]
 
+    def area_polygons(self) -> List[Polygon]:
+        """The lawn and every other area (paths too): the union stereo_depth keeps marks in."""
+        return [self.lawn] + [[tuple(p) for p in a['polygon']] for a in self.extra_areas
+                              if len(a.get('polygon') or []) >= 3]
+
     def clearance(self, x: float, y: float, yaw: float, t: float) -> float:
         """Smallest footprint-to-obstacle distance over the solid obstacles (inf without)."""
         fp = self.footprint_at(x, y, yaw)

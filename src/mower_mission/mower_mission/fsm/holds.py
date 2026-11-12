@@ -758,6 +758,18 @@ class HoldsMixin:
         w = max(-0.3, min(0.3, v * 2.0 * yr / max(1e-6, xr * xr + yr * yr)))
         return v, w
 
+    @staticmethod
+    def _reverse_cmd(pose, target, v0):
+        """(v, w) reversing toward ``target`` (x, y) at speed ``v0``: never forward (sim
+        2026-11-12: a back-up beside a pot whose first target lay ahead of the robot drove
+        _track_cmd forward into the next pot); straight back while the target is not behind."""
+        dx, dy = target[0] - pose[0], target[1] - pose[1]
+        c, s = math.cos(pose[2]), math.sin(pose[2])
+        xr, yr = c * dx + s * dy, -s * dx + c * dy
+        if xr > -1e-3:
+            return -v0, 0.0
+        return -v0, max(-0.3, min(0.3, -v0 * 2.0 * yr / max(1e-6, xr * xr + yr * yr)))
+
     def _loc_retrace_tick(self, d):
         rt, pose = d['rt'], self.inputs.pose
         if pose is None:

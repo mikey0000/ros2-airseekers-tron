@@ -661,6 +661,18 @@ class NogoMixin:
                                   'detour' % (why, kw['max_offset_m']))
             return False
         poses, end = res
+        pose = self.inputs.pose
+        q0 = sp[max(0, min(prog, len(sp) - 1))]
+        # the lap point (a plain lap) or the detour's first pose (the robot already on an
+        # earlier detour, offset inward): one of them is next to the robot
+        far = min(math.hypot(q[0] - pose[0], q[1] - pose[1]) for q in (q0, poses[0])) \
+            if pose is not None else 0.0
+        if far > float(p.nogo_edge_detour_start_max_m):
+            # sim 2026-11-12: a stop held 5 m from the lap progress point bent a detour round
+            # cells there; its follow "reached" at once and the robot never stepped round
+            self._log('warn', 'edge lap: %s: the detour would start %.2f m from the '
+                              'robot: no detour' % (why, far))
+            return False
         if ex is not None and ex > 0.0:
             self._log('warn', 'edge lap: %s: the detour would put the body %.2f m beyond its '
                               'limit: no detour' % (why, ex))
@@ -674,7 +686,6 @@ class NogoMixin:
         if self._action is not None:
             self._fx.append(CancelActions('edge detour'))
             self._action = None
-        pose = self.inputs.pose
         m.nogo_detour = {'from': prog, 'end': end, 'why': why, 'again': int(again),
                          'poses': [tuple(q[:2]) for q in poses],
                          'join': float(p.boundary_recover_margin_m) if cm else 0.0}
@@ -711,8 +722,7 @@ class NogoMixin:
         aborted within 1 s, "Optimizer fail to compute path"), and Nav2's BackUp refuses too
         ("Collision Ahead - Exiting DriveOnHeading": its footprint check fails at the start
         pose, whose nose is on the cells). Within nogo_edge_costmap_backup_near_m of the cells
-        the mission reverses itself (DriveCmd, the loc retrace's track steering,
-        _track_cmd) by up to nogo_edge_costmap_backup_m back along the lap it has just
+        the mission reverses itself (DriveCmd, reverse only: _reverse_cmd) by up to nogo_edge_costmap_backup_m back along the lap it has just
         driven (clear, and inside: lap 0 follows the line). ``driven`` (a detour that
         aborted beside the object, _nogo_detour_again): back along those poses first, then
         the lap, with no distance test. The detour is then bent from the lap pose nearest
@@ -768,7 +778,7 @@ class NogoMixin:
         m.step = 'nogo_detour'
         if self.blade_on and not self._keep_blade_inside(what):
             self._blade_off(what)
-        self._fx.append(DriveCmd(*self._track_cmd(pose, path[0], speed)))
+        self._fx.append(DriveCmd(*self._reverse_cmd(pose, path[0], speed)))
 
     def _nogo_backup_tick(self):
         """The reverse of _nogo_reverse_start, one tick. True while it runs."""
@@ -791,7 +801,7 @@ class NogoMixin:
             self._nogo_detour_backup_done(SUCCEEDED if driven >= 0.5 * d['dist'] else
                                           'stopped after %.2f m' % driven)
             return True
-        self._fx.append(DriveCmd(*self._track_cmd(pose, path[d['i']], d['v'])))
+        self._fx.append(DriveCmd(*self._reverse_cmd(pose, path[d['i']], d['v'])))
         return True
 
     def _nogo_detour_backup_done(self, outcome):

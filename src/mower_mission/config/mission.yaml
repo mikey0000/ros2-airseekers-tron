@@ -113,6 +113,7 @@ behavior_tree_node:
     nogo_edge_costmap_backup_near_m: 0.80   # robot this close to the cells: back up first
     nogo_edge_costmap_backup_m: 0.50
     nogo_edge_detour_again: 2         # detour aborted beside the object: reverse, bend again (times)
+    nogo_edge_detour_start_max_m: 0.8 # lap progress point this far from the robot: no detour
     nogo_route_reverse_m: 0.60        # route-corner sweep still blocked by a static object: reverse, re-route
     nogo_living_memory_s: 60.0        # a static mark this recently under a person / animal zone is it
     nogo_perimeter_band_m: 0.6        # static mark centred within this of the area edge = a perimeter object ...

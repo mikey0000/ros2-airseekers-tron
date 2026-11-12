@@ -1538,6 +1538,9 @@ class Params:
     # (nogo_edge_costmap_backup_m) and bends again from there, with the costmap cells and
     # the larger offset cap, at most this many times per detour; then the skip. 0 = skip
     nogo_edge_detour_again: int = 2
+    # no edge detour when the lap progress point it would start from is further than this
+    # from the robot
+    nogo_edge_detour_start_max_m: float = 0.8
     # a route-corner pivot whose sweep meets a static object once the maneuvers and the
     # re-route are used up: reverse this far (straight, body inside, the mission's own
     # reverse) and re-route from there, once per corner, instead of pivoting into it; then

@@ -983,3 +983,13 @@ def test_collision_monitor_stop_held_with_costmap_off_skips_as_before():
     h.tick(n=int(h.fsm.p.edge_blocked_hold_s * 10) + 5)
     assert any('edge blocked: skip' in t and 'collision_monitor stop held' in t
                for t in logs(h, mk))
+
+
+def test_back_up_command_never_drives_forward():
+    """Sim 2026-11-12 (foliage v1): a back-up whose first target lay ahead of the robot
+    drove forward (_track_cmd) into the next pot. The back-up only ever reverses."""
+    from mower_mission.fsm.holds import HoldsMixin
+    v, w = HoldsMixin._reverse_cmd((0.0, 0.0, 0.0), (0.3, 0.1), 0.1)
+    assert v < 0.0 and w == 0.0
+    v, w = HoldsMixin._reverse_cmd((0.0, 0.0, 0.0), (-0.5, 0.1), 0.1)
+    assert v < 0.0 and w < 0.0                 # rear swings toward +y: turn clockwise

@@ -186,3 +186,14 @@ def test_bumper_no_contacts_and_rotated_pose():
     assert bumper_sides([o], 0.0, 0.0, math.pi / 2, 0.0) == (True, True)
     # robot facing +x: obstacle on its left, not ahead of front_x
     assert bumper_sides([o], 0.0, 0.0, 0.0, 0.0) == (False, False)
+
+
+def test_inside_areas_keeps_points_in_any_area_or_within_the_tolerance():
+    """2026-11-12: the real stereo_depth drops obstacle points > 0.05 m outside every area."""
+    from mower_sim.sensors import inside_areas
+    sq = [(0, 0), (4, 0), (4, 4), (0, 4)]
+    path = [(4, 1), (8, 1), (8, 2), (4, 2)]
+    xy = np.array([[2, 2], [4.03, 3.0], [4.2, 3.0], [6, 1.5], [-0.3, 2], [9, 1.5]])
+    assert inside_areas(xy, [sq, path], 0.05).tolist() == [True, True, False, True, False,
+                                                           False]
+    assert inside_areas(np.zeros((0, 2)), [sq]).tolist() == []

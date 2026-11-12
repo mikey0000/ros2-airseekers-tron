@@ -75,7 +75,7 @@ from .loc_drift import LocDrift
 from .loc_drift import params_for as loc_params_for
 from .detections import DetectionSource, DetParams, disc_base
 from .marker import RearCamera, RearCameraParams
-from .sensors import StereoParams, StereoRaycaster, bumper_sides
+from .sensors import StereoParams, StereoRaycaster, bumper_sides, inside_areas
 from .rtk import DROPOUT, FLOAT, RtkModel, parse_spec
 from .world import antenna_xy, enu_to_latlon, load_world
 
@@ -191,6 +191,12 @@ class SimNode(Node):
         d('gps_tilt_compensation', True)
         d('gps_tilt_gain', 1.0)
         d('bumper_hold_s', 0.3)
+        # 2026-11-12: the real stereo_depth node drops obstacle points more than
+        # area_tolerance_m outside every area (drop_marks_outside_areas, default on): a pot
+        # beyond the line is seen by the detector only, not by the collision monitor or the
+        # local costmap. false = every obstacle point (the sim before 2026-11-12)
+        d('stereo_drop_outside_areas', True)
+        d('stereo_area_tolerance_m', 0.05)
         # ground disturbance (kinematics.DriveParams.disturb_*; all off by default)
         d('disturb_wheel_bias', 0.0)
         d('disturb_slip_std', 0.0)
@@ -303,6 +309,7 @@ class SimNode(Node):
                 rp.anchor, ['%g:%g:%s' % (e.t0, e.dur, e.kind) for e in rp.events],
                 ', multipath house' if rp.multipath is not None else ''))
         self.stereo = StereoRaycaster(StereoParams(noise_m=float(gp('stereo_noise_m').value)))
+        self._area_polys = self.world.area_polygons()
         self.rear = RearCamera(RearCameraParams(
             marker_size=float(gp('rear_marker_size').value),
             marker_offset=float(gp('rear_marker_offset').value),
@@ -851,6 +858,10 @@ class SimNode(Node):
         obs, ground = self.stereo.cast(pose.x, pose.y, pose.yaw,
                                        [o for o in self.world.obstacles if o.stereo],
                                        self.sim_time())
+        if len(obs) and bool(self.get_parameter('stereo_drop_outside_areas').value):
+            xy = self.stereo.to_map(obs, pose.x, pose.y, pose.yaw)[:, :2]
+            obs = obs[inside_areas(xy, self._area_polys, float(
+                self.get_parameter('stereo_area_tolerance_m').value))]
         stamp = self.stamp()
         # Divergence from the robot: the real stereo_depth_node (fixed_frame_clouds, default
         # since 2026-10-09) publishes /points and /clear_points already in odom, stamped at

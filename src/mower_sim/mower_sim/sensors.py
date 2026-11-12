@@ -197,3 +197,33 @@ def bumper_sides(contacts: Sequence[Obstacle], x: float, y: float, yaw: float,
         else:
             left = right = True
     return left, right
+
+
+def inside_areas(xy: np.ndarray, polygons: Sequence, tol: float = 0.05) -> np.ndarray:
+    """Mask of the map points ``xy`` (Nx2) inside any of ``polygons`` or within ``tol`` of
+    one: the real stereo_depth node's drop_marks_outside_areas (area_tolerance_m 0.05; the
+    keepout mask's area / path union) drops the other obstacle points."""
+    xy = np.asarray(xy, dtype=float).reshape(-1, 2)
+    keep = np.zeros(len(xy), dtype=bool)
+    if not len(xy):
+        return keep
+    px, py = xy[:, 0], xy[:, 1]
+    for poly in polygons:
+        pts = np.asarray(poly, dtype=float)
+        if len(pts) < 3:
+            continue
+        a, b = pts, np.roll(pts, -1, axis=0)
+        inside = np.zeros(len(xy), dtype=bool)
+        near = np.full(len(xy), np.inf)
+        for (ax, ay), (bx, by) in zip(a, b):
+            cross = (ay > py) != (by > py)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                xint = ax + (py - ay) * (bx - ax) / (by - ay)
+            inside ^= cross & (px < xint)
+            dx, dy = bx - ax, by - ay
+            L2 = dx * dx + dy * dy
+            u = np.clip(((px - ax) * dx + (py - ay) * dy) / L2, 0.0, 1.0) if L2 > 0 else 0.0
+            near = np.minimum(near, np.hypot(px - (ax + u * dx), py - (ay + u * dy)))
+        keep |= inside | (near <= tol)
+    return keep
+
