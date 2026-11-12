@@ -1,6 +1,7 @@
 // PathAlignAheadCritic scoring: control_point_x 0 reproduces Nav2 PathAlignCritic's loop
-// (Jazzy 1.3.13, copied below as the reference), and the control point adds heading to the
-// lateral error.
+// (Jazzy 1.3.13, copied below as the reference, use_path_orientations false), the control
+// point adds heading to the lateral error, and the latency projection scores a rollout as if
+// it started from the projected pose.
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -17,9 +18,8 @@ namespace
 // PathAlignCritic::score's per-sample loop (nav2_mppi_controller 1.3.13), unweighted.
 std::vector<float> reference(
   const xt::xtensor<float, 2> & tx, const xt::xtensor<float, 2> & ty,
-  const xt::xtensor<float, 2> & tyaw, const xt::xtensor<float, 1> & px,
-  const xt::xtensor<float, 1> & py, const xt::xtensor<float, 1> & pyaw,
-  const std::vector<bool> & valid, size_t count, int step, bool orient)
+  const xt::xtensor<float, 2> & /*tyaw*/, const xt::xtensor<float, 1> & px,
+  const xt::xtensor<float, 1> & py, const std::vector<bool> & valid, size_t count, int step)
 {
   std::vector<float> s(count, 0.0f);
   for (size_t i = 1; i != count; i++) {
@@ -44,12 +44,7 @@ std::vector<float> reference(
         dx = px(pp) - x;
         dy = py(pp) - y;
         n++;
-        if (orient) {
-          const float dyaw = angles::shortest_angular_distance(pyaw(pp), tyaw(t, idx[k]));
-          sum += sqrtf(dx * dx + dy * dy + dyaw * dyaw);
-        } else {
-          sum += sqrtf(dx * dx + dy * dy);
-        }
+        sum += sqrtf(dx * dx + dy * dy);
       }
     }
     out[t] = n > 0u ? sum / static_cast<float>(n) : 0.0f;
@@ -116,20 +111,21 @@ TEST(PathAlignAhead, ZeroControlPointIsPathAlignCritic)
   std::vector<bool> valid(npath - 1, true);
   valid[17] = false;
   for (int step : {1, 2, 4}) {
-    for (bool orient : {false, true}) {
-      for (size_t furthest : {size_t(25), size_t(40)}) {
-        paa::Params p;
-        p.trajectory_point_step = step;
-        p.use_path_orientations = orient;
-        const size_t n = paa::pathPointsUsed(px, py, furthest, valid.size(), 0.0f);
-        ASSERT_EQ(n, furthest);
-        std::vector<float> got;
-        paa::scoreBatch(tx, ty, tyaw, px, py, pyaw, valid, n, p, got);
-        const auto ref = reference(tx, ty, tyaw, px, py, pyaw, valid, furthest, step, orient);
-        ASSERT_EQ(got.size(), ref.size());
-        for (size_t b = 0; b < batch; ++b) {
-          EXPECT_NEAR(got[b], ref[b], 1e-6f) << "step " << step << " sample " << b;
-        }
+    for (size_t furthest : {size_t(25), size_t(40)}) {
+      paa::Params p;
+      p.trajectory_point_step = step;
+      const size_t n = paa::pathPointsUsed(px, py, furthest, valid.size(), 0.0f);
+      ASSERT_EQ(n, furthest);
+      std::vector<float> got, off;
+      paa::scoreBatch(tx, ty, tyaw, px, py, valid, n, p, got);
+      // latency 0: the identity projection changes nothing
+      paa::scoreBatch(tx, ty, tyaw, px, py, valid, n, p, off,
+        paa::projection(0.01f, -0.02f, 0.1f, 0.2f, 0.3f, 0.0f));
+      const auto ref = reference(tx, ty, tyaw, px, py, valid, furthest, step);
+      ASSERT_EQ(got.size(), ref.size());
+      for (size_t b = 0; b < batch; ++b) {
+        EXPECT_NEAR(got[b], ref[b], 1e-6f) << "step " << step << " sample " << b;
+        EXPECT_EQ(off[b], got[b]) << "step " << step << " sample " << b;
       }
     }
   }
@@ -157,14 +153,118 @@ TEST(PathAlignAhead, LateralOffsetCostsTheSameHeadingCostsMore)
   paa::Params p;
   p.trajectory_point_step = 2;
   std::vector<float> c0, c1;
-  paa::scoreBatch(tx, ty, tyaw, px, py, pyaw, valid, paa::pathPointsUsed(px, py, 40, 199, 0.0f),
-    p, c0);
+  paa::scoreBatch(tx, ty, tyaw, px, py, valid, paa::pathPointsUsed(px, py, 40, 199, 0.0f), p,
+    c0);
   p.control_point_x = 0.25f;
-  paa::scoreBatch(tx, ty, tyaw, px, py, pyaw, valid, paa::pathPointsUsed(px, py, 40, 199, 0.25f),
-    p, c1);
+  paa::scoreBatch(tx, ty, tyaw, px, py, valid, paa::pathPointsUsed(px, py, 40, 199, 0.25f), p,
+    c1);
   // a pure lateral offset: the same at both control points (1 cm path spacing)
   EXPECT_NEAR(c0[0], 0.03f, 0.003f);
   EXPECT_NEAR(c1[0], 0.03f, 0.003f);
   // a heading error: the control point adds about 0.25 m x 0.1 rad to every pose's error
   EXPECT_GT(c1[1], c0[1] + 0.02f);
+}
+
+TEST(PathAlignAhead, ProjectionDrivesThePoseAlongItsArc)
+{
+  // latency 0 or standing still: no move
+  EXPECT_FALSE(paa::projection(1.0f, 2.0f, 0.3f, 0.2f, 0.1f, 0.0f).active());
+  EXPECT_FALSE(paa::projection(1.0f, 2.0f, 0.3f, 0.0f, 0.0f, 0.35f).active());
+  // straight: v x latency along the heading
+  const auto s = paa::projection(1.0f, 2.0f, 0.5f, 0.2f, 0.0f, 0.35f);
+  EXPECT_NEAR(s.qx, 1.0f + 0.07f * std::cos(0.5f), 1e-6f);
+  EXPECT_NEAR(s.qy, 2.0f + 0.07f * std::sin(0.5f), 1e-6f);
+  EXPECT_FLOAT_EQ(s.dyaw, 0.0f);
+  EXPECT_NEAR(s.arc, 0.07f, 1e-6f);
+  // arc: R = v / w = 1 m about the centre left of the pose; the end stays on the circle
+  const auto a = paa::projection(0.0f, 0.0f, 0.0f, 0.3f, 0.3f, 1.0f);
+  EXPECT_NEAR(a.qx, std::sin(0.3f), 1e-5f);
+  EXPECT_NEAR(a.qy, 1.0f - std::cos(0.3f), 1e-5f);
+  EXPECT_NEAR(a.dyaw, 0.3f, 1e-6f);
+  EXPECT_NEAR(a.arc, 0.3f, 1e-6f);
+  // pivot: turns in place
+  const auto p = paa::projection(1.0f, 1.0f, 0.0f, 0.0f, 0.3f, 0.35f);
+  EXPECT_FLOAT_EQ(p.qx, 1.0f);
+  EXPECT_FLOAT_EQ(p.qy, 1.0f);
+  EXPECT_NEAR(p.dyaw, 0.105f, 1e-6f);
+}
+
+TEST(PathAlignAhead, ProjectedRolloutScoresAsARolloutFromTheProjectedPose)
+{
+  // a curved path; rollouts with random controls from the real pose and, with the same
+  // controls, from the projected pose
+  const size_t batch = 32, steps = 40, npath = 120;
+  xt::xtensor<float, 1> px = xt::zeros<float>({npath}), py = px, pyaw = px;
+  for (size_t i = 0; i < npath; ++i) {
+    const float a = 0.0125f * static_cast<float>(i);    // 1.5 rad of a 2 m radius arc
+    px(i) = 2.0f * std::sin(a);
+    py(i) = 2.0f * (1.0f - std::cos(a));
+  }
+  std::mt19937 rng(11);
+  std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+  const float x0 = 0.01f, y0 = -0.02f, th0 = 0.05f, v0 = 0.2f, w0 = 0.12f, lat = 0.35f;
+  const auto proj = paa::projection(x0, y0, th0, v0, w0, lat);
+  ASSERT_TRUE(proj.active());
+  xt::xtensor<float, 2> ax = xt::zeros<float>({batch, steps}), ay = ax, ayaw = ax;
+  xt::xtensor<float, 2> bx = ax, by = ax, byaw = ax;
+  for (size_t b = 0; b < batch; ++b) {
+    float xa = x0, ya = y0, ta = th0, xb = proj.qx, yb = proj.qy, tb = th0 + proj.dyaw;
+    for (size_t j = 0; j < steps; ++j) {
+      const float v = 0.2f + 0.08f * u(rng), w = 0.1f + 0.2f * u(rng);
+      ta += 0.05f * w;
+      tb += 0.05f * w;
+      xa += 0.05f * v * std::cos(ta);
+      ya += 0.05f * v * std::sin(ta);
+      xb += 0.05f * v * std::cos(tb);
+      yb += 0.05f * v * std::sin(tb);
+      ax(b, j) = xa; ay(b, j) = ya; ayaw(b, j) = ta;
+      bx(b, j) = xb; by(b, j) = yb; byaw(b, j) = tb;
+    }
+  }
+  std::vector<bool> valid(npath - 1, true);
+  paa::Params p;
+  p.trajectory_point_step = 2;
+  p.control_point_x = 0.25f;
+  const size_t n = paa::pathPointsUsed(px, py, 30, valid.size(), p.control_point_x + proj.arc);
+  paa::Projection arc_only;    // the reference rollouts already start at the projected pose
+  arc_only.arc = proj.arc;
+  std::vector<float> got, ref, unprojected;
+  paa::scoreBatch(ax, ay, ayaw, px, py, valid, n, p, got, proj);
+  paa::scoreBatch(bx, by, byaw, px, py, valid, n, p, ref, arc_only);
+  paa::scoreBatch(ax, ay, ayaw, px, py, valid, n, p, unprojected);
+  float diff = 0.0f;
+  for (size_t b = 0; b < batch; ++b) {
+    EXPECT_NEAR(got[b], ref[b], 2e-4f) << "sample " << b;
+    diff += std::fabs(got[b] - unprojected[b]);
+  }
+  EXPECT_GT(diff / static_cast<float>(batch), 1e-3f);    // and the projection does matter
+}
+
+TEST(PathAlignAhead, LatencyProjectionAddsHeadingNotAlongTrackError)
+{
+  xt::xtensor<float, 1> px, py, pyaw;
+  straightPath(200, 0.01f, px, py, pyaw);
+  std::vector<bool> valid(199, true);
+  xt::xtensor<float, 2> tx, ty, tyaw;
+  // on the line, 3 cm off parallel, and on the line heading 0.1 rad away; v 0.2 m/s
+  rollouts({{0.0f, 0.0f}, {0.03f, 0.0f}, {0.0f, 0.1f}}, tx, ty, tyaw);
+  paa::Params p;
+  p.trajectory_point_step = 2;
+  p.control_point_x = 0.25f;
+  std::vector<float> c0, c1;
+  const auto none = paa::projection(0.0f, 0.0f, 0.0f, 0.2f, 0.0f, 0.0f);
+  paa::scoreBatch(tx, ty, tyaw, px, py, valid, paa::pathPointsUsed(px, py, 40, 199, 0.25f), p,
+    c0, none);
+  // each rollout's own start pose projected 0.35 s at 0.2 m/s: 0.07 m along its heading
+  std::vector<float> c1b(3);
+  for (size_t b = 0; b < 3; ++b) {
+    const auto pr = paa::projection(tx(b, 0) - 0.01f * std::cos(tyaw(b, 0)),
+      ty(b, 0) - 0.01f * std::sin(tyaw(b, 0)), tyaw(b, 0), 0.2f, 0.0f, 0.35f);
+    paa::scoreBatch(tx, ty, tyaw, px, py, valid,
+      paa::pathPointsUsed(px, py, 40, 199, 0.25f + pr.arc), p, c1, pr);
+    c1b[b] = c1[b];
+  }
+  EXPECT_NEAR(c1b[0], c0[0], 0.003f);   // on the line: the path is matched further along too
+  EXPECT_NEAR(c1b[1], c0[1], 0.003f);   // a lateral offset: unchanged
+  EXPECT_GT(c1b[2], c0[2] + 0.005f);    // a heading error: + about 0.07 m x 0.1 rad
 }
