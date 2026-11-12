@@ -316,6 +316,11 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("gps_quality_covariance", default_value="true",
                               description="gps_gate: GPS covariance by RTK class (fixed "
                                           "tight, float loose, single dropped)."),
+        DeclareLaunchArgument("gps_tilt_compensation", default_value="true",
+                              description="gps_gate: move the fix from the antenna to the "
+                                          "ground point with IMU roll / pitch (2026-11-12)."),
+        DeclareLaunchArgument("gps_tilt_gain", default_value="1.0",
+                              description="gps_gate tilt_gain: antenna height scale (A/B)."),
         DeclareLaunchArgument("localization_monitor", default_value="true",
                               description="Start localization_monitor (/localization/status)."),
         DeclareLaunchArgument("odom_frame", default_value="odom"),
@@ -398,6 +403,12 @@ def generate_launch_description() -> LaunchDescription:
                     "max_position_covariance": _float("max_position_covariance"),
                     "quality_covariance": ParameterValue(
                         LaunchConfiguration("gps_quality_covariance"), value_type=bool),
+                    # 2026-11-12: antenna tilt compensation (roll / pitch / ENU yaw from the
+                    # heading-aligned IMU; height from /tf_static base_link -> gps_link)
+                    "tilt_compensation": ParameterValue(
+                        LaunchConfiguration("gps_tilt_compensation"), value_type=bool),
+                    "tilt_gain": _float("gps_tilt_gain"),
+                    "tilt_imu_topic": LaunchConfiguration("imu_data_topic"),
                     # used_fixes stays at the package default
                     # (GPS/DGPS/RTK-fixed/RTK-float) unless this deployment must run
                     # RTK-fixed-only.
