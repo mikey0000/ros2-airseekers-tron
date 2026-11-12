@@ -576,6 +576,13 @@ downhill at 1 cm/s (field: 3.8 m wheel vs 0.4 m RTK); a 90 deg pivot slides 0.15
 (field 0.15-0.30 m); forward mowing at 0.2 m/s keeps 75 % of its speed and never trips the
 mission's 3x slip check. `/sim/status` adds `roll_deg`, `pitch_deg`, `wheel_dist`, `creep`.
 
+* (2026-11-12) the GNSS antenna sits `gps_antenna_height` (0.324 m) above the ground, so the
+  tilt moves `/fix` (and, with `-l`, the loc_drift map estimate) by h sin(tilt), as on the
+  robot: 5.6 cm downhill at 10 deg roll. gps_gate's tilt compensation removes it (the real
+  node with `localization:=ekf`; with loc_drift the field model mirrors it). Launch
+  `gps_tilt_compensation:=false` keeps the offset (the field before 2026-11-12); flat worlds
+  are unchanged either way (docs/analysis/2026-11-12_row_straightness.md).
+
 `worlds/real_run5_slope.yaml`: real_run5 plus a 10 deg slope over the Area 1 west edge band
 (x <= -4.4, y -2.2..2.6, downhill west = out of the area), which also covers the field's
 BOUNDARY OUT point by the clothesline (-6.45, -1.8), 0.7 m beyond real_run5's older edge.
