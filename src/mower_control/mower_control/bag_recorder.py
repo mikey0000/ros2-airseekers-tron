@@ -73,7 +73,8 @@ from mower_control import bag_ring as br
 # bag ring"): all 73 topics 25-29 % x86 (~46 % on the mower: ratio ~1.7), this list 7.4 % x86
 # (~12 % mower est.) parked, 9-10 % x86 (~15 % mower) with the cmd_vel chain at 20 Hz while
 # driving; the old set measured 31 % x86 while driving. Dropped, with what still covers them:
-#   /imu/data_aligned 100 Hz        -> /tilt/status, /heading_aligner/status, /odometry/*
+#   /imu/data_aligned 100 Hz        -> /imu/data (roll / pitch, raw yaw; since 2026-11-12),
+#                                      /heading_aligner/status (offset), /odometry/*
 #   /mower_base/status 100 Hz       -> /hardware_bridge/status (5 Hz), /mower_sensor_info
 #   /odom 50 Hz, /odometry/gps      -> /odometry/filtered (20 Hz), /mcu/measured_speed, /fix
 #   /tf 30 Hz                       -> /odometry/filtered (odom->base_link) and
@@ -101,6 +102,12 @@ DEFAULT_TOPICS = [
     # localization (20 + 10 Hz)
     '/odometry/filtered', '/odometry/filtered_map', '/tf_static', '/heading_aligner/status',
     '/tilt/status', '/localization/status',
+    # raw IMU, full 100 Hz (2026-11-12 row straightness, docs/analysis/
+    # 2026-11-12_row_straightness.md): the row weave review had only /tilt/status roll at 2 Hz,
+    # too coarse for the ~0.3 Hz roll wobble vs antenna sway fit and the tilt compensation A/B.
+    # ~26 MB per hour zstd-compressed (324 B CDR, ~141 MB/h raw), ~8 % of a core while the full
+    # ring runs; not in the low-power ring.
+    '/imu/data',
     # GPS (10 Hz fix + RTK state)
     '/fix', '/fix_status', '/ntrip/status',
     # mission

@@ -1592,7 +1592,10 @@
     "areaLine": "{{rings}} tours, {{swaths}} bandes, {{length}} m ({{mode}})",
     "areaFailed": "échec : {{message}}",
     "clear": "Effacer l'aperçu",
-    "hide": "Masquer"
+    "hide": "Masquer",
+    "swathsFirst": "Bandes, premier passage",
+    "swathsCross": "Bandes, passage croisé",
+    "swathsLater": "Bandes, passages suivants"
   },
   "mapToolbarMobile": {
     "undock": "Sortir de la base",
@@ -4320,9 +4323,15 @@
     "activeFor": "Tonte de {{area}} avec",
     "custom": "Personnalisé",
     "inherited": "Par défaut",
-    "run": "passage {{run}}/{{runs}}",
+    "run": "Passage {{run}}/{{runs}}",
     "swathWidthDefault": "Par défaut : {{value}} m.",
-    "swathWidthStandard": "Standard selon le disque : {{value}} m."
+    "swathWidthStandard": "Standard selon le disque : {{value}} m.",
+    "runAt": "Passage {{run}}/{{runs}} à {{angle}}°",
+    "runNextAt": ", suivant à {{angle}}°",
+    "startAngle": "Direction de départ",
+    "crossAngle": "Angle de croisement",
+    "crossAngleHint": "Le second passage tourne ses lignes de cet angle par rapport au premier (90° = quadrillage). Avec une direction de départ Auto, seul 90° suit les lignes automatiques ; tout autre angle est compté depuis l'est (0°).",
+    "chipCross": "croisement {{value}}°"
   },
   "startSheet": {
     "title": "Lancer la tonte",

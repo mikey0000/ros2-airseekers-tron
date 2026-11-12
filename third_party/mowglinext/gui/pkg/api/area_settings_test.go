@@ -169,6 +169,29 @@ func TestAreaSettings_PutRejectsOutOfRange(t *testing.T) {
 	}
 }
 
+func TestAreaSettings_CrossAngle(t *testing.T) {
+	// cross reuses alternate_angle_offset_deg as its cross angle; 0 / 180 repeat the
+	// first pass and are refused only together with path_mode cross
+	for _, s := range []map[string]any{
+		{"path_mode": "cross", "alternate_angle_offset_deg": 0.0},
+		{"path_mode": "cross", "alternate_angle_offset_deg": 180.0},
+	} {
+		mock := types.NewMockRosProvider()
+		w, _ := doAreaSettings(t, mock, "PUT", "/api/mowglinext/areas/0/settings", map[string]any{"settings": s})
+		assert.Equalf(t, 400, w.Code, "%v should be rejected", s)
+		assert.Emptyf(t, mock.ServiceCalls, "%v must not reach ROS", s)
+	}
+	for _, s := range []map[string]any{
+		{"path_mode": "cross", "alternate_angle_offset_deg": 45.0},
+		{"path_mode": "cross", "alternate_angle_offset_deg": 90.0, "mow_angle_deg": -1.0},
+		{"path_mode": "alternate", "alternate_angle_offset_deg": 0.0},
+		{"path_mode": "cross"},
+		{"path_mode": "cross", "alternate_angle_offset_deg": nil},
+	} {
+		assert.NoErrorf(t, validateAreaSettings(s), "%v should be accepted", s)
+	}
+}
+
 func TestAreaSettings_BadIndex(t *testing.T) {
 	for _, idx := range []string{"-1", "255", "abc"} {
 		w, _ := doAreaSettings(t, types.NewMockRosProvider(), "GET", "/api/mowglinext/areas/"+idx+"/settings", nil)

@@ -326,7 +326,6 @@ controller_server:
         trajectory_point_step: 3
         threshold_to_consider: 0.5
         offset_from_furthest: 20
-        use_path_orientations: false
         control_point_x: 0.25
       PathFollowCritic:
         enabled: true
@@ -415,7 +414,27 @@ controller_server:
       transform_tolerance: 0.5
       enforce_path_inversion: false
       critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignAheadCritic",
-                "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic", "WheelFloorCritic"]
+                "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic", "WheelFloorCritic",
+                "RowEntryCritic"]
+      # Row entry speed hold (2026-11-12, mowgli_nav2_plugins row_entry.hpp,
+      # docs/analysis/2026-11-12_row_straightness.md): a new path that starts with a >= 1.0 m
+      # straight row while the heading is > 2.6 deg off it is driven at <= 0.10 m/s until the
+      # heading is within 2.6 deg, then the cap rises at 0.1 m/s^2 and lets go at 0.30 (the
+      # MCU clamp). At most 3 m. Field: the pivot handed over 8.3 deg rms off and MPPI was at
+      # 0.20 m/s at once; the first 1.5 m were 3.3 cm rms. 0.10 m/s keeps the inner wheel
+      # above the 0.06 floor up to |w| 0.2. Revert: drop it from the list (or enabled: false).
+      RowEntryCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 30.0
+        entry_speed: 0.10
+        heading_tol_deg: 2.6
+        ramp_accel: 0.10
+        release_speed: 0.30
+        max_entry_m: 3.0
+        row_min_m: 1.0     # < prune_distance (1.2): MPPI's path ends there
+        row_straight_tol_deg: 6.0
+        new_goal_m: 0.25   # goal jump per cycle that marks a new path (the goal creeps with map -> odom)
       ConstraintCritic:
         enabled: true
         cost_power: 1
@@ -442,15 +461,19 @@ controller_server:
         trajectory_point_step: 2
         threshold_to_consider: 0.3
         offset_from_furthest: 4
-        use_path_orientations: false
-        control_point_x: 0.25
+        # 2026-11-06 damping study (docs/analysis/2026-11-06_mppi_damping.md): 0.25 -> 0.30
+        # with trim_tau_s 5 -> 20 raised the fitted heading gain 1.13 -> 1.46 (sim -l).
+        control_point_x: 0.30
+        # latency projection: rollouts scored from the pose 0.2 s ahead at the measured (v, w)
+        # (0.1 s fix latency + ~0.1 s field track lag); this critic only, 0 = off
+        latency_s: 0.2
         # path trim (2026-11-03 slope sim, mowgli_nav2_plugins path_trim.hpp): MPPI has no
         # integral action, a steady downhill creep became a steady cross-track offset. A slow
-        # integral of the cross-track error (tau 5 s, |trim| <= 0.10 m, winds only on the
+        # integral of the cross-track error (tau 20 s, |trim| <= 0.10 m, winds only on the
         # path and moving) plus k_roll x sin(roll) x |v| from /imu/data shift the alignment
         # target upslope. Flat ground: roll 0, no persistent error -> no shift.
         trim_enabled: true
-        trim_tau_s: 5.0
+        trim_tau_s: 20.0   # was 5: a 5 s integral sat in the ~8 s weave band (2026-11-06)
         trim_max_m: 0.10
         trim_max_err_m: 0.30
         trim_min_speed: 0.05
@@ -458,6 +481,11 @@ controller_server:
         k_roll: 1.0
         roll_topic: "/imu/data"
         roll_timeout_s: 1.0
+        # 2026-11-12 row straightness (docs/analysis/2026-11-12_row_straightness.md): k_roll
+        # read the raw roll every cycle, so the 0.6 deg in-band roll wobble moved the target
+        # (~-5 % weave). The feed-forward is for the steady slope creep: first-order low-pass,
+        # tau 3 s (0 = raw).
+        roll_tau_s: 3.0
       PathFollowCritic:
         enabled: true
         cost_power: 1

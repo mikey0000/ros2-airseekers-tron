@@ -205,6 +205,8 @@ def _localization(context):
             'datum_lon': LaunchConfiguration('datum_lon'),
             'datum_yaw': '0.0',
             'heading_offset_file': os.path.join(maps_dir, 'heading_offset.yaml'),
+            'gps_tilt_compensation': LaunchConfiguration('gps_tilt_compensation'),
+            'gps_tilt_gain': LaunchConfiguration('gps_tilt_gain'),
         }.items())]
 
 
@@ -272,6 +274,10 @@ def generate_launch_description() -> LaunchDescription:
         arg('field_slip_std', '0.0', 'sim (loc_model field): per-wheel turf slip noise std when '
             'disturb_slip_std is 0 (0 = off, the default; 0.05 = the 2026-11-06 field fit).'),
         arg('field_slip_tau_s', '0.3', 'sim (loc_model field): correlation time of that slip (s).'),
+        arg('gps_tilt_compensation', 'true', '2026-11-12: gps_gate antenna tilt compensation '
+            '(localization:=ekf: the real gps_gate; loc_drift field model: its stand-in). The '
+            'sim antenna is gps_antenna_height (0.324 m) up, so body tilt moves /fix.'),
+        arg('gps_tilt_gain', '1.0', 'gps_gate tilt_gain (antenna height scale).'),
         arg('urdf_file', default_urdf, 'xacro robot description.'),
         arg('log_level', 'info', 'Log level of the sim node.'),
         arg('compose_nodes', 'true', 'Python node hosts (docs/analysis/2026-10-22_memory_footprint.md '
@@ -308,6 +314,10 @@ def generate_launch_description() -> LaunchDescription:
                                              value_type=float),
             'field_slip_tau_s': ParameterValue(LaunchConfiguration('field_slip_tau_s'),
                                                value_type=float),
+            'gps_tilt_compensation': ParameterValue(
+                LaunchConfiguration('gps_tilt_compensation'), value_type=bool),
+            'gps_tilt_gain': ParameterValue(LaunchConfiguration('gps_tilt_gain'),
+                                            value_type=float),
             'rear_marker_size': ParameterValue(LaunchConfiguration('rear_marker_size'),
                                                value_type=float),
             'rear_marker_offset': ParameterValue(LaunchConfiguration('rear_marker_offset'),

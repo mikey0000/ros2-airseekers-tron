@@ -5,6 +5,8 @@ import {useThemeMode} from "../../theme/ThemeContext.tsx";
 import {
     AREA_SETTINGS_RANGES,
     type AreaSettings,
+    CROSS_ANGLE_RANGE,
+    crossAngleRepeatsRows,
     MOW_ANGLE_AUTO,
     ROUTE_ORDERS,
     TURN_TYPES,
@@ -66,6 +68,9 @@ export const AreaSettingsForm: React.FC<{
     const R = AREA_SETTINGS_RANGES;
     const auto = value.mow_angle_deg < 0;
     const c = (k: keyof AreaSettings) => (overridden ? overridden.has(k) : undefined);
+    const cross = value.path_mode === "cross";
+    // one key for both modes: alternate = turn per mow, cross = the second pass's turn
+    const offsetRange = cross ? CROSS_ANGLE_RANGE : R.alternate_angle_offset_deg;
 
     return (
         <div data-testid="area-settings-form">
@@ -79,10 +84,15 @@ export const AreaSettingsForm: React.FC<{
 
             <Field label={t("areaSettings.pathMode")} custom={c("path_mode")}>
                 <PathModeCards value={value.path_mode} disabled={disabled}
-                               onChange={(m) => set("path_mode", m)}/>
+                               onChange={(m) => onChange({
+                                   ...value, path_mode: m,
+                                   // an alternate step of 0 / 180 is no cross: start cross at 90
+                                   ...(m === "cross" && crossAngleRepeatsRows(value.alternate_angle_offset_deg)
+                                       ? {alternate_angle_offset_deg: 90} : {}),
+                               })}/>
             </Field>
 
-            <Field label={t("areaSettings.mowAngle")} custom={c("mow_angle_deg")}
+            <Field label={t(cross ? "areaSettings.startAngle" : "areaSettings.mowAngle")} custom={c("mow_angle_deg")}
                    value={auto ? t("areaSettings.auto") : `${Math.round(value.mow_angle_deg)}°`}
                    hint={t("areaSettings.mowAngleHint")}>
                 <div style={{display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap"}}>
@@ -132,11 +142,13 @@ export const AreaSettingsForm: React.FC<{
                 )}
             </Field>
 
-            {value.path_mode === "alternate" && (
-                <Field label={t("areaSettings.alternateOffset")} custom={c("alternate_angle_offset_deg")} value={`${value.alternate_angle_offset_deg}°`}
-                       hint={t("areaSettings.alternateOffsetHint")}>
-                    <Slider min={R.alternate_angle_offset_deg.min} max={R.alternate_angle_offset_deg.max}
-                            step={R.alternate_angle_offset_deg.step} disabled={disabled}
+            {(cross || value.path_mode === "alternate") && (
+                <Field label={t(cross ? "areaSettings.crossAngle" : "areaSettings.alternateOffset")}
+                       custom={c("alternate_angle_offset_deg")} value={`${value.alternate_angle_offset_deg}°`}
+                       hint={t(cross ? "areaSettings.crossAngleHint" : "areaSettings.alternateOffsetHint")}>
+                    <Slider data-testid="angle-offset" min={offsetRange.min} max={offsetRange.max}
+                            step={offsetRange.step} disabled={disabled}
+                            marks={cross ? {45: "45°", 90: "90°", 135: "135°"} : undefined}
                             value={value.alternate_angle_offset_deg}
                             onChange={(v: number) => set("alternate_angle_offset_deg", v)}/>
                 </Field>

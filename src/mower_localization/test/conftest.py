@@ -125,7 +125,24 @@ def _install_rclpy_shim() -> None:
     sensor_msgs_msg = types.ModuleType("sensor_msgs.msg")
     sensor_msgs_msg.NavSatFix = NavSatFix
     sensor_msgs_msg.NavSatStatus = NavSatStatus
+
+    # sensor_msgs/Imu + tf2_msgs/TFMessage: gps_gate's tilt compensation inputs (2026-11-12).
+    class Imu:
+        def __init__(self):
+            self.header = Header()
+            self.orientation = types.SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)
+            self.orientation_covariance = [0.0] * 9
+
+    class TFMessage:
+        def __init__(self, transforms=None):
+            self.transforms = list(transforms or [])
+
+    sensor_msgs_msg.Imu = Imu
     sensor_msgs.msg = sensor_msgs_msg
+    tf2_msgs = types.ModuleType("tf2_msgs")
+    tf2_msgs_msg = types.ModuleType("tf2_msgs.msg")
+    tf2_msgs_msg.TFMessage = TFMessage
+    tf2_msgs.msg = tf2_msgs_msg
 
     # std_msgs/String: gps_gate's /fix_status input (2026-10-09 quality covariance).
     class String:
@@ -144,6 +161,8 @@ def _install_rclpy_shim() -> None:
     qos_mod.HistoryPolicy = types.SimpleNamespace(KEEP_LAST=1)
     qos_mod.ReliabilityPolicy = types.SimpleNamespace(
         RELIABLE=1, BEST_EFFORT=2)
+    qos_mod.QoSDurabilityPolicy = types.SimpleNamespace(VOLATILE=2, TRANSIENT_LOCAL=1)
+    qos_mod.qos_profile_sensor_data = {}
 
     sys.modules.update(
         {
@@ -154,6 +173,8 @@ def _install_rclpy_shim() -> None:
             "sensor_msgs.msg": sensor_msgs_msg,
             "std_msgs": std_msgs,
             "std_msgs.msg": std_msgs_msg,
+            "tf2_msgs": tf2_msgs,
+            "tf2_msgs.msg": tf2_msgs_msg,
         }
     )
 

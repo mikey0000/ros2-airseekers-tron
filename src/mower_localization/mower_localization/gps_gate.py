@@ -50,6 +50,21 @@ working.
    /fix_status the class falls back to the NavSatStatus (GBAS = float).
    ``quality_covariance: false`` restores the pass-through behaviour.
 
+5. 2026-11-12 (``tilt_compensation``, default true): the fix is moved from the antenna to
+   the ground point under it before navsat_transform_node sees it
+   (:mod:`mower_localization.gps_tilt`). The antenna is ~0.324 m above the ground and the
+   2D EKF has no roll / pitch, so roll wobble swung the reported position sideways and the
+   row controller steered against it (docs/analysis/2026-11-12_row_straightness.md).
+   Roll / pitch / ENU yaw come from ``tilt_imu_topic`` (/imu/data_aligned: heading_aligner's
+   output, gravity roll / pitch + ENU yaw), the sample nearest ``stamp - tilt_fix_latency_s``
+   (the UM960 driver stamps at receive time), and none older than ``tilt_max_age_s`` from it:
+   otherwise the fix passes uncompensated (counted, warned). Samples whose yaw sigma
+   (orientation_covariance[8], heading_aligner's alignment quality) is above
+   ``tilt_max_yaw_sigma_deg`` are not used: an unaligned yaw would point the shift wrong.
+   Height: ``tilt_antenna_height`` when > 0, else base_link -> fix frame z from /tf_static + ``tilt_axle_height`` (wheel
+   radius), else 0.324 until /tf_static arrives; scaled by ``tilt_gain`` (field fit ~1.3,
+   A/B). Only the horizontal position changes (navsat zero_altitude).
+
 Parameters
 ----------
 ``input_topic``            ``/fix``       raw NavSatFix from um960_gps_driver
@@ -58,6 +73,15 @@ Parameters
 ``max_position_covariance``  ``100.0``    m^2 (10 m sigma); ``0`` disables
 ``used_fixes``             ``[STATUS_FIX, STATUS_DGPS_FIX, STATUS_RTK_FIX,
                             STATUS_RTK_FLOAT]``
+``tilt_compensation``      ``true``       item 5; false = the fix passes unmoved
+``tilt_imu_topic``         ``/imu/data_aligned``
+``tilt_antenna_height``    ``0.0``        m above ground; 0 = TF z + ``tilt_axle_height``
+``tilt_axle_height``       ``0.11``       m, wheel radius (URDF wheel_radius)
+``tilt_base_frame``        ``base_link``
+``tilt_gain``              ``1.0``        height scale (field regression ~1.3: A/B)
+``tilt_fix_latency_s``     ``0.1``        fix epoch = stamp - this
+``tilt_max_age_s``         ``0.1``        max |IMU stamp - fix epoch|
+``tilt_max_yaw_sigma_deg`` ``20.0``       unaligned yaw: no compensation
 
 QoS is reliable, KEEP_LAST(10) on both sides: it matches the UM960
 driver's ``/fix`` profile, and ``navsat_transform_node`` subscribes
@@ -69,6 +93,7 @@ Run:
     ros2 run mower_localization gps_gate
 """
 
+import math
 import time
 from typing import List, Optional
 
@@ -78,6 +103,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 from std_msgs.msg import String
 
+from mower_localization import gps_tilt
 from mower_localization import rtk_quality as rq
 
 # NavSatStatus values (sensor_msgs/msg/NavSatStatus, ROS 2 Jazzy):
@@ -156,6 +182,19 @@ def _apply_quality(msg: NavSatFix, rtk_class: Optional[str],
     return None
 
 
+def _apply_tilt(msg: NavSatFix, rpy, height: float) -> None:
+    """Move ``msg``'s latitude / longitude from the antenna to the ground point under it
+    (in place), for the body attitude ``rpy`` (roll, pitch, ENU yaw; rad) and the antenna
+    ``height`` (m, gain included)."""
+    east, north = gps_tilt.tilt_offset_enu(rpy[0], rpy[1], rpy[2], height)
+    msg.latitude, msg.longitude = gps_tilt.shift_latlon(
+        msg.latitude, msg.longitude, -east, -north)
+
+
+def _stamp_s(stamp) -> float:
+    return float(stamp.sec) + 1e-9 * float(getattr(stamp, 'nanosec', 0))
+
+
 def _max_horizontal_covariance(msg: NavSatFix) -> Optional[float]:
     if msg.position_covariance_type == NavSatFix.COVARIANCE_TYPE_UNKNOWN:
         return None
@@ -198,6 +237,30 @@ class GpsGateNode(Node):
         self._rtk_class: Optional[str] = None
         self._rtk_t: Optional[float] = None
 
+        # 2026-11-12: antenna tilt compensation (docstring item 5).
+        self.declare_parameter("tilt_compensation", True)
+        self.declare_parameter("tilt_imu_topic", "/imu/data_aligned")
+        self.declare_parameter("tilt_antenna_height", 0.0)
+        self.declare_parameter("tilt_axle_height", gps_tilt.AXLE_HEIGHT_M)
+        self.declare_parameter("tilt_base_frame", "base_link")
+        self.declare_parameter("tilt_gain", 1.0)
+        self.declare_parameter("tilt_fix_latency_s", 0.1)
+        self.declare_parameter("tilt_max_age_s", 0.1)
+        self.declare_parameter("tilt_max_yaw_sigma_deg", 20.0)
+        self.tilt = bool(self.get_parameter("tilt_compensation").value)
+        self.tilt_height_override = float(self.get_parameter("tilt_antenna_height").value)
+        self.tilt_axle_height = float(self.get_parameter("tilt_axle_height").value)
+        self.tilt_base_frame = str(self.get_parameter("tilt_base_frame").value)
+        self.tilt_gain = float(self.get_parameter("tilt_gain").value)
+        self.tilt_latency = float(self.get_parameter("tilt_fix_latency_s").value)
+        self.tilt_max_age = float(self.get_parameter("tilt_max_age_s").value)
+        self.tilt_max_yaw_var = math.radians(
+            float(self.get_parameter("tilt_max_yaw_sigma_deg").value)) ** 2
+        self._attitude = gps_tilt.AttitudeHistory()
+        self._static_tf = None
+        self.tilt_applied = 0
+        self.tilt_skipped = 0
+
         fix_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
@@ -211,6 +274,8 @@ class GpsGateNode(Node):
             self.create_subscription(
                 String, str(self.get_parameter("fix_status_topic").value),
                 self._on_fix_status, fix_qos)
+        if self.tilt:
+            self._subscribe_tilt_inputs()
 
         # Counters for bring-up; a diagnostics hookup lands with
         # mower_monitoring (mowglinext_baseline.md section 7.2).
@@ -224,6 +289,56 @@ class GpsGateNode(Node):
             % (self.input_topic, self.output_topic, self.min_fix_status,
                self.max_position_covariance,
                sorted(self.used_fixes) if self.used_fixes else "any"))
+
+    # -- tilt compensation -----------------------------------------------------
+    def _subscribe_tilt_inputs(self) -> None:
+        """The attitude stream and /tf_static (antenna height), only when compensating."""
+        from rclpy.qos import QoSDurabilityPolicy, qos_profile_sensor_data
+        from sensor_msgs.msg import Imu
+        from tf2_msgs.msg import TFMessage
+        from mower_localization.static_tf import StaticRotations
+        self.create_subscription(
+            Imu, str(self.get_parameter("tilt_imu_topic").value), self._on_imu,
+            qos_profile_sensor_data)
+        self._static_tf = StaticRotations()
+        self.create_subscription(
+            TFMessage, "/tf_static", self._static_tf.add_msg,
+            QoSProfile(depth=100, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                       history=HistoryPolicy.KEEP_LAST,
+                       reliability=ReliabilityPolicy.RELIABLE))
+
+    def _on_imu(self, msg) -> None:
+        q = msg.orientation
+        if q.x == 0.0 and q.y == 0.0 and q.z == 0.0 and q.w == 0.0:
+            return
+        if msg.orientation_covariance[8] > self.tilt_max_yaw_var:
+            return                       # yaw not aligned to ENU (yet)
+        self._attitude.add(_stamp_s(msg.header.stamp),
+                           *gps_tilt.roll_pitch_yaw(q.x, q.y, q.z, q.w))
+
+    def antenna_height(self, frame_id: str) -> float:
+        """Antenna height above the ground for a fix stamped in ``frame_id`` (no gain)."""
+        z = None
+        if self._static_tf is not None and frame_id:
+            t = self._static_tf.translation(self.tilt_base_frame, frame_id)
+            z = None if t is None else t[2]
+        return gps_tilt.antenna_height(z, self.tilt_height_override, self.tilt_axle_height)
+
+    def _compensate_tilt(self, msg: NavSatFix) -> None:
+        """Move the fix to the ground point (docstring item 5); uncompensated when no
+        attitude sample is close enough to the fix epoch."""
+        rpy = self._attitude.at(_stamp_s(msg.header.stamp) - self.tilt_latency,
+                                self.tilt_max_age)
+        if rpy is None:
+            self.tilt_skipped += 1
+            self.get_logger().warn(
+                "tilt compensation: no aligned %s sample within %.2f s of the fix: "
+                "passing it uncompensated" % (self.get_parameter("tilt_imu_topic").value,
+                                              self.tilt_max_age),
+                throttle_duration_sec=WARN_PERIOD_S)
+            return
+        _apply_tilt(msg, rpy, self.tilt_gain * self.antenna_height(msg.header.frame_id))
+        self.tilt_applied += 1
 
     # -- gating ----------------------------------------------------------------
     def _on_fix_status(self, msg: String) -> None:
@@ -264,6 +379,8 @@ class GpsGateNode(Node):
                 self.get_logger().warn("dropping fix: %s" % reason,
                                        throttle_duration_sec=WARN_PERIOD_S)
                 return
+        if self.tilt:
+            self._compensate_tilt(msg)
         self.passed += 1
         self.fix_pub.publish(msg)
 

@@ -84,13 +84,15 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 # ---------------------------------------------------------------------------
-# MPPI critic plugins (2026-10-15): WheelFloorCritic (+ PathAlignAheadCritic 2026-10-29), own library so the goal
+# MPPI critic plugins (2026-10-15): WheelFloorCritic (+ PathAlignAheadCritic 2026-10-29,
+# RowEntryCritic 2026-11-12), own library so the goal
 # checker library does not link nav2_mppi_controller.
 # ---------------------------------------------------------------------------
 
 add_library(mowgli_mppi_critics SHARED
   src/wheel_floor_critic.cpp
   src/path_align_ahead_critic.cpp
+  src/row_entry_critic.cpp
 )
 target_include_directories(mowgli_mppi_critics
   PUBLIC
@@ -194,6 +196,12 @@ if(BUILD_TESTING)
     test/test_path_trim.cpp
   )
   target_link_libraries(test_path_trim mowgli_mppi_critics)
+
+  # Row entry speed hold (2026-11-12): row detection, hold / ramp / release, batch cost.
+  ament_add_gtest(test_row_entry
+    test/test_row_entry.cpp
+  )
+  target_link_libraries(test_row_entry mowgli_mppi_critics)
 
   # FTC row law (2026-11-05): path geometry, carrot, PID, row gate, closed loop.
   ament_add_gtest(test_ftc_row_law

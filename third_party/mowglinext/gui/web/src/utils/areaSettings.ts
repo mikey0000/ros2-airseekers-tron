@@ -37,6 +37,7 @@ export type AreaSettings = {
     edge_margin_m: number;
     edge_first: boolean;
     repeat: number;
+    /** alternate: the turn per mow. cross: the second pass's turn from the first ("Cross angle"). */
     alternate_angle_offset_deg: number;
     route_order: RouteOrder;
     route_spiral_size: number;
@@ -112,6 +113,14 @@ export const AREA_SETTINGS_RANGES = {
 } as const;
 
 export const MOW_ANGLE_AUTO = -1;
+/** alternate_angle_offset_deg in cross mode: 0 / 180 would mow the first rows again. */
+export const CROSS_ANGLE_RANGE = {min: 5, max: 175, step: 5} as const;
+
+/** True when a cross angle would repeat the first pass's rows (0 or 180 deg). */
+export function crossAngleRepeatsRows(deg: number): boolean {
+    const r = ((deg % 180) + 180) % 180;
+    return Math.min(r, 180 - r) < 1e-6;
+}
 /** Area index addressing the robot-wide defaults. */
 export const DEFAULTS_INDEX = 255;
 
@@ -177,6 +186,8 @@ export function invalidAreaSettingKey(s: Partial<AreaSettings>): AreaSettingsKey
             return k;
         }
     }
+    if (s.path_mode === "cross" && typeof s.alternate_angle_offset_deg === "number"
+        && crossAngleRepeatsRows(s.alternate_angle_offset_deg)) return "alternate_angle_offset_deg";
     return null;
 }
 

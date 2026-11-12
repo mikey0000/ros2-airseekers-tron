@@ -20,12 +20,16 @@ export interface PlanPreviewArea {
     inset_m: number | null;
     mow_angle_deg?: number;
     runs?: number;
+    /** Row direction (deg) of each previewed run; null where the plan had no typed swath. */
+    run_line_angles_deg?: (number | null)[];
     error?: string;
 }
 
 export interface PlanPreviewSegment {
     type: "ring" | "swath";
     points: [number, number][];
+    /** Index of the previewed run (cross: 0 = first pass, 1 = cross pass); absent = 0. */
+    run?: number;
 }
 
 export interface PlanPreviewSummary {
@@ -70,6 +74,8 @@ export function parsePlanPreview(raw: unknown): PlanPreviewSummary | null {
             inset_m: numOrNull(a.inset_m),
             mow_angle_deg: numOrNull(a.mow_angle_deg) ?? undefined,
             runs: numOrNull(a.runs) ?? undefined,
+            run_line_angles_deg: Array.isArray(a.run_line_angles_deg)
+                ? a.run_line_angles_deg.map((v) => numOrNull(v)) : undefined,
             error: typeof a.error === "string" ? a.error : undefined,
         })),
         rings: num(d.rings),
@@ -79,7 +85,8 @@ export function parsePlanPreview(raw: unknown): PlanPreviewSummary | null {
         inset_m: numOrNull(d.inset_m),
         segments: arr(d.segments).filter((s): s is PlanPreviewSegment =>
             !!s && typeof s === "object" && Array.isArray((s as PlanPreviewSegment).points)
-            && ((s as PlanPreviewSegment).type === "ring" || (s as PlanPreviewSegment).type === "swath")),
+            && ((s as PlanPreviewSegment).type === "ring" || (s as PlanPreviewSegment).type === "swath"))
+            .map((s) => ({type: s.type, points: s.points, run: numOrNull(s.run) ?? 0})),
         transits: arr(d.transits).filter((t): t is [number, number][] => Array.isArray(t) && t.length >= 2),
     };
 }

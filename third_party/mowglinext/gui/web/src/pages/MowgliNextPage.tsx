@@ -47,6 +47,7 @@ import {useActiveAreaSettings, useAreaSettingsSupport} from "../hooks/useAreaSet
 import {confirmThenStart} from "../components/areaSettings/confirmStart.ts";
 import {StartMowSheet} from "../components/areaSettings/StartMowSheet.tsx";
 import {AreaSettingsSummary} from "../components/areaSettings/AreaSettingsSummary.tsx";
+import {formatRunLabel} from "../utils/runLabel.ts";
 import {mowingAreaChoices} from "../utils/mapAreaIndex.ts";
 
 /**
@@ -456,6 +457,7 @@ function HeroCard({
 }: HeroCardProps) {
   const {t} = useTranslation();
   const robotName = useRobotName();
+  const runLabel = formatRunLabel(t, activeSettings);
   return (
     <GlassCard variant="glow" padding={0}>
       <div style={{
@@ -504,9 +506,7 @@ function HeroCard({
                   {activeSettings.area
                     ? t('areaSettings.activeFor', {area: activeSettings.area})
                     : t('areaSettings.active')}
-                  {activeSettings.run !== undefined && activeSettings.runs !== undefined && activeSettings.runs > 0 && (
-                    <span data-testid="hero-run"> · {t('areaSettings.run', {run: activeSettings.run, runs: activeSettings.runs})}</span>
-                  )}
+                  {runLabel && <span data-testid="hero-run"> · {runLabel}</span>}
                 </div>
                 <AreaSettingsSummary
                   settings={activeSettings.runMowAngleDeg !== undefined

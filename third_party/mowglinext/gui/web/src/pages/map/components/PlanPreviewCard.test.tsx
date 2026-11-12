@@ -43,6 +43,35 @@ describe('parsePlanPreview', () => {
     });
 });
 
+const crossMsg = {data: JSON.stringify({
+    id: 4, status: 'ok', area: 1, message: '',
+    areas: [{index: 1, name: 'Front', path_mode: 'cross', headland_rings: 1, rings: 2,
+             swaths: 4, length_m: 44, sub_paths: 4, inset_m: 0.29, run_line_angles_deg: [105, 15]}],
+    rings: 2, swaths: 4, length_m: 44, sub_paths: 4, inset_m: 0.29,
+    segments: [{type: 'ring', points: [[0, 0], [1, 0]], run: 0},
+               {type: 'swath', points: [[0, 1], [1, 1]], run: 0},
+               {type: 'swath', points: [[0, 2], [1, 2]], run: 0},
+               {type: 'ring', points: [[0, 0], [1, 0]], run: 1},
+               {type: 'swath', points: [[0, 1], [0, 2]], run: 1},
+               {type: 'swath', points: [[1, 1], [1, 2]], run: 1}],
+    transits: [],
+})};
+
+describe('PlanPreviewCard cross preview', () => {
+    it('keeps each segment run (absent = first pass)', () => {
+        expect(parsePlanPreview(crossMsg)!.segments.map((g) => g.run)).toEqual([0, 0, 0, 1, 1, 1]);
+        expect(parsePlanPreview(okMsg)!.segments.map((g) => g.run)).toEqual([0, 0]);
+        expect(parsePlanPreview(crossMsg)!.areas[0].run_line_angles_deg).toEqual([105, 15]);
+    });
+    it('lists the first and the cross pass with their row angles', () => {
+        render(<PlanPreviewCard summary={parsePlanPreview(crossMsg)!} colors={{...colors, swathCross: '#45d6e8'}}
+                                onClear={vi.fn()} onDismiss={vi.fn()}/>);
+        expect(screen.getByTestId('plan-preview-pass-first')).toHaveTextContent(`${en.planPreview.swathsFirst} (105°)2`);
+        expect(screen.getByTestId('plan-preview-pass-cross')).toHaveTextContent(`${en.planPreview.swathsCross} (15°)2`);
+        expect(screen.queryByTestId('plan-preview-swaths')).toBeNull();
+    });
+});
+
 describe('PlanPreviewCard', () => {
     it('shows counts, length and boundary inset', () => {
         render(<PlanPreviewCard summary={parsePlanPreview(okMsg)!} colors={colors}

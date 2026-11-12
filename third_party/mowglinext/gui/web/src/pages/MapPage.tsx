@@ -16,7 +16,7 @@ import type {Feature} from 'geojson';
 import {FeatureCollection, Position} from "geojson";
 import {useMowerAction} from "../components/MowerActions.tsx";
 import {MapStyle} from "./MapStyle.tsx";
-import {drawLine, itranspose, transpose} from "../utils/map.tsx";
+import {drawLine, itranspose, LINE_SOURCE_MAXZOOM, transpose} from "../utils/map.tsx";
 import {useSettings} from "../hooks/useSettings.ts";
 import {useConfig} from "../hooks/useConfig.tsx";
 import {useEnv} from "../hooks/useEnv.tsx";
@@ -47,7 +47,8 @@ import {MapEditorToolbar} from "./map/components/MapEditorToolbar.tsx";
 import {JoystickOverlay} from "./map/components/JoystickOverlay.tsx";
 import {useIsMobile} from "../hooks/useIsMobile.ts";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
-import {useAreaSettingsSupport} from "../hooks/useAreaSettings.ts";
+import {useActiveAreaSettings, useAreaSettingsSupport} from "../hooks/useAreaSettings.ts";
+import {formatRunLabel} from "../utils/runLabel.ts";
 import {MissionStopControls} from "../components/MissionStopControls.tsx";
 import {useCoverageResumeAvailable} from "../hooks/useCoverageResumeAvailable.ts";
 import {StartMowSheet, type StartSelection} from "../components/areaSettings/StartMowSheet.tsx";
@@ -150,6 +151,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         coveragePath: colors.mint,           // full F2C coverage plan line (mint)
         previewRing: colors.amber,           // plan preview: headland rings
         previewSwath: colors.mint,           // plan preview: swaths
+        previewSwathCross: colors.info,      // plan preview: swaths of the cross pass (cross mode)
         previewTransit: colors.auroraViolet, // plan preview: blade-off transits between sub-paths
         liveMowed: colors.emeraldDeep,       // live progress: plan stretches already mowed
         liveCurrent: colors.info,            // live progress: the sub-path being mowed now
@@ -520,6 +522,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const missionProgress = useMissionProgress(!compact);
     const liveProgress = hasLiveProgress(missionProgress) ? missionProgress : null;
     const liveStretches = useMemo(() => planStretches(missionPlan, liveProgress), [missionPlan, liveProgress]);
+    // cross / repeat: which run of the area is mowed ("Run 1/2 at 105°, next at 15°")
+    const activeSettings = useActiveAreaSettings(!compact && liveProgress !== null);
+    const liveRunLabel = liveProgress ? formatRunLabel(t, activeSettings) : null;
     const liveDrawn = liveStretches.length > 0;
     const trackPose = useTopic<AbsolutePose>("pose", {}, {throttleMs: 1000, enabled: !compact}).data;
     const [track, setTrack] = useState<TrackPoint[]>([]);
@@ -623,7 +628,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 pts.map(([x, y]) => transpose(offsetX, offsetY, datum, y, x));
             previewDrawn.segments.forEach((seg, i) => {
                 const f = new PathFeature(`preview-${seg.type}-${i}`, toLonLat(seg.points),
-                    seg.type === "ring" ? LAYER_COLORS.previewRing : LAYER_COLORS.previewSwath, 2);
+                    seg.type === "ring" ? LAYER_COLORS.previewRing
+                        : (seg.run ?? 0) > 0 ? LAYER_COLORS.previewSwathCross : LAYER_COLORS.previewSwath, 2);
                 newFeatures[f.id] = f;
             });
             previewDrawn.transits.forEach((tr, i) => {
@@ -1393,7 +1399,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         <div style={{...(isMobile ? {position: 'relative', pointerEvents: 'auto', alignSelf: 'stretch'} : {position: 'absolute', zIndex: 15, bottom: desktopCardBottom, left: 16}), maxWidth: isMobile ? undefined : 300, background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow, borderRadius: 14, padding: '8px 12px'}}>
             <PlanPreviewCard
                 summary={planPreview}
-                colors={{ring: LAYER_COLORS.previewRing, swath: LAYER_COLORS.previewSwath, transit: LAYER_COLORS.previewTransit}}
+                colors={{ring: LAYER_COLORS.previewRing, swath: LAYER_COLORS.previewSwath,
+                    swathCross: LAYER_COLORS.previewSwathCross, transit: LAYER_COLORS.previewTransit}}
                 onClear={() => clearPlanPreview(guiApi)}
                 onDismiss={() => setPreviewHiddenId(planPreview.id)}
             />
@@ -1564,7 +1571,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onSelectionChange={() => {}}
                         onOpenDetails={() => {}}
                     />
-                    <Source type={"geojson"} id={"display-features"} data={displayFeatures}>
+                    <Source type={"geojson"} id={"display-features"} maxzoom={LINE_SOURCE_MAXZOOM} data={displayFeatures}>
                         <Layer type={"line"} id={"display-lines"} filter={['==', ['geometry-type'], 'LineString']}
                             layout={{'line-cap': 'round', 'line-join': 'round'}}
                             paint={{
@@ -1822,7 +1829,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onOpenDetails={onOpenDetails}
                     />
                     {/* Display-only features: mower, dock, heading, paths */}
-                    <Source type={"geojson"} id={"display-features"} data={displayFeatures}>
+                    <Source type={"geojson"} id={"display-features"} maxzoom={LINE_SOURCE_MAXZOOM} data={displayFeatures}>
                         <Layer type={"line"} id={"display-lines"} filter={['==', ['geometry-type'], 'LineString']}
                             layout={{'line-cap': 'round', 'line-join': 'round'}}
                             paint={{
@@ -1933,7 +1940,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         </Popup>
                     )}
                     {/* Saved paths (navigation areas drawn as a line): band + centreline. */}
-                    <Source type={"geojson"} id={"saved-paths"} data={pathsCollection}>
+                    <Source type={"geojson"} id={"saved-paths"} maxzoom={LINE_SOURCE_MAXZOOM} data={pathsCollection}>
                         <Layer type={"fill"} id={"saved-path-band"}
                             filter={['==', ['get', 'kind'], 'band']}
                             paint={{"fill-color": LAYER_COLORS.dockHeading, "fill-opacity": 0.18}}/>
@@ -1943,7 +1950,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     </Source>
                     {/* Boundary lines (virtual walls) + name along them: body lines red dashed,
                         blade lines orange dotted (line-dasharray is not data-driven: one layer each). */}
-                    <Source type={"geojson"} id={"boundary-lines"} data={boundaryLinesCollection}>
+                    <Source type={"geojson"} id={"boundary-lines"} maxzoom={LINE_SOURCE_MAXZOOM} data={boundaryLinesCollection}>
                         <Layer type={"line"} id={"boundary-line"}
                             filter={['!=', ['get', 'mode'], 'blade']}
                             layout={{'line-join': 'round'}}
@@ -1958,7 +1965,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             paint={{'text-color': ['get', 'color'], 'text-halo-color': '#ffffff', 'text-halo-width': 1.5}}/>
                     </Source>
                     {/* Boundary line tool live preview: placed vertices + rubber band to the cursor. */}
-                    <Source type={"geojson"} id={"boundary-preview"} data={boundaryTool.previewCollection}>
+                    <Source type={"geojson"} id={"boundary-preview"} maxzoom={LINE_SOURCE_MAXZOOM} data={boundaryTool.previewCollection}>
                         <Layer type={"line"} id={"boundary-preview-line"}
                             filter={['==', ['get', 'kind'], 'line']}
                             paint={{'line-color': BOUNDARY_LINE_COLOR, 'line-width': 3, 'line-opacity': 0.85, 'line-dasharray': [2, 1.5]}}/>
@@ -1967,7 +1974,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             paint={{'circle-radius': 5, 'circle-color': '#ffffff', 'circle-stroke-color': BOUNDARY_LINE_COLOR, 'circle-stroke-width': 2}}/>
                     </Source>
                     {/* Path tool live preview: buffered corridor + centreline. */}
-                    <Source type={"geojson"} id={"path-preview"} data={pathTool.previewCollection}>
+                    <Source type={"geojson"} id={"path-preview"} maxzoom={LINE_SOURCE_MAXZOOM} data={pathTool.previewCollection}>
                         <Layer type={"fill"} id={"path-preview-fill"}
                             filter={['==', ['get', 'kind'], 'corridor']}
                             paint={{"fill-color": LAYER_COLORS.dockHeading, "fill-opacity": 0.25}}/>
@@ -2030,7 +2037,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1.5}}/>
                     </Source>
                     {/* Live mow progress on the plan + the robot's actual track (last 5 min). */}
-                    <Source type={"geojson"} id={"mow-live"} data={liveCollection}>
+                    <Source type={"geojson"} id={"mow-live"} maxzoom={LINE_SOURCE_MAXZOOM} data={liveCollection}>
                         <Layer type={"line"} id={"mow-live-remaining"} filter={['==', ['get', 'kind'], 'remaining']}
                             layout={{'line-cap': 'round', 'line-join': 'round'}}
                             paint={{'line-color': LAYER_COLORS.liveRemaining, 'line-width': 2, 'line-opacity': 0.8}}/>
@@ -2165,7 +2172,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         >
                             {missionStopControls(true)}
                             {isMobile && liveProgress && (
-                                <MowProgressCard compact progress={liveProgress} colors={progressColors}/>
+                                <MowProgressCard compact progress={liveProgress} colors={progressColors}
+                                                 runLabel={liveRunLabel}/>
                             )}
                         </MissionStatusLine>
                     )}
@@ -2193,7 +2201,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 {!isMobile && !editMap && liveProgress && (
                     <div style={{position: 'absolute', zIndex: 15, bottom: desktopCardBottom, left: 16, maxWidth: 300, background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow, borderRadius: 14, padding: '8px 12px'}}>
                         <MowProgressCard progress={liveProgress} colors={progressColors}
-                                         areaName={liveAreaName}/>
+                                         areaName={liveAreaName} runLabel={liveRunLabel}/>
                     </div>
                 )}
                 {!isMobile && previewCard}

@@ -622,8 +622,9 @@ def test_transit_path_align_ahead():
     c = _ctl("FollowPath")
     pa = c["PathAlignAheadCritic"]
     assert "PathAlignAheadCritic" in c["critics"] and "PathAlignCritic" not in c["critics"]
-    assert pa["use_path_orientations"] is False
+    assert "use_path_orientations" not in pa          # not a PathAlignAheadCritic key
     assert 0.1 <= pa["control_point_x"] <= 0.4
+    assert pa.get("latency_s", 0.0) == 0.0            # transit: no latency projection
     assert pa["max_path_occupancy_ratio"] <= 0.1      # deviate-and-rejoin around obstacles
     assert c["vx_max"] <= 0.3
 
@@ -639,8 +640,13 @@ def test_mppi_coverage_controllers():
     pa = c["PathAlignAheadCritic"]
     assert "PathAlignAheadCritic" in c["critics"] and "PathAlignCritic" not in c["critics"]
     assert pa["cost_weight"] >= 3 * c["PathFollowCritic"]["cost_weight"]
-    assert pa["use_path_orientations"] is False
+    assert "use_path_orientations" not in pa          # not a PathAlignAheadCritic key
     assert 0.1 <= pa["control_point_x"] <= 0.4
+    # 2026-11-06 damping study: the trim integral must stay slow against the ~8 s weave
+    # (tau 5 s cost about 20 % of the heading damping); the latency projection covers the
+    # 0.1 s fix latency + the ground-track lag, not more (docs/analysis/2026-11-06_mppi_damping.md)
+    assert pa["trim_tau_s"] >= 10.0
+    assert 0.0 <= pa.get("latency_s", 0.0) <= 0.5
     r = _ctl("FollowCoveragePathReverseMPPI")
     assert r["vx_max"] == 0.0 and -0.15 <= r["vx_min"] < 0.0      # backwards only, slow
     assert "PreferForwardCritic" not in r["critics"]

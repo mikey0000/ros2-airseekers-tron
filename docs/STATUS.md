@@ -1937,3 +1937,170 @@ repeated edge skips there (`analysis/2026-11-11_west_edge_stuck.md`).
 - `boundary_spot_window_s` 600 (owner decision).
 
 Sim worlds: `owner_area3_edge1111` and `owner_area3_edge1111_inside`.
+
+## Cross pattern: cross angle, run label, cross pass in the preview (2026-11-11, branch ws/cross1111, unit + GUI tests; sim pending)
+
+Owner report: with the pattern set to cross they do not see the second pass at the other angle,
+and they want a start angle and a crossover angle.
+
+**What was there.** The mission already mows cross as two runs per repeat (`_build_runs`), the
+second at +90 deg (on an AUTO angle via the bridge's `perpendicular` re-plan), and moves to run 2
+when run 1 finishes cleanly (`outcome.py`). But:
+- `~/mow_plan` only ever holds the current run's plan, so the live map shows one row set.
+- On AUTO both runs report `run_mow_angle_deg` -1, so nothing in the GUI showed which run was
+  being mowed or at which angle. Only the dashboard hero showed "run n/m", and the map didn't.
+- The preview (2026-10-22 fix) plans both row sets but draws them in one colour.
+- A run 1 that ends with failed or blocked stretches goes to the next area without run 2
+  (`outcome.py`: the run index is kept, and the next START resumes run 1). In the field that
+  looks like "no second pass": the 2026-11-11 mow of area 3 ended run 1 at 99.3 % with 1 stretch
+  blocked by obstacles and docked. Owner decision 2026-11-11: when a run ends with only
+  obstacle-blocked stretches and another run (cross / repeat) is left, go on to the next run,
+  which mows the same ground again; the blocked stretches are logged (incident
+  `run_blocked_continue`) and dropped. Failed sub-paths still end the area as before, and the
+  last run's blocked stretches still end it MOWING_INCOMPLETE.
+
+**Changes.**
+- Settings: cross turns run 2 by `alternate_angle_offset_deg` (one key for both modes, so no
+  new key; default 90 gives today's behaviour). The GUI shows "Start direction" and "Cross
+  angle" (5-175) in cross mode, and "Angle change per mow" in alternate. A cross angle of 0 / 180
+  is refused by the GUI and the Go backend, and the mission takes it as 90 with a warning. On
+  AUTO only 90 uses the perpendicular flag; other angles are measured from 0 deg, as in
+  alternate. Bridge unchanged: it already handles the flag only as +90.
+- Mission: `run_line_angles_deg` on `~/active_area_settings` gives the row direction of every
+  run: a fixed angle as set, an auto one from the first planned swath. It is re-published when
+  a plan arrives. Preview segments carry `run`, and each area carries `run_line_angles_deg`.
+- GUI: "Run 1/2 at 105°, next at 15°" on the map progress card, the phone progress bar and the
+  hero. The preview draws cross-pass swaths in the info colour and lists both passes with their
+  angles.
+- Not done: the upcoming run's lines during a live mow. Run 2 is planned only when it starts,
+  and planning it ahead would mean a second planner goal mid-mow on the shared
+  coverage_server parameters.
+
+Tests: mission `test_cross_*`, `test_run_line_angles_*`,
+`test_active_settings_report_every_run_row_angle_on_auto`, preview run tags; Go
+`TestAreaSettings_CrossAngle`; vitest `AreaSettingsForm.test.tsx`, `runLabel.test.ts`,
+MowProgressCard / PlanPreviewCard / areaSettings cases. `scripts/ci_test.sh` PASS. Go and vitest
+failures are the same as on master (12 Go, 3 vitest under full-suite load).
+
+Sim world `src/mower_sim/worlds/real_run5_cross.yaml` (Area 1 on cross, AUTO + 90). Gate run
+pending (the host was not idle):
+`SIM_GATE_OUT=../simout_cross1111 ./scripts/sim_gate.sh -w src/mower_sim/worlds/real_run5_cross.yaml -n cross-l-s1 -l -x 3 -s 1 -t 4000`.
+
+## Row weave: MPPI heading damping and latency compensation (2026-11-06, ws/damp1106, merged to master 2026-11-12; field tested)
+
+Details: `analysis/2026-11-06_mppi_damping.md`. The coverage MPPI (`FollowCoveragePathMPPI`,
+plain MPPI while FTCRowController stays off) gets more heading damping from its own critic,
+`PathAlignAheadCritic`:
+- **Values:** `control_point_x` 0.25 -> 0.30 m and `trim_tau_s` 5 -> 20 s. The 5 s trim integral
+  sat in the ~8 s weave band and cost about 20 % of the heading damping. The roll feed-forward
+  is unchanged.
+- **Latency projection:** a new key, `latency_s: 0.2`. Each rollout is scored as if it started
+  from the pose 0.2 s ahead at the measured (v, w): the 0.1 s fix latency plus the field's
+  ~0.1 s track lag. The projection is in this critic only. Collision (CostCritic), the trim
+  and the other critics keep the real pose.
+- **A6:** `use_path_orientations` is removed from PathAlignAheadCritic (always false; the
+  2026-10-28 retune 6a1). The transit block keeps `latency_s` 0.
+- **Tried, not kept:** PathAngleCritic and PathFollow weights (no row effect / slower rows,
+  offline emulation), and `wz_std` 0.15 (lower fitted gains, a failed).
+- **Revert:** the three values (0.25, 5, 0), each independent.
+
+Sim, `-l -x 3 -s 1`, master -> branch (FTC for reference). Fitted gains are the diagnosis's
+`fit.py` (`w = -Ky e - Kpsi psi`):
+
+| | real_run5 | owner_far |
+|---|---|---|
+| Fitted Ky / Kpsi | 3.22 / 1.13 -> 2.79 / 1.36 | 3.23 / 1.13 -> 2.73 / 1.31 |
+| MPPI residual r (rad/s) | 0.0147 -> 0.0093 | 0.0167 -> 0.0110 |
+| In-band lateral rms (cm) | 0.84 -> 0.60 (FTC 0.45) | 0.96 -> 0.66 (FTC 0.47) |
+| w band rms | 0.031 -> 0.016 | 0.033 -> 0.019 |
+| Row XTE p90 (cm) | 2.79 -> 2.38 | 2.66 -> 2.12 |
+| e max (m) | 0.091 -> 0.125 | 0.181 FAIL -> 0.139 |
+| Arc p99 (m) | 0.050 -> 0.055 | 0.048 -> 0.044 |
+| Row speed (m/s) | 0.21 -> 0.20 | 0.21 -> 0.21 |
+| Verdict | FAIL (i) -> FAIL (i) | FAIL (e, i) -> PASS |
+
+- **b / STUCK:** 0 / 0 everywhere.
+- **Cut:** 97.0 -> 97.7 % and 99.2 -> 99.4 %.
+- **MOWING time:** +3-4 %, all from the newer plan's extra sub-path / pivots. The row speed is
+  unchanged.
+
+**Slope world (`real_run5_slope -d -s 2 -x 3`, note section 7): V2 regressed; cause found and
+fixed in the mission.**
+- **What V2 did.** It tripped the hard boundary once, with 1 fallback nav and 3 emergency
+  ticks. It had 1462 samples > 0.10 m outside against master's 349; a master-equivalent
+  rerun gave 426. The slope-side pivots started 0.16 m off their vertex (master 0.08 m), and
+  an off-vertex pivot drifts downhill out of the area.
+- **Cause (note 7.6).** The mission stamped each FollowPath path with its send time.
+  controller_server transforms the goal into odom with that stamp on every cycle, so the goal
+  checker judged the vertex where map -> odom put it at the send time, for up to 10 s (the TF
+  buffer). On the slope odom slides 0.15-0.2 m off map within a leg: the robot drove over the
+  vertex (0.005-0.065 m) and the leg ended 0.2-0.47 m past it on the passed-wide rule. MPPI
+  restamps the path itself, so only the checker was stale. Master has the same bug; V2's
+  steeper crossings after a drifted pivot made the miss longer. Found with one logged run.
+- **Fix:** `mission_node._path` stamps the path 0 (tf2: latest transform). The V2d slope
+  schedule (3 keys, `tuningAt`) is removed again (A6): with the fix it was not needed.
+- **Result** (one run each):
+
+| | master | V2 | V2d | **V2 + fix** |
+|---|---|---|---|---|
+| slope a max / samples | 0.210 / 349 (master-eq 0.214 / 426) | 0.287 / 1462 | 0.313 / 975 (rerun 0.233 / 520) | **0.197 / 490** |
+| slope b / d fallback / f | 0 / 0 / 0 | 1 / 1 / 3 | 0 / 0 / 0 | **0 / 0 / 0** |
+| slope-side pivot start, mean (m) | 0.085 | 0.158 | 0.151 | **0.066** |
+| slope h p99 line / arc | 0.419 / 0.633 | 0.569 / 0.673 | 0.412 / 0.652 | **0.408 / 0.610** |
+| slope i side / nose / sweep | 0.343 / 0.368 / 0.372 | 0.463 / 0.486 / 0.497 | 0.318 / 0.382 / 0.387 | **0.409 / 0.385 / 0.368** |
+| real_run5 band rms (cm) / verdict | 0.84 / FAIL (i) | 0.60 / FAIL (i) | 0.55 / PASS | **0.74 / FAIL (i)** |
+| owner_far band rms (cm) / verdict | 0.96 / FAIL (e, i) | 0.66 / PASS | - | **0.68 / FAIL (e 0.155, i)** |
+
+- **Open (owner's call):** two single-run misses. Slope a samples 490 against 349-426 (the
+  unchanged V2d code spread 520-975 across two runs). real_run5 band rms 0.74 against V2's
+  0.60, with V2's fitted gains and owner_far's weave equal to V2's (0.68 / 0.66): read as
+  spread, not rerun.
+
+**Next:**
+1. Merge (the stamp fix also stands alone and helps master on slopes); optionally one
+   real_run5 rerun first.
+2. Deploy, mow once, and run `fit.py` on the bag: fitted Kpsi above about 1.3 (11-04: 1.08)
+   and r below 0.026. Compare the `wheel_cal.py` weave p90 against 11-04's 1.91 cm.
+3. Then the FTC A/B against this as the baseline. FTC's inner MPPI reads the same values.
+
+**Field result (2026-11-12, area 4, zigzag run 1, same plan and row speed as the 11-08 master
+mow):** the change is measured on straight plan rows only (577 m vs 563 m). The ranges are 95 % row-bootstrap CIs.
+- Lateral band rms: 1.91 -> 1.27 cm (-34 % [-40, -27]).
+- w band rms: 0.063 -> 0.036 rad/s (-44 %).
+- XTE p90: 3.9 -> 2.9 cm (-26 %).
+- Fitted Kpsi: 0.95 -> 1.21 (+26 % [+19, +34]). The re-implemented fit reads about 7 % low against the old `fit.py`, so this is about 1.30 on its scale.
+- Residual r: 0.027 -> 0.018 (-35 %).
+- Same-row pairing: 60 of 62 rows are lower under V2.
+
+The critic route is working and FTC is not needed for the weave. The `wheel_cal.py` p90
+(1.98 -> 2.04) is biased by its straight selection, which kept only 260 m of the baseline.
+
+## Row straightness: antenna tilt, row entry hold, roll low-pass (2026-11-12, branch ws/rows1112, unit + sim; not field tested)
+
+Follow-up to the 2026-11-12 V2 field review (area 4, 63 rows: settled 1.65 cm rms, first 1.5 m
+3.3 cm, roll-coherent antenna sway). Details and numbers:
+`analysis/2026-11-12_row_straightness.md`.
+
+- **Tilt compensation** (`gps_gate`, default on): each fix is moved from the antenna
+  (~0.324 m up: `/tf_static` gps_link z + 0.11 m wheel radius) to the ground point. It uses
+  `/imu/data_aligned` roll / pitch / ENU yaw at the fix epoch, with a max-age guard and only
+  an aligned heading. Launch `gps_tilt_compensation` (true), `gps_tilt_gain` (1.0; the field
+  regression suggests ~1.3). The sign is checked against the field correlation.
+- **RowEntryCritic** (coverage MPPI): a new path that starts with a straight row while the
+  heading is > 2.6 deg off is held at 0.10 m/s until aligned, then ramped at 0.1 m/s^2. Cause
+  of the entry error, in the sim: the pivot ends short (stop lead 0.10 rad > the coast), plus
+  the join point 0.4 m ahead.
+- **Roll feed-forward low-pass** (`roll_tau_s` 3 s) in PathAlignAheadCritic.
+- **`/imu/data` at 100 Hz in the bag ring**: ~26 MB/h compressed (+45 % on the 11-12 mow pin
+  of ~57 MB/h), ~8 % of a core while mowing.
+- **Sim**: the antenna is 0.324 m up (`gps_antenna_height`), so slopes move `/fix` and the
+  loc_drift estimate, and the field model mirrors the compensation.
+- **Gate** (`-d -l -s 2 -x 3`):
+  - real_run5: FAIL (i only, as before). Entry |d| 2.33 -> 1.97 cm and entry heading 3.51 ->
+    2.97 deg against the master-equivalent run. The master run itself went STUCK at a
+    transit corner pivot.
+  - Slope: with tilt compensation off, the map estimate sits 5.4 cm downhill of the truth;
+    with it on, 0.0-0.3 cm. The rerun with it on was a 0.135 / 65 (V2 master 0.162 / 89). The
+    first run with it on had a post-mow transit STUCK, read as spread.
+- **Next**: field A/B with `gps_tilt_compensation:=false`, the entry metrics per direction, and
+  the roll regression on the 100 Hz `/imu/data`.

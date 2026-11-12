@@ -32,6 +32,18 @@ describe('MowProgressCard', () => {
         expect(screen.getByText('42 %')).toBeInTheDocument();
         expect(screen.getByText('3/12 · 25 min left · 70 m to go')).toBeInTheDocument();
     });
+    it('shows which run of the area is mowed (card and phone bar)', () => {
+        const label = 'Run 1/2 at 105°, next at 15°';
+        const {unmount} = render(<MowProgressCard progress={p} colors={colors} runLabel={label}/>);
+        expect(screen.getByTestId('mow-progress-run').textContent).toBe(label);
+        unmount();
+        render(<MowProgressCard compact progress={p} colors={colors} runLabel={label}/>);
+        expect(screen.getByTestId('mow-progress-run').textContent).toBe(label);
+    });
+    it('shows no run line without a label', () => {
+        render(<MowProgressCard progress={p} colors={colors}/>);
+        expect(screen.queryByTestId('mow-progress-run')).toBeNull();
+    });
     it('hasLiveProgress needs a planned area', () => {
         expect(hasLiveProgress(p)).toBe(true);
         expect(hasLiveProgress({...p, area: -1})).toBe(false);

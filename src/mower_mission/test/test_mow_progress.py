@@ -49,3 +49,18 @@ def test_idle():
     assert mow_progress.plan_geometry(f) is None
     st = mow_progress.progress(f, None, False, None, 0.0)
     assert st['area'] == -1 and st['mowed_segments'] == []
+
+
+def test_plan_geometry_keeps_a_straight_row_straight():
+    # A 105 deg row with 5 cm pose spacing: at 1 cm rounding the published points zigzagged
+    # +-5 mm across the row, which the GUI drew as a wobble. 1 mm keeps them on the line.
+    import math
+    d = math.radians(105.0)
+    row = [(-23.7213 + 0.05 * k * math.cos(d), -8.2717 + 0.05 * k * math.sin(d), d)
+           for k in range(200)]
+    m = SimpleNamespace(area_idx=4, subpaths=[row], run_i=0)
+    pid, _area, subs = mow_progress.plan_geometry(SimpleNamespace(mission=m))
+    nx, ny = -math.sin(d), math.cos(d)
+    off = [(x - row[0][0]) * nx + (y - row[0][1]) * ny for x, y in subs[0]]
+    assert max(abs(o) for o in off) <= 0.0008
+    assert pid == '4:0:1:200:-23.72,-8.27'

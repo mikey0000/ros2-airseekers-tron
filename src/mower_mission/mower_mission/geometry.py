@@ -402,6 +402,20 @@ def is_reverse_subpath(poses):
     return False
 
 
+def swath_angle_deg(segments, types, swath_type=1):
+    """Row direction of a coverage plan: the heading of its first swath segment
+    (PlanCoverage segment_types SEGMENT_SWATH = 1), folded to [0, 180) deg; None without
+    a typed swath."""
+    if len(types) != len(segments):
+        return None
+    for seg, t in zip(segments, types):
+        if int(t) == swath_type and len(seg) >= 2 and dist(seg[0], seg[-1]) > 1e-6:
+            a = math.degrees(math.atan2(float(seg[-1][1]) - float(seg[0][1]),
+                                        float(seg[-1][0]) - float(seg[0][0])))
+            return round(a % 180.0, 1) % 180.0
+    return None
+
+
 def plan_fingerprint(subpaths):
     """64-bit FNV-1a over the millimetre-rounded plan geometry; never 0.
 

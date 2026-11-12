@@ -10,7 +10,10 @@
 //     tau, a persistent offset does not. World frame, so the next swath (driven the other
 //     way) keeps the same upslope direction.
 //   * feed-forward: ff = k_roll x sin(roll) x |v| toward the robot's left (REP-103 roll > 0
-//     = right side down = downhill to the right), 0 without a fresh roll.
+//     = right side down = downhill to the right), 0 without a fresh roll. 2026-11-12: the roll
+//     is low-passed (RollFilter, roll_tau_s, default 3 s): the feed-forward is for the steady
+//     side-slope creep, and the raw /imu/data roll fed the ~0.6 deg in-band roll wobble
+//     straight into the path shift every cycle (docs/analysis/2026-11-12_row_straightness.md).
 //
 // The applied shift of each path point is the component of (o + ff) along that point's
 // path normal. Flat ground: roll 0, no persistent error -> o ~ 0, the critic is unchanged.
@@ -112,6 +115,29 @@ inline void feedForward(float roll, float yaw, float v, const Params & p, float 
   fx = -std::sin(yaw) * b;
   fy = std::cos(yaw) * b;
 }
+
+// First-order low-pass of the roll (rad) fed to feedForward. The first sample, and the first
+// after a gap longer than reset_after_s, start the filter at that sample (no wind-up from a
+// stale value); tau_s <= 0 passes the input through.
+struct RollFilter
+{
+  bool init{false};
+  double t{0.0};
+  float value{0.0f};
+
+  float update(double now, float x, float tau_s, float reset_after_s)
+  {
+    const double dt = now - t;
+    if (!init || tau_s <= 0.0f || dt < 0.0 || dt > reset_after_s) {
+      value = x;
+    } else {
+      value += (1.0f - std::exp(-static_cast<float>(dt) / tau_s)) * (x - value);
+    }
+    init = true;
+    t = now;
+    return value;
+  }
+};
 
 // Shift each of the first n points by the component of (sx, sy) along its path normal.
 template<class Arr>

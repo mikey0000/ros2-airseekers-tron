@@ -9,5 +9,9 @@
       <description>Nav2 PathAlignCritic scored at a control point control_point_x ahead of
         base_link (heading damping for the lagging drive / GNSS fix; 0 = PathAlignCritic).</description>
     </class>
+    <class type="mppi::critics::RowEntryCritic" base_class_type="mppi::critics::CriticFunction">
+      <description>Row entry speed hold: forward speed capped at entry_speed until the heading
+        is within heading_tol of a new straight row, then ramped up (2026-11-12).</description>
+    </class>
   </library>
 </class_libraries>
