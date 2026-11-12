@@ -527,6 +527,21 @@ class NogoMixin:
                                    label=i.obstacle_class or 'static', state='detection'))
         return discs
 
+    def _nogo_inward_offset(self, sp, prog, depth):
+        """How far the robot is inward of lap pose ``prog`` (m, >= 0; 0 without a pose): the
+        detour starts from there instead of pulling it back out onto the lap first."""
+        pose = self.inputs.pose
+        if pose is None or not sp:
+            return 0.0
+        k = max(0, min(prog, len(sp) - 1))
+        a, b = sp[max(0, k - 1)], sp[min(len(sp) - 1, k + 1)]
+        h = math.atan2(b[1] - a[1], b[0] - a[0])
+        nx, ny = -math.sin(h), math.cos(h)
+        q = sp[k]
+        if depth(q[0] + 0.3 * nx, q[1] + 0.3 * ny) < depth(q[0] - 0.3 * nx, q[1] - 0.3 * ny):
+            nx, ny = -nx, -ny
+        return max(0.0, (pose[0] - q[0]) * nx + (pose[1] - q[1]) * ny)
+
     def _nogo_costmap_discs(self, prog, polys):
         """The local costmap's lethal cells (map frame, fresh) inside the allowed region
         (+ 0.05 m), binned to 0.10 m discs: those within nogo_edge_costmap_corridor_m of the
@@ -633,8 +648,11 @@ class NogoMixin:
                                       float(p.nogo_edge_costmap_max_offset_m)),
                   'ramp_m': float(p.nogo_edge_costmap_ramp_m)}
             why = '%s (%d costmap cells)' % (why, len(cm))
+        s0 = self._nogo_inward_offset(sp, prog, depth)
+
         def bend(extra):
             return nogo.edge_detour(sp, prog, discs + cm, inside, depth=depth,
+                                    start_offset_m=s0,
                                     half_width=float(p.robot_width_m) / 2.0,
                                     clearance=float(p.nogo_edge_mark_clearance_m
                                                     if mark_only else p.nogo_edge_clearance_m),

@@ -264,7 +264,7 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
                 clearance: float = 0.10, lookahead_m: float = 3.0, ramp_m: float = 0.8,
                 max_offset_m: float = 1.2, ramp_per_m: float = 0.0, end_offset_m: float = 0.0,
                 clamp: bool = False, along_pad_m: float = 0.0,
-                depth: Optional[Callable] = None):
+                depth: Optional[Callable] = None, start_offset_m: float = 0.0):
     """Bend the edge lap ``poses`` from local ``i0`` inward around the ``discs`` within
     ``lookahead_m``: each pose beside a disc moves toward the area interior until the body
     side clears the disc by ``clearance``, ramped in and out (cosine) over ``ramp_m``.
@@ -284,7 +284,11 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
     marks and the robot met it on the return ramp). ``depth(x, y) -> m`` (inside > 0,
     outside < 0): the interior side is the one whose point 0.3 m off is deeper inside (sim
     2026-11-12: on a lap 0.45 m in, both 0.3 m points are inside and ``inside`` alone took
-    the left side, outward half the time)."""
+    the left side, outward half the time). ``start_offset_m``: the robot is that far inward
+    of the lap already (the end of an earlier detour, merging back): the bend starts there and
+    ramps from it, instead of from the lap (sim 2026-11-12 foliage v3: a detour started on the
+    lap while the robot merged out from 0.10 m inside; the slope swung it 38 deg outward and
+    the nose met the next pot)."""
     if i0 >= len(poses) - 1 or not discs:
         return None
     cum = [0.0]
@@ -354,6 +358,11 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
             ds = abs(ds)
             if ds <= r:
                 off[k] = max(off[k], need[j] * 0.5 * (1.0 + math.cos(math.pi * ds / r)))
+    s0 = min(max(0.0, start_offset_m), max_offset_m)
+    if s0 > 1e-3:
+        for k in range(len(seg)):
+            if cum[k] <= ramp_out:
+                off[k] = max(off[k], s0 * 0.5 * (1.0 + math.cos(math.pi * cum[k] / ramp_out)))
     last = max(k for k in range(len(seg)) if off[k] > 1e-3)
     end = min(len(seg) - 1, last + 1)
     if end_offset_m > 0.0:

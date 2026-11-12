@@ -1015,3 +1015,16 @@ def test_edge_detour_on_an_inner_lap_bends_toward_the_interior_whichever_side_it
     assert res is not None
     assert max(q[1] for q in res[0]) > 0.45 + 0.1                 # bent north (inward)
     assert min(q[1] for q in res[0]) >= 0.45 - 1e-9
+
+
+def test_edge_detour_starts_from_the_robots_inward_offset():
+    """Sim 2026-11-12 (foliage v3): a detour that began on the lap while the robot merged out
+    from 0.10 m inside swung it outward on the slope. The bend starts at the robot's offset."""
+    lap = [(0.05 * k, 0.0, 0.0) for k in range(81)]
+    disc = Z(1.5, -0.3, 0.1, state='mark')
+    plain = nogo.edge_detour(lap, 0, [disc], lambda x, y: y > 0, max_offset_m=0.6)
+    held = nogo.edge_detour(lap, 0, [disc], lambda x, y: y > 0, max_offset_m=0.6,
+                            start_offset_m=0.10)
+    assert plain[0][0][1] < 0.10 - 1e-6
+    assert abs(held[0][0][1] - 0.10) < 1e-6
+    assert all(b[1] >= a[1] - 1e-9 for a, b in zip(plain[0], held[0]))
