@@ -993,3 +993,25 @@ def test_back_up_command_never_drives_forward():
     assert v < 0.0 and w == 0.0
     v, w = HoldsMixin._reverse_cmd((0.0, 0.0, 0.0), (-0.5, 0.1), 0.1)
     assert v < 0.0 and w < 0.0                 # rear swings toward +y: turn clockwise
+
+
+def test_edge_detour_on_an_inner_lap_bends_toward_the_interior_whichever_side_it_is():
+    """Sim 2026-11-12 (foliage v2, lap 2 0.45 m in): both points 0.3 m either side of the lap
+    are inside, so ``inside`` alone took the left side, which is outward when the lap runs
+    clockwise; the detour 'would put the body 0.59 m beyond its limit' and the stretch was
+    skipped. ``depth`` picks the deeper side."""
+    sq = [(0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0)]
+    from mower_mission import body_boundary as bb
+
+    def inside(x, y):
+        return bb.point_outside(x, y, [sq]) <= 0.0
+
+    def depth(x, y):
+        out = bb.point_outside(x, y, [sq])
+        return -out if out > 0.0 else bb.nearest_edge_point(x, y, [sq])[2]
+    lap = [(4.5 - 0.05 * k, 0.45, math.pi) for k in range(81)]   # westward: left is outward
+    disc = Z(3.0, 0.2, 0.15, state='mark')
+    res = nogo.edge_detour(lap, 0, [disc], inside, depth=depth, max_offset_m=0.6)
+    assert res is not None
+    assert max(q[1] for q in res[0]) > 0.45 + 0.1                 # bent north (inward)
+    assert min(q[1] for q in res[0]) >= 0.45 - 1e-9

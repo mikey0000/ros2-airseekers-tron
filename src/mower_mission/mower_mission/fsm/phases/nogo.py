@@ -609,6 +609,13 @@ class NogoMixin:
 
         def inside(x, y):
             return bb.point_outside(x, y, polys) <= 0.0
+
+        def depth(x, y):
+            out = bb.point_outside(x, y, polys)
+            if out > 0.0:
+                return -out
+            e = bb.nearest_edge_point(x, y, polys)
+            return e[2] if e is not None else 0.0
         kw = {}
         mark_only = not cm and discs and all(z.state == 'mark' for z in discs)
         if mark_only:
@@ -627,7 +634,7 @@ class NogoMixin:
                   'ramp_m': float(p.nogo_edge_costmap_ramp_m)}
             why = '%s (%d costmap cells)' % (why, len(cm))
         def bend(extra):
-            return nogo.edge_detour(sp, prog, discs + cm, inside,
+            return nogo.edge_detour(sp, prog, discs + cm, inside, depth=depth,
                                     half_width=float(p.robot_width_m) / 2.0,
                                     clearance=float(p.nogo_edge_mark_clearance_m
                                                     if mark_only else p.nogo_edge_clearance_m),

@@ -263,7 +263,8 @@ def plan_pivot(x: float, y: float, yaw: float, delta: float, discs: Sequence,
 def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width: float = 0.235,
                 clearance: float = 0.10, lookahead_m: float = 3.0, ramp_m: float = 0.8,
                 max_offset_m: float = 1.2, ramp_per_m: float = 0.0, end_offset_m: float = 0.0,
-                clamp: bool = False, along_pad_m: float = 0.0):
+                clamp: bool = False, along_pad_m: float = 0.0,
+                depth: Optional[Callable] = None):
     """Bend the edge lap ``poses`` from local ``i0`` inward around the ``discs`` within
     ``lookahead_m``: each pose beside a disc moves toward the area interior until the body
     side clears the disc by ``clearance``, ramped in and out (cosine) over ``ramp_m``.
@@ -280,7 +281,10 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
     detour came only once the robot was beside the pot). ``along_pad_m``: a disc counts as
     beside the body this much further before / after the body box (the along-track range
     scatter of marks ranged from 2-3 m: the inside world's pot lay 0.5 m later than its
-    marks and the robot met it on the return ramp)."""
+    marks and the robot met it on the return ramp). ``depth(x, y) -> m`` (inside > 0,
+    outside < 0): the interior side is the one whose point 0.3 m off is deeper inside (sim
+    2026-11-12: on a lap 0.45 m in, both 0.3 m points are inside and ``inside`` alone took
+    the left side, outward half the time)."""
     if i0 >= len(poses) - 1 or not discs:
         return None
     cum = [0.0]
@@ -299,7 +303,11 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
         a, b = seg[max(0, k - 1)], seg[min(len(seg) - 1, k + 1)]
         h = math.atan2(b[1] - a[1], b[0] - a[0])
         nx, ny = -math.sin(h), math.cos(h)          # left normal
-        sgn = 1.0 if inside(q[0] + 0.3 * nx, q[1] + 0.3 * ny) else -1.0
+        if depth is not None:
+            sgn = 1.0 if depth(q[0] + 0.3 * nx, q[1] + 0.3 * ny) >= \
+                depth(q[0] - 0.3 * nx, q[1] - 0.3 * ny) else -1.0
+        else:
+            sgn = 1.0 if inside(q[0] + 0.3 * nx, q[1] + 0.3 * ny) else -1.0
         sides.append((nx * sgn, ny * sgn, h))
         if cum[k] > lookahead_m:
             continue
