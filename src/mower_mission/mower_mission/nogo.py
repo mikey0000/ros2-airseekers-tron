@@ -313,7 +313,11 @@ def edge_detour(poses, i0: int, discs: Sequence, inside: Callable, *, half_width
         else:
             sgn = 1.0 if inside(q[0] + 0.3 * nx, q[1] + 0.3 * ny) else -1.0
         sides.append((nx * sgn, ny * sgn, h))
-        if cum[k] > lookahead_m:
+        # a disc within the lookahead is still beside the body box (0.65 m + along_pad_m
+        # ahead of the pose) for poses up to that much further on: hold the bend there too
+        # (sim 2026-11-12 inside v6: a detour started 3 m before the pot, its bend ended at
+        # the 2.5 m lookahead, and the return ramp took the nose into the pot)
+        if cum[k] > lookahead_m + 0.80 + along_pad_m:
             continue
         beside = []
         for z in discs:

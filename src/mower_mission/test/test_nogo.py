@@ -1028,3 +1028,17 @@ def test_edge_detour_starts_from_the_robots_inward_offset():
     assert plain[0][0][1] < 0.10 - 1e-6
     assert abs(held[0][0][1] - 0.10) < 1e-6
     assert all(b[1] >= a[1] - 1e-9 for a, b in zip(plain[0], held[0]))
+
+
+def test_edge_detour_holds_the_bend_past_a_disc_near_the_end_of_the_lookahead():
+    """Sim 2026-11-12 inside v6: a proactive detour started 3 m before the pot; need was only
+    computed up to the 2.5 m lookahead, so the return ramp began before the pot and the nose
+    met it. The bend holds while the disc is beside the body."""
+    lap = [(0.05 * k, 0.0, 0.0) for k in range(121)]
+    disc = Z(3.0, -0.35, 0.2, state='mark')
+    res = nogo.edge_detour(lap, 0, [disc], lambda x, y: y > 0, max_offset_m=0.6,
+                           lookahead_m=2.5, clearance=0.2)
+    need = 0.2 + 0.235 + 0.2 - 0.35
+    poses = res[0]
+    at = [q[1] for q in poses if 2.6 <= q[0] <= 3.15]   # the disc beside the body box
+    assert at and min(at) >= need - 1e-6, (min(at), need)
