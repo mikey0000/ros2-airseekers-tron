@@ -454,7 +454,9 @@ class PivotsMixin:
 
     def _edge_block_tick(self):
         """collision_monitor STOP held edge_blocked_hold_s while following an edge lap (not a
-        person / pet): cancel the follow and skip the blocked segment. True = handled."""
+        person / pet): cancel the follow and step round it (the edge detour with the local
+        costmap's cells: owner rule 2026-11-11, foliage over the line at the area-3 west edge
+        was skipped three times); no detour fits: skip the blocked segment. True = handled."""
         m, p, a = self.mission, self.p, self._action
         since = self.inputs.cm_stop_since
         if m is None or since is None or self.phase != 'MOWING' or \
@@ -462,8 +464,11 @@ class PivotsMixin:
                 self._now - since < float(p.edge_blocked_hold_s) or \
                 self._policy() == 'dynamic' or not self._edge_lap(m.sub_i):
             return False
+        prog = self._track_progress()
+        why = 'collision_monitor stop held %.1f s' % (self._now - since)
+        if self._nogo_edge_detour(prog, '%s, obstacle on the lap' % why, costmap=True):
+            return True
         self._fx.append(CancelActions('edge blocked'))
         self._action = None
-        self._edge_skip(self._track_progress(), 'collision_monitor stop held %.1f s'
-                        % (self._now - since))
+        self._edge_skip(prog, why)
         return True

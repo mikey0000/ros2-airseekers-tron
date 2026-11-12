@@ -107,6 +107,19 @@ def test_cylinder_ahead_seen():
     assert _base(rc, obs.astype(float))[:, 0].min() == pytest.approx(2.2, abs=0.02)
 
 
+def test_lifted_foliage_seen_only_above_its_bottom():
+    """2026-11-12: z_min lifts the shape off the ground: no point below it, rays below pass
+    underneath to the ground; the same box from the ground gives low points too."""
+    rc = StereoRaycaster()
+    low = _base(rc, rc.cast(0.0, 0.0, 0.0, [_box(2.0, 0.0)], 0.0)[0].astype(float))
+    fol = Obstacle(name='f', type='box', x=2.0, y=0.0, size_x=0.6, size_y=1.0, height=0.5,
+                   z_min=0.15, solid=False)
+    obs, _ = rc.cast(0.0, 0.0, 0.0, [fol], 0.0)
+    pts = _base(rc, obs.astype(float))
+    assert len(pts) > 5 and pts[:, 2].min() >= 0.15 - 0.03
+    assert low[:, 2].min() < 0.1
+
+
 def test_to_optical_roundtrip():
     rc = StereoRaycaster()
     p = np.array([[2.0, 0.3, 0.1]])

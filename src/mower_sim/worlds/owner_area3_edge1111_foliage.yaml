@@ -1,0 +1,41 @@
+# 2026-11-11 field mow on area 3, west edge, with overhanging foliage
+# (docs/analysis/2026-11-11_west_edge_stuck.md, owner decision 2). The world of
+# owner_area3_edge1111.yaml (area 3 polygon, 9 deg side slope downhill west, the two potted
+# plants 0.6 m out), plus:
+#   * foliage hanging over the line where the field's collision monitor stopped three times
+#     ((-29.26, -15.03), (-29.45, -14.62), (-29.39, -14.45)): a clump of leaves r 0.35 centred
+#     0.12 m outside the line at (-29.60, -14.85), so it reaches 0.23 m inside. It hangs from
+#     0.15 to 0.55 m above the ground (the collision monitor's stereo source starts at 0.15 m)
+#     and is soft (solid: false): stereo sees it (local costmap, collision-monitor stop zone),
+#     the detector does not, and the wheels and bumper would pass through it.
+# Expect (owner rule 2026-11-11): each edge lap steps round it on the inward side, rejoins
+# the lap past it and carries on, blade on: no stop-skip of that stretch, no re-plan, no
+# retry loop, no STUCK.
+# Gate: sim_gate.sh -w src/mower_sim/worlds/owner_area3_edge1111_foliage.yaml -d -l -s 2 -x 2 -t 3600
+name: owner_area3_edge1111_foliage
+datum: {lat: 48.0, lon: 9.0}
+areas_file: owner_far_areas.dat
+areas_select: [Area 1, lawn section, Area 6, Dock path, Path 2, Path 3, Path 4]
+lawn_area: Area 6
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+area_settings:
+  Area 6: {edge_layout: soft, edge_mode: soft, edge_laps: 3, edge_first: true,
+           mow_angle_deg: 120.0, cut_speed_mps: 0.3, route_order: boustrophedon,
+           blade_policy: continuous}
+obstacles:
+  - {name: plant_south, type: cylinder, x: -30.70, y: -14.55, radius: 0.20, height: 0.60,
+     detect: {label: potted plant, score: 0.6}}
+  - {name: plant_mid, type: cylinder, x: -31.37, y: -13.92, radius: 0.20, height: 0.60,
+     detect: {label: potted plant, score: 0.6}}
+  - {name: foliage_west, type: cylinder, x: -29.60, y: -14.85, radius: 0.35, height: 0.55,
+     z_min: 0.15, solid: false}
+terrain:
+  regions:
+    - name: west_edge_area3
+      polygon: [[-32.6, -15.6], [-29.2, -15.6], [-29.2, -14.6], [-30.0, -13.6],
+                [-30.5, -12.6], [-30.8, -10.6], [-32.6, -10.6]]   # the lap band + 0.9 m in
+      slope_deg: 9.0
+      downhill_deg: 200.0
+      fade_m: 0.4
+battery: {voltage: 25.0, percentage: 0.9}

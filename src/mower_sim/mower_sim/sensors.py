@@ -113,7 +113,7 @@ class StereoRaycaster:
             z_in = oz + t_in * dz
             z_out = oz + t_out * dz
             # side hit
-            side = valid & (z_in >= 0.0) & (z_in <= o.height)
+            side = valid & (z_in >= o.z_min) & (z_in <= o.height)
             th = np.where(side, t_in, np.inf)
             # top hit: ray above the top at entry, descending below it before exit
             top = valid & (z_in > o.height) & (z_out <= o.height) & (dz < 0)

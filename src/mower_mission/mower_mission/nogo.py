@@ -138,6 +138,13 @@ def living_sweep_hits(x: float, y: float, yaw: float, delta: float, discs: Seque
     return sorted({h.zone.label for h in _sweep(x, y, yaw, delta, live)})
 
 
+def static_hits(hits: Sequence) -> list:
+    """The sweep hits (``PivotPlan.hits``) that are not a person / animal: a static mark, a
+    zone or keepout of another class (they will not walk away)."""
+    return [h for h in (hits or []) if h.zone.state == 'mark' or
+            h.zone.label not in LIVING_CLASSES]
+
+
 def _sweep_poses(x, y, yaw, ang, step_deg=5.0):
     n = max(1, int(math.ceil(abs(math.degrees(ang)) / step_deg)))
     return [(x, y, yaw + ang * k / n) for k in range(n + 1)]
@@ -152,6 +159,12 @@ def _line_poses(x, y, yaw, s, step=0.05):
 def _line_clear(x, y, yaw, s, discs):
     poses = _line_poses(x, y, yaw, s)
     return not any(bool(nz.poses_hit_disc(poses, z.x, z.y, z.r).any()) for z in discs)
+
+
+def line_clear(x: float, y: float, yaw: float, s: float, discs: Sequence) -> bool:
+    """A straight drive of ``s`` (m, < 0 = reverse) from (x, y, yaw) keeps the body off
+    every disc."""
+    return _line_clear(x, y, yaw, s, discs or [])
 
 
 def plan_pivot(x: float, y: float, yaw: float, delta: float, discs: Sequence,

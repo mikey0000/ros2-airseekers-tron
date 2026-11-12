@@ -665,6 +665,8 @@ class BoundaryGuardMixin:
         last = self._seg_last()
         frm = m.start_local
         d = k.get('nogo_detour')
+        if d is not None and d.get('then') == 'reroute':
+            return None                   # a route-corner reverse in a transit
         if d is not None:
             frm = min(frm, int(d['from']))
         lo, acc = frm, 0.0
@@ -699,7 +701,7 @@ class BoundaryGuardMixin:
         m.start_local = m.progress_local = j
         d = k.get('nogo_detour')
         if d is not None:
-            m.nogo_detoured.discard((m.area_idx, m.sub_i, d['end']))
+            m.nogo_detoured.discard((m.area_idx, m.sub_i, d.get('end')))
             if self._nogo_edge_detour(j, '%s (re-planned after a boundary recovery)'
                                       % d['why']):
                 self._log('info', 'boundary: rejoining the edge-lap detour at pose %d' % j)

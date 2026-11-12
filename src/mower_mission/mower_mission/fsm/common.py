@@ -1516,11 +1516,12 @@ class Params:
     # costmap's lethal cells inside the area (+ margin) within this corridor of the lap ahead
     # are the obstacle (2026-11-04). No re-plan exists for them, so the inward offset may be
     # larger than for a zone (the alternative is the skip), with a longer ramp.
-    # OFF by default (2026-11-05): built and unit-tested, but on the area-3 sim scenario
-    # (branch in a corner) the detour worked in 2 of 4 runs and once took base_link 0.16 m
-    # out; needs a mid-edge scenario plus seeds before it is enabled. Off: mission_node
-    # takes no costmap at all and an edge-lap collision abort skips as before.
-    nogo_edge_costmap: bool = False
+    # Off 2026-11-05 (area-3 branch scenario: 2 of 4 runs, once base_link 0.16 m out). ON
+    # since 2026-11-12 (owner rule 2026-11-11: overhanging foliage at the edge is stepped
+    # round, not skipped): a collision abort or a held collision-monitor stop on an edge lap
+    # detours round the cells (sim owner_area3_edge1111_foliage). Off: mission_node takes
+    # no costmap at all and an edge-lap collision abort / stop skips as before.
+    nogo_edge_costmap: bool = True
     nogo_edge_costmap_max_age_s: float = 3.0
     nogo_edge_costmap_corridor_m: float = 0.60  # cell to the lap ahead (body half width + 0.37)
     nogo_edge_costmap_max_offset_m: float = 1.50
@@ -1532,6 +1533,16 @@ class Params:
     # inside, _safe_backoff), then detour (0 = never)
     nogo_edge_costmap_backup_near_m: float = 0.80
     nogo_edge_costmap_backup_m: float = 0.50
+    # an edge detour whose follow aborts beside the object (sim 2026-11-11 inside world v3 /
+    # v5: the collision monitor stopped MPPI on the bend) reverses along the detour it drove
+    # (nogo_edge_costmap_backup_m) and bends again from there, with the costmap cells and
+    # the larger offset cap, at most this many times per detour; then the skip. 0 = skip
+    nogo_edge_detour_again: int = 2
+    # a route-corner pivot whose sweep meets a static object once the maneuvers and the
+    # re-route are used up: reverse this far (straight, body inside, the mission's own
+    # reverse) and re-route from there, once per corner, instead of pivoting into it; then
+    # the transit is aborted (its retries, then the sweep-blocked skip). 0 = no reverse
+    nogo_route_reverse_m: float = 0.60
     nogo_living_memory_s: float = 60.0       # static marks this recently under a living zone
     # Perimeter objects (review 2026-11-11): a static mark centred within nogo_perimeter_band_m
     # of the region edge (either side) is used at its true size (r - shrink) by the pivot
@@ -1660,6 +1671,7 @@ class Mission:
     slope_pivot_key: Any = None                 # pivot key whose slope pre-drive ran
     nogo_tries: dict = field(default_factory=dict)      # pivot key -> maneuvers
     nogo_route_aborts: set = field(default_factory=set)
+    nogo_route_reversed: set = field(default_factory=set)   # corners reversed from (sweep)
     nogo_living_wait: Any = None                # {'xy', 'since'}: route-corner living wait
     nogo_living_spots: list = field(default_factory=list)   # [(x, y, r, t)] living zones
     nogo_turns: int = 0                         # pivots re-routed by the sweep check

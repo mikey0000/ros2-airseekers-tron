@@ -234,7 +234,7 @@ def test_route_corner_a_turns_the_other_way_round_a_trunk_in_the_sweep():
     assert any('route corner' in t and '(a)' in t for t in logs(h))
 
 
-def test_route_corner_e_reroutes_once_then_pivots_as_planned():
+def test_route_corner_e_reroutes_once_first():
     h = _route_corner_h([Z(2.0, 0.55, 0.45, 5, 'trunk', 'pending')])
     assert any('(e)' in t and 're-route' in t for t in logs(h))
     assert h.fsm.mission.nogo_route_aborts
@@ -769,12 +769,13 @@ def test_costmap_detour_back_up_follows_a_curved_lap_back():
     assert cmd.linear < 0.0 and abs(cmd.angular) > 0.01   # reversing along the arc
 
 
-def test_costmap_edge_detour_off_by_default_skips_like_master():
-    """2026-11-05: shipped off. A costmap-only obstacle on an edge lap: the collision abort
-    skips the stretch (master behaviour), no back-up, no detour, no costmap read."""
+def test_costmap_edge_detour_off_skips_like_master():
+    """2026-11-05: shipped off; on since 2026-11-12 (owner rule: step round foliage). Off: a
+    costmap-only obstacle on an edge lap: the collision abort skips the stretch (master
+    behaviour), no back-up, no detour, no costmap read."""
     h, mk = _abort_on_branch(2.0, -0.3, 0.5, costmap=False)
     assert h.fsm.p.nogo_edge_costmap is False
-    assert Harness().fsm.p.nogo_edge_costmap is False       # the shipped default
+    assert Harness().fsm.p.nogo_edge_costmap is True        # the shipped default
     txt = logs(h, mk)
     assert any('edge blocked: skip' in t for t in txt), txt
     assert not any('costmap cells' in t or 'back up' in t for t in txt)
@@ -832,3 +833,153 @@ def test_perimeter_mark_detour_is_clamped_not_dropped_when_the_need_exceeds_the_
     a = h.pending_action(f.ACT_FOLLOW)
     assert a is not None and a.purpose == 'nogo_detour'
     assert abs(max(q[1] for q in h.goal(f.ACT_FOLLOW)['poses']) - 0.40) < 0.02
+
+
+# =====================================================================
+# 2026-11-12: owner rule (2026-11-11) - step round it, rejoin, carry on
+# =====================================================================
+def test_route_corner_sweep_still_blocked_by_a_static_object_reverses_never_pivots():
+    """Sim 2026-11-11 inside world v5: after the re-route the route-corner gate pivoted "as
+    planned" with a pot in the sweep (2 bumps, STUCK). Now: reverse (the mission's own
+    DriveCmd reverse, not Nav2's BackUp) and re-route from there; at the same corner again:
+    abort the transit without the pivot."""
+    trunk = Z(2.0, 0.75, 0.30, 5, 'trunk', 'pending')
+    h = _route_corner_h([trunk])
+    assert any('(e)' in t and 're-route the transit' in t for t in logs(h))
+    from test_mission_fsm import _answer_route, _route_resp
+
+    def corner_again():
+        for _ in range(400):
+            if h.fsm._service is not None:
+                break
+            zones(h, trunk)
+            h.tick()
+        mk = h.mark()
+        h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+        _answer_route(h, resp=_route_resp(_corner_route(100.0, h.fsm.mission.transit_target)))
+        zones(h, trunk)
+        h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+        h.finish(f.ACT_FOLLOW)                 # at the corner (2, 0), yaw 0
+        return mk
+    mk = corner_again()
+    assert h.fsm._action is None or h.fsm._action.name != f.ACT_SPIN, logs(h, mk)
+    assert not any('pivot as planned' in t for t in logs(h, mk))
+    assert any('static object in the sweep: reverse' in t for t in logs(h, mk)), logs(h, mk)
+    assert h.fsm.mission.step == 'nogo_detour' and h.fsm._action is None
+    cmds = list(h.since(mk, f.DriveCmd))
+    assert cmds and cmds[-1].linear < 0.0
+    h.fsm.inputs.pose = (1.4, 0.0, 0.0)        # reversed 0.6 m
+    h.tick()
+    assert any('re-routing the transit from here' in t for t in logs(h, mk))
+    assert ('transit_abort', 'route corner pivot sweep blocked: reversed, re-routing') in \
+        _incidents(h, mk)
+    mk = corner_again()                        # the same corner again: no second reverse
+    assert h.fsm._action is None or h.fsm._action.name != f.ACT_SPIN
+    assert any('reversed here already' in t for t in logs(h, mk)), logs(h, mk)
+    assert h.name != 'STUCK_NEEDS_HELP'
+
+
+def test_route_corner_dynamic_or_clear_sweep_keeps_the_old_branches():
+    assert nogo.static_hits([]) == []
+    hit = nogo.PivotPlan('blocked', [], '', [])
+    assert nogo.static_hits(hit.hits) == []
+
+
+def _detour_on_branch():
+    h, mk = _abort_on_branch(2.5, -0.3, 0.5)
+    assert h.pending_action(f.ACT_FOLLOW).purpose == 'nogo_detour', logs(h, mk)
+    return h, mk
+
+
+def test_edge_detour_aborted_beside_the_object_reverses_and_bends_again_not_skips():
+    """Sim 2026-11-11 inside world v3 / v5: the detour follow aborted beside the pot (the
+    collision monitor stopped MPPI on the bend) and the stretch was skipped. Now: reverse
+    along the detour just driven, bend again from there (costmap cells), no skip."""
+    h, mk = _detour_on_branch()
+    d = h.fsm.mission.nogo_detour
+    poses = d['poses']
+    k = len(poses) // 2
+    h.fsm.inputs.pose = (poses[k][0], poses[k][1], 0.3)
+    h.fsm.inputs.collision_stamp = h.t
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    txt = logs(h, mk)
+    assert not any('edge blocked: skip' in t for t in txt), txt
+    assert any('the detour stopped beside it: back up' in t for t in txt), txt
+    assert h.fsm.mission.step == 'nogo_detour' and h.fsm.mission.nogo_detour.get('backup')
+    assert h.fsm.mission.nogo_detour['again'] == 1
+    cmds = list(h.since(mk, f.DriveCmd))
+    assert cmds and cmds[-1].linear < 0.0
+    # the reverse runs back along the detour poses already driven (inside), not to the lap
+    path = h.fsm.mission.nogo_detour['path']
+    assert path[0][1] > 0.05
+    h.fsm.inputs.pose = (path[-1][0], path[-1][1], 0.0)
+    h.tick()
+    a = h.pending_action(f.ACT_FOLLOW)
+    assert a is not None and a.purpose == 'nogo_detour', logs(h, mk)
+    assert h.fsm.mission.nogo_detour['again'] == 1
+    assert any('again 1/2' in t for t in logs(h, mk))
+
+
+def test_edge_detour_aborted_again_and_again_skips_after_the_limit():
+    h, mk = _detour_on_branch()
+    for n in (1, 2):
+        d = h.fsm.mission.nogo_detour
+        h.fsm.inputs.pose = (d['poses'][2][0], d['poses'][2][1], 0.0)
+        h.fsm.inputs.collision_stamp = h.t
+        h.finish(f.ACT_FOLLOW, f.ABORTED)
+        assert not any('edge blocked: skip' in t for t in logs(h, mk))
+        for _ in range(200):
+            if h.fsm._action is not None and h.fsm._action.name == f.ACT_FOLLOW:
+                break
+            b = h.fsm.mission.nogo_detour
+            if b is not None and b.get('backup'):
+                h.fsm.inputs.pose = (b['path'][-1][0], b['path'][-1][1], 0.0)
+            h.tick()
+        assert h.fsm.mission.nogo_detour['again'] == n, logs(h, mk)
+    d = h.fsm.mission.nogo_detour
+    h.fsm.inputs.pose = (d['poses'][2][0], d['poses'][2][1], 0.0)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert any('edge blocked: skip' in t for t in logs(h, mk))
+
+
+def test_edge_detour_again_off_skips_as_before():
+    h, mk = _abort_on_branch(2.5, -0.3, 0.5)
+    h.fsm.p.nogo_edge_detour_again = 0
+    d = h.fsm.mission.nogo_detour
+    h.fsm.inputs.pose = (d['poses'][3][0], d['poses'][3][1], 0.0)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert any('edge detour aborted: skipping the stretch' in t for t in logs(h, mk))
+
+
+def test_collision_monitor_stop_held_on_an_edge_lap_steps_round_it_not_skips():
+    """Field 2026-11-11 area 3 west edge: three collision-monitor stops on foliage inside the
+    line, each one a skipped stretch. Owner rule: step round it on the inward side, rejoin
+    the lap and carry on."""
+    h = _edge_h()
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)
+    h.tick(n=2)
+    _branch(h, 1.75, -0.3, 0.25)               # leaves over the line, 0.75 m ahead
+    mk = h.mark()
+    h.fsm.inputs.cm_stop_since = h.t
+    for _ in range(int(h.fsm.p.edge_blocked_hold_s * 10) + 5):
+        _branch(h, 1.75, -0.3, 0.25)
+        h.tick()
+        if h.fsm.mission.step == 'nogo_detour':
+            break
+    txt = logs(h, mk)
+    assert not any('edge blocked: skip' in t for t in txt), txt
+    assert any('collision_monitor stop held' in t and ('back up' in t or 'detour' in t)
+               for t in txt), txt
+    assert h.fsm.mission.step == 'nogo_detour'
+
+
+def test_collision_monitor_stop_held_with_costmap_off_skips_as_before():
+    h = _edge_h(nogo_edge_costmap=False)
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)
+    h.tick(n=2)
+    _branch(h, 1.75, -0.3, 0.25)
+    mk = h.mark()
+    h.fsm.inputs.cm_stop_since = h.t
+    h.tick(n=int(h.fsm.p.edge_blocked_hold_s * 10) + 5)
+    assert any('edge blocked: skip' in t and 'collision_monitor stop held' in t
+               for t in logs(h, mk))

@@ -104,7 +104,7 @@ behavior_tree_node:
     nogo_edge_max_offset_m: 0.60      # larger needed: no detour (re-plan / skip)
     # collision abort on an edge lap, no zone / detection: the local costmap's lethal cells
     # on the lap ahead are the obstacle (2026-11-04 branch); detour inward, else skip
-    nogo_edge_costmap: false          # off until a mid-edge scenario + seeds pass (2026-11-05)
+    nogo_edge_costmap: true           # on since 2026-11-12 (owner rule: foliage at the edge is stepped round)
     nogo_edge_costmap_max_age_s: 3.0
     nogo_edge_costmap_corridor_m: 0.60
     nogo_edge_costmap_max_offset_m: 1.50
@@ -112,6 +112,8 @@ behavior_tree_node:
     nogo_edge_costmap_ramp_per_m: 3.0      # ramp >= 3 x the offset: <= ~28 deg rejoin
     nogo_edge_costmap_backup_near_m: 0.80   # robot this close to the cells: back up first
     nogo_edge_costmap_backup_m: 0.50
+    nogo_edge_detour_again: 2         # detour aborted beside the object: reverse, bend again (times)
+    nogo_route_reverse_m: 0.60        # route-corner sweep still blocked by a static object: reverse, re-route
     nogo_living_memory_s: 60.0        # a static mark this recently under a person / animal zone is it
     nogo_perimeter_band_m: 0.6        # static mark centred within this of the area edge = a perimeter object ...
     nogo_perimeter_mark_shrink_m: 0.05  # ... used at r - this (true size + 0.05) by sweep / detour

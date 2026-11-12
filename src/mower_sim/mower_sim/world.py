@@ -15,6 +15,8 @@ A world is a YAML file (``worlds/*.yaml``)::
          path: [[x, y], ...], speed: 0.6, mode: pingpong|loop|once, start_delay: 0.0}
       - {name: trunk, type: cylinder, x, y, radius: 0.12, height: 1.5,
          detect: {label: trunk, score: 0.75}, stereo: false}
+      - {name: foliage, type: cylinder, x, y, radius: 0.35, height: 0.55, z_min: 0.15,
+         solid: false}
     battery: {voltage: 25.2, percentage: 0.8}
     terrain: {regions: [{polygon, slope_deg, downhill_deg, fade_m}], slip: {...}}  # terrain.py
     rtk: {anchor, events: [{t0, dur, kind: float|dropout}], multipath: {...}}       # rtk.py
@@ -37,6 +39,11 @@ metres, so the geometry is unchanged).
 reported by the scripted ranged-detection source (mower_sim/detections.py) as det_range
 would, while it is inside the front camera's field of view. ``stereo: false`` hides it from
 the stereo raycaster (the 2026-10-22 trunk was never marked by stereo).
+
+``solid: false`` (2026-11-12, overhanging foliage): the stereo raycaster and the detector
+still see it, but the robot drives through it (no contact, no bumper, not in the
+clearance). ``z_min`` lifts its bottom off the ground: rays below it pass underneath (leaves
+hanging over the lawn from 0.15 m up).
 
 Obstacles are 2.5D: a 2D shape extruded from the ground to ``height``. Moving
 obstacles follow ``path`` at ``speed`` (m/s) after ``start_delay`` seconds.
@@ -156,6 +163,8 @@ class Obstacle:
     detect_label: str = ''         # scripted YOLO detection class ('' = not detected)
     detect_score: float = 0.75
     stereo: bool = True            # seen by the stereo raycaster
+    solid: bool = True             # False: seen, but the robot drives through it (foliage)
+    z_min: float = 0.0             # bottom above the ground (rays below it pass underneath)
 
     @property
     def moving(self) -> bool:
@@ -245,12 +254,14 @@ class World:
     def collisions(self, x: float, y: float, yaw: float, t: float,
                    margin: float = 0.0) -> List[Obstacle]:
         fp = self.footprint_at(x, y, yaw)
-        return [o for o in self.obstacles if o.distance_to_polygon(fp, t) <= margin]
+        return [o for o in self.obstacles
+                if o.solid and o.distance_to_polygon(fp, t) <= margin]
 
     def clearance(self, x: float, y: float, yaw: float, t: float) -> float:
-        """Smallest footprint-to-obstacle distance (inf without obstacles)."""
+        """Smallest footprint-to-obstacle distance over the solid obstacles (inf without)."""
         fp = self.footprint_at(x, y, yaw)
-        return min((o.distance_to_polygon(fp, t) for o in self.obstacles), default=math.inf)
+        return min((o.distance_to_polygon(fp, t) for o in self.obstacles if o.solid),
+                   default=math.inf)
 
 
 def _pose(d, default: Pose2D) -> Pose2D:
@@ -340,7 +351,8 @@ def world_from_dict(doc: dict, name: str = 'world', base_dir: Optional[str] = No
             known=bool(o.get('known', False)),
             detect_label=str((o.get('detect') or {}).get('label', '')).strip().lower(),
             detect_score=float((o.get('detect') or {}).get('score', 0.75)),
-            stereo=bool(o.get('stereo', True))))
+            stereo=bool(o.get('stereo', True)), solid=bool(o.get('solid', True)),
+            z_min=max(0.0, float(o.get('z_min', 0.0)))))
     bat = doc.get('battery') or {}
     from .rtk import rtk_from_dict
     from .terrain import terrain_from_dict

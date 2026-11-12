@@ -179,6 +179,16 @@ def test_step_result_reports_contact():
     assert res.blocked and [o.name for o in res.contacts] == ['b']
 
 
+def test_soft_foliage_is_driven_through_without_contact():
+    """2026-11-12: solid: false (overhanging foliage) blocks nothing and never touches."""
+    fol = [dict(BOX[0], name='f', solid=False, z_min=0.15)]
+    w = _world(fol, start={'x': 0.0, 'y': 0.0, 'yaw': 0.0})
+    d = DiffDrive(w)
+    t = _run(d, 0.3, 0.0, 12.0)
+    assert d.pose.x > 3.0 and not d.blocked and d.collisions_total == 0
+    assert not w.collisions(1.5, 0.0, 0.0, t) and math.isinf(w.clearance(1.5, 0.0, 0.0, t))
+
+
 def test_backing_away_from_box_allowed():
     w = _world(BOX, start={'x': 0.0, 'y': 0.0, 'yaw': 0.0})
     d = DiffDrive(w)
