@@ -99,7 +99,7 @@ export const AREA_SETTINGS_DEFAULTS: AreaSettings = {
 };
 
 export const AREA_SETTINGS_RANGES = {
-    cutter_height_mm: {min: 30, max: 90, step: 5},
+    cutter_height_mm: {min: 30, max: 90, step: 1},
     perimeter_laps: {min: 0, max: 4, step: 1},
     cut_speed_mps: {min: 0.1, max: 0.5, step: 0.05},
     swath_overlap_m: {min: 0, max: 0.1, step: 0.01},

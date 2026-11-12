@@ -83,7 +83,7 @@ describe("StartMowSheet", () => {
         await waitFor(() => expect(mocks.callCreate).toHaveBeenCalled());
         const put = mocks.request.mock.calls.find(([a]) => a.method === "PUT")![0];
         expect(put.path).toBe("/mowglinext/areas/defaults/settings");
-        expect(put.body).toEqual({settings: {cutter_height_mm: 55}});
+        expect(put.body).toEqual({settings: {cutter_height_mm: 51}});  // 1 mm steps
     });
 
     it("degrades when the robot has no area settings service", async () => {
