@@ -160,14 +160,23 @@ rows".
 - bridge `test_splitter.py`: `drop_rings` keeps the rows unchanged (edge-first and swaths-first).
 - GUI `missionProgress.test.ts`: run tags and cross stretches.
 
-## Sim (to run, one at a time)
+## Sim results (seed 1, x3)
 
-```
-SIM_GATE_OUT=../simout_crossplan1112 ./scripts/sim_gate.sh -w src/mower_sim/worlds/real_run5_cross.yaml -n crossplan-auto90-l-s1 -l -x 3 -s 1 -t 4000
-SIM_GATE_OUT=../simout_crossplan1112 ./scripts/sim_gate.sh -w src/mower_sim/worlds/real_run5_cross60.yaml -n crossplan-fixed60-l-s1 -l -x 3 -s 1 -t 4000
-```
+`SIM_GATE_OUT` must be an absolute path (a relative one fails the docker bind mount).
 
-What to check in the logs: one `[cross, runs 1-2/2 in one plan]` PLANNING per mow, two
-`parameters set` lines on coverage_server (`include_rings=True`, then `include_rings=False`),
-`mowing the rows of run 2/2` once, and no edge-lap poses after it. The rows of run 2 must end
-where run 1's rows end, inside the laps.
+| World | Behaviour | Gate |
+|---|---|---|
+| `real_run5_cross` (AUTO + 90) | One plan: `include_rings=True` then `False`, `mowing the rows of run 2/2` once, no edge laps after it, 16/16 sub-paths, docked, 0 STUCK | FAIL e (1 of 68, 0.384 m), i (transit 0.386 m) |
+| `real_run5_cross60` (20 + 60 = 80) | Same; run 2 planned at 80 deg; 22/22 sub-paths, docked, 0 STUCK | FAIL e (2 of 41, 0.155 m), h (line p99 0.318 m), i (transit 0.366 m) |
+
+None of the failures come from this change:
+
+- e on `real_run5_cross`: the 180 deg out-and-back spur at (-1.05, 3.95) at the end of the
+  second row set is in the planner output. The old two-plan run (`simout_cross1111/cross-l-s1`)
+  fails the same vertex (0.452 m) and 8 more corners (worst 0.799 m).
+- h on `real_run5_cross60`: the tail is the approach at index 0 of short sub-paths (0.58 m
+  falling to 0.15 m), in run 1's sub-paths (planned as before) as well as run 2's.
+- i: a transit sample, about the same as the old run (0.374 m).
+
+Against the old two-plan run on `real_run5_cross`: corners 9 to 1 failing, side overhang
+0.317 to 0.059 m, line p99 5.54 to 0.095 m, moving time 1870 to 1659 s (-11 %, laps once).
