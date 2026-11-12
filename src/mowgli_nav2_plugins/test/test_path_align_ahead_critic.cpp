@@ -142,6 +142,40 @@ TEST(PathAlignAhead, PathExtendsByTheControlPoint)
   EXPECT_EQ(paa::pathPointsUsed(px, py, 97, 99, 0.25f), 99u);   // capped at the path
 }
 
+TEST(PathAlignAhead, NegativeControlPointLeadsAReverseDrive)
+{
+  // the path runs along -x and the rollouts reverse along it (yaw 0, travel -x): the control
+  // point 0.25 m behind base_link leads, as a positive one does driving forward
+  xt::xtensor<float, 1> px, py, pyaw;
+  straightPath(200, 0.01f, px, py, pyaw);
+  for (size_t i = 0; i < px.shape(0); ++i) {px(i) = -px(i);}
+  EXPECT_EQ(paa::pathPointsUsed(px, py, 30, 199, -0.25f),
+    paa::pathPointsUsed(px, py, 30, 199, 0.25f));
+  std::vector<bool> valid(199, true);
+  const size_t steps = 40;
+  const size_t batch = 2;
+  xt::xtensor<float, 2> tx = xt::zeros<float>({batch, steps});
+  xt::xtensor<float, 2> ty = xt::zeros<float>({batch, steps});
+  xt::xtensor<float, 2> tyaw = xt::zeros<float>({batch, steps});
+  for (size_t j = 0; j < steps; ++j) {
+    const float d = 0.01f * static_cast<float>(j);
+    tx(0, j) = -d;                  // on the line, 3 cm off: parallel
+    ty(0, j) = 0.03f;
+    tx(1, j) = -d * std::cos(0.1f);  // from the line, the body 0.1 rad off (tail swinging)
+    ty(1, j) = d * std::sin(0.1f);
+    tyaw(1, j) = -0.1f;
+  }
+  paa::Params p;
+  p.trajectory_point_step = 2;
+  std::vector<float> c0, c1;
+  const size_t n = paa::pathPointsUsed(px, py, 40, 199, -0.25f);
+  paa::scoreBatch(tx, ty, tyaw, px, py, valid, n, p, c0);
+  p.control_point_x = -0.25f;
+  paa::scoreBatch(tx, ty, tyaw, px, py, valid, n, p, c1);
+  EXPECT_NEAR(c1[0], 0.03f, 0.003f);           // a lateral offset costs the same
+  EXPECT_GT(c1[1], c0[1] + 0.02f);             // a heading error costs more: damping
+}
+
 TEST(PathAlignAhead, LateralOffsetCostsTheSameHeadingCostsMore)
 {
   xt::xtensor<float, 1> px, py, pyaw;

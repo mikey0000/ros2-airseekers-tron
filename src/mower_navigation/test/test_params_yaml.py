@@ -651,6 +651,12 @@ def test_mppi_coverage_controllers():
     assert r["vx_max"] == 0.0 and -0.15 <= r["vx_min"] < 0.0      # backwards only, slow
     assert "PreferForwardCritic" not in r["critics"]
     assert r["PathAngleCritic"]["mode"] == 1                      # no direction preference
+    # 2026-11-13 narrow-strip retraces (6 m reverse legs): the control point behind base_link
+    # (it leads in reverse) plus the latency projection and the slow trim
+    ra = r["PathAlignAheadCritic"]
+    assert "PathAlignAheadCritic" in r["critics"] and "PathAlignCritic" not in r["critics"]
+    assert -0.4 <= ra["control_point_x"] < 0.0 and 0.0 < ra["latency_s"] <= 0.5
+    assert ra["trim_tau_s"] >= 10.0
     ids = _ctl("controller_plugins")
     with open(MISSION) as f:
         mdoc = yaml.safe_load(f)

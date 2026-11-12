@@ -2973,7 +2973,7 @@ def test_transit_retries_exhausted_ends_mowing_incomplete_in_place():
             h.tick(dt=1.0, n=4)
     assert h.name == 'MOWING_INCOMPLETE' and h.fsm.state == f.STATE_IDLE
     assert h.fsm.sub_state.startswith('1 of 2 sub-paths not mowed: transit aborted 4 times (')
-    assert '% mowed)' in h.fsm.sub_state
+    assert 'path mowed)' in h.fsm.sub_state
     assert 'MOWING_COMPLETE' not in h.statuses(m)
     assert not [e for e in h.since(m, f.StartAction) if e.name == f.ACT_DOCK]
     assert h.since(m, f.ZeroBurst) and not h.blade
@@ -3298,7 +3298,7 @@ def test_skipped_stretch_still_blocked_ends_incomplete():
     h.finish(f.ACT_FOLLOW, f.ABORTED)             # chair still there: no retries, no detour
     assert h.name == 'MOWING_INCOMPLETE'
     assert h.fsm.sub_state.startswith('1 stretch blocked by obstacles (')
-    assert '% mowed)' in h.fsm.sub_state, h.fsm.sub_state
+    assert 'path mowed)' in h.fsm.sub_state, h.fsm.sub_state
     cur = ResumeCursor.loads(h.saved)
     assert cur.areas[0].skipped == [(a, b)] and 0 not in cur.completed_areas
     assert cur.available and not h.blade
@@ -5992,7 +5992,7 @@ def test_stretch_below_retry_minimum_is_dropped_and_the_mow_completes():
     assert h.name == 'RETURNING_HOME' and not h.fsm.cursor.available
     assert any('MOWING_COMPLETE' in t or 'all areas mowed' in t for t in logs)
     done = [t for t in logs if 'all areas mowed' in t][-1]
-    assert '% mowed, 0.20 m skipped as too short' in done, done
+    assert 'path mowed, 0.20 m skipped as too short' in done, done
 
 
 def test_stretch_above_retry_minimum_is_still_retried():

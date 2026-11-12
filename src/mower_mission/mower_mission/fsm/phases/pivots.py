@@ -383,8 +383,12 @@ class PivotsMixin:
 
     def _edge_lap(self, k):
         """Sub-path ``k`` is an edge lap: >= 2 m long, median distance to the area outline or
-        an obstacle ring <= edge_lap_max_inset_m (lap 0 runs on the line)."""
+        an obstacle ring <= edge_lap_max_inset_m (lap 0 runs on the line). Never on a
+        narrow-strip plan: its passes all run near the outline, and the edge-lap skips there
+        would cut a pass short (an obstacle no detour passes stops the mower: _no_detour)."""
         m = self.mission
+        if m.strip:
+            return False
         ck = (m.area_idx, k)
         if ck not in m.edge_laps:
             area = m.areas.get(m.area_idx) if isinstance(m.areas, dict) else None

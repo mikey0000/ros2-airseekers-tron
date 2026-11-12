@@ -16,7 +16,7 @@ docs/analysis/2026-10-23_obstacle_nogo_options.md).
 from mower_mission import nogo
 from mower_mission.fsm.common import (ACT_BACKUP, ACT_DRIVE, ACT_FOLLOW, ACT_PLAN, ACT_SPIN,
     AreaCursor, CancelActions, DriveCmd, PublishPlan, SUCCEEDED, CONDITIONED_KEY, geo, math,
-    _seg_dist, costmap_lethal_points, subpath_offsets, walls)  # noqa: F401
+    _seg_dist, costmap_lethal_points, is_strip_plan, subpath_offsets, walls)  # noqa: F401
 
 
 class NogoMixin:
@@ -190,8 +190,10 @@ class NogoMixin:
             self._dispatch()
             return
         m.cond, m.cond_errors = {}, {}
+        m.strip = is_strip_plan(result)
         if p.path_conditioning:
-            subpaths = self._condition_subpaths(subpaths, result.get(CONDITIONED_KEY))
+            subpaths = self._condition_subpaths(subpaths, result.get(CONDITIONED_KEY),
+                                                is_strip_plan(result))
         old_ac = self.cursor.area(m.area_idx)
         sub_runs = self._plan_sub_runs(result, subpaths)
         done, prefix = self._run_raster_progress(subpaths, old_ac.raster, sub_runs)

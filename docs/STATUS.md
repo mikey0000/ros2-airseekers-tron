@@ -2120,3 +2120,38 @@ time):
 `SIM_GATE_OUT=../simout_crossplan1112 ./scripts/sim_gate.sh -w src/mower_sim/worlds/real_run5_cross.yaml -n crossplan-auto90-l-s1 -l -x 3 -s 1 -t 4000`
 and the new fixed 20 + 60 deg world:
 `SIM_GATE_OUT=../simout_crossplan1112 ./scripts/sim_gate.sh -w src/mower_sim/worlds/real_run5_cross60.yaml -n crossplan-fixed60-l-s1 -l -x 3 -s 1 -t 4000`.
+
+## Narrow strips: shuttle planner, plan-quality gate, cut % in the finish text (2026-11-13, branch ws/strip1113, unit + sim; not field tested)
+
+Field 2026-11-13, Area 4 (a strip 6.3 m x 0.48-0.72 m): Fields2Cover kept lap 0 only
+(coverage 0.315), the plan ran anyway, and the mow pivoted, went STUCK, left the area and
+cut 46 % while reporting "98.8 % mowed". Details: `analysis/2026-11-13_narrow_strip.md`.
+
+- **Detector** (`mower_coverage_bridge/strip.py`): inscribed radius < 0.385 m, length
+  >= 3 x width and >= 1.4 m. On the map files it fires on Area 4 only.
+- **Strip planner** (coverage bridge, `strip_mode` auto | on | off).
+  - Straight passes along the strip, picked greedily by raster cut, every pose within the
+    soft body limits, base_link inside.
+  - Each pass is driven forward and then in reverse back along its line. The next pass is
+    reached by a forward lane change (cosine S).
+  - A last lane change and reverse leg end the plan where it began, on the inbound route.
+  - No pivot inside the strip. The output reuses `split_reverse` reverse sub-paths.
+  - Area 4: 5 passes, 99.7 % planned cut.
+- **Plan-quality gate**: a Fields2Cover plan under `plan_coverage_min` 0.70 is refused with
+  the reason, unless a strip plan cuts more. The lawns plan 0.93-0.99.
+  `min_fragment_m` 0.70 drops isolated scraps (none on today's lawns).
+- **Mission**:
+  - strip plans are driven as planned (no conditioning, no turn joins, no edge-lap skips);
+  - an obstacle no detour passes stops the mower in STUCK_NEEDS_HELP (owner rule: no skip,
+    no re-plan);
+  - the dock join falls back to the deepest inbound pose in a narrow area;
+  - the finish text leads with "cut X % of the area (mowed raster)".
+- **Reverse MPPI**: PathAlignAheadCritic with a control point 0.30 m behind base_link (it
+  leads in reverse; negative values are new in `path_align_ahead`), latency 0.2 s, trim.
+  The sim's reverse cross-track p99 went from 0.186 to 0.055 m.
+- **Sim**:
+  - new world `owner_area4_strip.yaml`: PASS (strip5-l-s1), cut 94.2 % by ground truth;
+  - real_run5: FAIL (i) only, as on master; the detector stays off, cut 97.7 %;
+  - the evaluator's (i) now judges reverse segments facing the right way.
+- **Open**: field test. The transit's entry and exit pivots at the strip's west tip remain.
+  The entry end is chosen without slope data.

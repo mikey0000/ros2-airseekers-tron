@@ -295,7 +295,19 @@ class HoldsMixin:
             if m.stretch is not None:
                 self._stretch_blocked(why)
             elif not self._try_detour(m.start_local, why):
-                self._subpath_failed(why)
+                self._no_detour(why)
+
+    def _no_detour(self, why):
+        """No detour passes the obstacle on the sub-path being mowed: the sub-path is NOT
+        mowed and the mow goes on. On a narrow-strip plan the mower stops there instead
+        (STUCK_NEEDS_HELP; owner 2026-11-13: "obstacles will have to stop the mower if it
+        cannot go around within the area": no skip of the pass, no re-plan)."""
+        pose = self.inputs.pose
+        if self.mission.strip and pose is not None:
+            self._stuck_needs_help('obstacle in the narrow strip, no detour fits (%s)' % why,
+                                   pose)
+            return
+        self._subpath_failed(why)
 
     def _pivot_track(self, now):
         """Start time of the current in-place pivot command (fresh /cmd_vel_nav with
@@ -447,7 +459,7 @@ class HoldsMixin:
         if m.stretch is not None:
             self._stretch_blocked(why)
         elif not self._try_detour(m.start_local, why):
-            self._subpath_failed(why)
+            self._no_detour(why)
 
     # ---- localization hold: graded RTK-loss policy (2026-10-09, 2026-11-03) ----
     # docs/localization.md "RTK-loss policy". degraded: speed cap, finish the straight swath
@@ -802,6 +814,9 @@ class HoldsMixin:
         sp = m.subpaths[m.sub_i]
         last = self._seg_last()
         idx = geo.advance_index(sp, cur, skip)
+        if idx >= last and m.strip:
+            # a strip pass is never cut short at an obstacle (_no_detour stops the mower)
+            return False
         if idx >= last:
             # obstacle on the sub-path end: skip the rest, re-queued at the area end
             m.detours += 1

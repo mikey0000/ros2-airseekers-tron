@@ -8,7 +8,7 @@ from mower_mission.fsm.common import (ACT_DOCK, ACT_PLAN, ACT_SPIN, BladeOff, Bl
     IDLE_NAMES, Inputs, Log, MOTION_PHASES, Params, PublishAreaSettings, PublishPlan,
     PublishResumeAvailable, PublishStatus, RecordIncident, ResumeCursor, SRV_CHARGING,
     STATE_CODES, STATE_IDLE, SUCCEEDED, SaveResume, StartAction, ZeroBurst, _Pending, geo,
-    math)  # noqa: F401
+    is_strip_plan, math)  # noqa: F401
 from mower_mission.fsm.phases.preview import PreviewMixin
 from mower_mission.fsm.guards.reactive import ReactiveGuardsMixin
 from mower_mission.fsm.phases.dispatch import PhaseDispatchMixin
@@ -550,7 +550,7 @@ class MissionFSM(PreviewMixin,
             return None
         self._now = max(self._now, float(now))
         a.deadline = max(a.deadline, float(now) + max(a.timeout, float(self.p.plan_timeout_s)))
-        return self._conditioning_job(subpaths)
+        return self._conditioning_job(subpaths, is_strip_plan(result))
 
     def on_action_result(self, token, outcome, result=None, now=None):
         self._begin(self._now if now is None else now)

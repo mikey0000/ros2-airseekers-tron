@@ -27,7 +27,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from std_msgs.msg import String
 
-from mower_coverage_bridge import splitter
+from mower_coverage_bridge import splitter, strip
 
 
 def _poly_points(poly):
@@ -96,6 +96,18 @@ class CoverageServer(Node):
         # result, the rows keep the inset the rings give them (the mission's cross mow plans
         # its later row sets so: the laps are driven once, with the first row set)
         p('include_rings', True)
+        # Narrow-strip mode (docs/analysis/2026-11-13_narrow_strip.md, strip.py): auto = an
+        # area the detector finds narrow is planned as a shuttle of straight passes (forward,
+        # reverse back along the same line, lane change), and a Fields2Cover plan under
+        # plan_coverage_min falls back to it; on = every area; off = never.
+        p('strip_mode', 'auto')
+        # Plan-quality gate: a Fields2Cover plan covering less than this fraction of the area
+        # (and no strip plan that covers more) is refused, so a fragment plan is never driven
+        # (field 2026-11-13: 0.315 ran). Lawns plan 0.93-0.99; 0 = off.
+        p('plan_coverage_min', 0.70)
+        # A forward sub-path shorter than this that joins neither neighbour (a transit both
+        # ways) is left out of the plan (splitter.drop_fragments; about one body length)
+        p('min_fragment_m', 0.70)
         self.add_on_set_parameters_callback(self._on_set_parameters)
         # Coverage verification of the last plan (the action result has no
         # field for it): latched JSON {coverage_fraction, gap_count,
@@ -171,6 +183,9 @@ class CoverageServer(Node):
             if prm.name == 'headland_rings' and not (isinstance(v, int) and -1 <= v <= 20):
                 return SetParametersResult(successful=False,
                                            reason='headland_rings must be an int in -1..20')
+            if prm.name == 'strip_mode' and v not in strip.STRIP_MODES:
+                return SetParametersResult(successful=False,
+                                           reason='strip_mode must be auto, on or off')
             if prm.name == 'operation_width' and float(v) < 0.0:
                 return SetParametersResult(successful=False,
                                            reason='operation_width must be >= 0')
@@ -255,6 +270,21 @@ class CoverageServer(Node):
                 'coverage planner service %s unavailable (is mower_coverage_node running?)'
                 % service, t0)
 
+        outer = _poly_points(goal.outer_boundary)
+        holes = [_poly_points(h) for h in goal.obstacles if len(h.points) >= 3]
+        strip_mode = self._str('strip_mode')
+        if strip_mode != 'off':
+            shape = strip.measure(outer, holes, self._strip_params())
+            narrow, why = strip.detect(shape, self._strip_params())
+            self.get_logger().info('strip detector: %s' % why)
+            if narrow or strip_mode == 'on':
+                self._feedback(goal_handle, 'strip plan (%s)' % why)
+                plan = self._plan_strip(goal, outer, holes)
+                if not plan.ok:
+                    return self._fail(goal_handle, 'narrow strip not mowed: %s (%s)'
+                                      % (plan.message, why), t0)
+                return self._strip_succeed(goal_handle, plan, t0)
+
         angle = goal.mow_angle_deg
         if angle < 0.0 and self._float('mow_angle_deg') >= 0.0:
             angle = self._float('mow_angle_deg')
@@ -283,6 +313,20 @@ class CoverageServer(Node):
         if not resp.success or len(resp.path.poses) < 2:
             return self._fail(goal_handle, 'planner failed: %s' % resp.message, t0)
 
+        cov_min = self._float('plan_coverage_min')
+        frac = float(getattr(resp, 'coverage_fraction', 1.0))
+        if cov_min > 0.0 and frac < cov_min:
+            plan = self._plan_strip(goal, outer, holes) if strip_mode != 'off' else None
+            if plan is not None and plan.ok and plan.cut_fraction > frac:
+                self.get_logger().warn('plan covers %.0f %% < %.0f %%: strip plan instead (%s)'
+                                       % (100.0 * frac, 100.0 * cov_min, plan.message))
+                return self._strip_succeed(goal_handle, plan, t0)
+            self._publish_quality(resp)
+            return self._fail(goal_handle, (
+                'plan covers only %.0f %% of the area (minimum %.0f %%): area not mowed%s'
+                % (100.0 * frac, 100.0 * cov_min,
+                   '; no strip plan fits: %s' % plan.message if plan is not None else '')), t0)
+
         self._feedback(goal_handle, 'splitting %d poses (%d rings, %d swaths)' % (
             len(resp.path.poses), resp.ring_count, resp.swath_count))
         gap = self._float('transit_gap_m')
@@ -295,7 +339,8 @@ class CoverageServer(Node):
             ring_count=resp.ring_count, swath_count=resp.swath_count,
             transit_gap_m=gap, turn_split_deg=self._float('turn_split_deg'),
             fences=fences, holes=holes, swaths_first=swaths_first,
-            pose_flags=list(resp.pose_flags), drop_rings=not self._bool('include_rings'))
+            pose_flags=list(resp.pose_flags), drop_rings=not self._bool('include_rings'),
+            min_fragment_m=self._float('min_fragment_m'))
         if result.mode != splitter.MODE_STRUCTURAL:
             self.get_logger().warn(
                 'planner path did not match its ring/swath counts (%d/%d); '
@@ -309,6 +354,40 @@ class CoverageServer(Node):
         summary = splitter.summary(result)
         res.message = '%s | planner: %s' % (summary, resp.message)
         self._feedback(goal_handle, 'done: %s' % summary)
+        goal_handle.succeed()
+        return res
+
+    def _strip_params(self):
+        sp = strip.StripParams()
+        w = self._float('operation_width')
+        if w > 0.0:
+            sp.spacing_m = w
+        return sp
+
+    def _plan_strip(self, goal, outer, holes):
+        """The strip shuttle plan of the goal's area (strip.plan_strip); the goal's or the
+        node's mow angle is one more candidate axis."""
+        angle = goal.mow_angle_deg if goal.mow_angle_deg >= 0.0 else self._float('mow_angle_deg')
+        plan = strip.plan_strip(outer, holes, self._strip_params(),
+                                extra_axes_deg=[angle] if angle >= 0.0 else [])
+        self.get_logger().info(plan.message)
+        return plan
+
+    def _strip_succeed(self, goal_handle, plan, t0):
+        """Finish the goal with a strip plan: its forward / reverse sub-paths, its passes as
+        swath segments, its cut fraction on /coverage/plan_quality. The message starts with
+        strip.STRIP_TAG: the mission drives such a plan as planned (no turn joins, no
+        conditioning) and ends a pass at an obstacle (mower_mission STRIP_PLAN_TAG)."""
+        result = plan.split()
+        self._quality_pub.publish(String(data=json.dumps({
+            'coverage_fraction': plan.cut_fraction,
+            'coverage_fraction_before_fill': plan.cut_fraction,
+            'gap_count': 0, 'gap_area_m2': 0.0, 'fill_swath_count': 0, 'gaps': [],
+            'strip': True})))
+        res = self._build_result(result, None)
+        res.planning_time_s = time.monotonic() - t0
+        res.message = '%s | %s' % (plan.message, splitter.summary(result))
+        self._feedback(goal_handle, 'done: %s' % res.message)
         goal_handle.succeed()
         return res
 
