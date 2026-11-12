@@ -1,10 +1,11 @@
 // Live deck (blade) height: mcu_node clamps to the vendor range 30-90 mm and
-// latches the commanded value on /cutter/height_mm (topic key "cutterHeight").
+// latches the commanded value on /cutter/height_mm (topic key "cutterHeight"). The MCU takes the
+// height as whole mm (vendor range 30-90), so the GUI steps 1 mm.
 export const BLADE_HEIGHT_MIN_MM = 30;
 export const BLADE_HEIGHT_MAX_MM = 90;
-export const BLADE_HEIGHT_STEP_MM = 5;
+export const BLADE_HEIGHT_STEP_MM = 1;
 
-/** Clamp to 30-90 and snap to the 5 mm grid. */
+/** Clamp to 30-90 and snap to whole mm. */
 export const snapBladeHeight = (mm: number): number => {
     const snapped = Math.round(mm / BLADE_HEIGHT_STEP_MM) * BLADE_HEIGHT_STEP_MM;
     return Math.max(BLADE_HEIGHT_MIN_MM, Math.min(BLADE_HEIGHT_MAX_MM, snapped));
