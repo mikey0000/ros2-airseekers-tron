@@ -668,7 +668,9 @@ class NogoMixin:
         per = float(p.nogo_edge_costmap_ramp_per_m) if cm else \
             float(p.nogo_edge_mark_ramp_per_m) if mark_only else 0.0
         # costmap: end 0.10 m (boundary_recover_margin_m) inside the lap, merge from there
-        end_off = max(0.0, float(p.boundary_recover_margin_m)) if cm else 0.0
+        # perimeter marks too (sim 2026-11-12 realistic v3: a mark detour returning onto lap 0
+        # on the 9 deg side slope put front_left 0.35 m out twice -> spot-rule STUCK)
+        end_off = max(0.0, float(p.boundary_recover_margin_m)) if cm or mark_only else 0.0
         tries = [{'ramp_per_m': r, 'end_offset_m': end_off}
                  for r in (per, per * 2.0 / 3.0) if r > 0.0] + \
             [{'ramp_per_m': 0.0, 'end_offset_m': end_off}]
@@ -720,7 +722,7 @@ class NogoMixin:
             self._action = None
         m.nogo_detour = {'from': prog, 'end': end, 'why': why, 'again': int(again),
                          'poses': [tuple(q[:2]) for q in poses],
-                         'join': float(p.boundary_recover_margin_m) if cm else 0.0}
+                         'join': end_off}
         m.nogo_edge_detours += 1
         m.step = 'nogo_detour'
         self._log('warn', 'edge lap: %s: detour inward around it on the lap (poses %d -> %d, '
