@@ -164,3 +164,20 @@ def test_field_odom_ignores_lateral_motion():
         y += 0.01
         odom = ld.step((0.0, y, 0.0), DT)
     assert odom[1] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_antenna_tilt_offset_and_its_compensation():
+    """2026-11-12: with the antenna height set, a side slope moves the map estimate by
+    h sin(roll) toward the low side; gps_gate's compensation (tilt_comp_height) removes it."""
+    truth = (0.0, 0.0, 0.0)            # facing +x (east)
+    roll = math.radians(10.0)          # REP-103: right side (south, -y) down
+    off = field_params(enabled=True, fix_latency_s=0.0, antenna_height=0.324)
+    bx, by = LocDrift(off, truth).gnss_base(truth, roll, 0.0)
+    assert bx == pytest.approx(0.0, abs=1e-9)
+    assert by == pytest.approx(-0.324 * math.sin(roll), abs=1e-9)   # 5.6 cm downhill
+    on = field_params(enabled=True, fix_latency_s=0.0, antenna_height=0.324,
+                      tilt_comp_height=0.324)
+    assert LocDrift(on, truth).gnss_base(truth, roll, 0.0) == pytest.approx((0.0, 0.0),
+                                                                           abs=1e-9)
+    # flat ground: the antenna height changes nothing
+    assert LocDrift(off, truth).gnss_base(truth) == pytest.approx((0.0, 0.0), abs=1e-9)

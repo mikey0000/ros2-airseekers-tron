@@ -2052,3 +2052,33 @@ mow):** the change is measured on straight plan rows only (577 m vs 563 m). The 
 
 The critic route is working and FTC is not needed for the weave. The `wheel_cal.py` p90
 (1.98 -> 2.04) is biased by its straight selection, which kept only 260 m of the baseline.
+
+## Row straightness: antenna tilt, row entry hold, roll low-pass (2026-11-12, branch ws/rows1112, unit + sim; not field tested)
+
+Follow-up to the 2026-11-12 V2 field review (area 4, 63 rows: settled 1.65 cm rms, first 1.5 m
+3.3 cm, roll-coherent antenna sway). Details and numbers:
+`analysis/2026-11-12_row_straightness.md`.
+
+- **Tilt compensation** (`gps_gate`, default on): each fix is moved from the antenna
+  (~0.324 m up: `/tf_static` gps_link z + 0.11 m wheel radius) to the ground point. It uses
+  `/imu/data_aligned` roll / pitch / ENU yaw at the fix epoch, with a max-age guard and only
+  an aligned heading. Launch `gps_tilt_compensation` (true), `gps_tilt_gain` (1.0; the field
+  regression suggests ~1.3). The sign is checked against the field correlation.
+- **RowEntryCritic** (coverage MPPI): a new path that starts with a straight row while the
+  heading is > 2.6 deg off is held at 0.10 m/s until aligned, then ramped at 0.1 m/s^2. Cause
+  of the entry error, in the sim: the pivot ends short (stop lead 0.10 rad > the coast), plus
+  the join point 0.4 m ahead.
+- **Roll feed-forward low-pass** (`roll_tau_s` 3 s) in PathAlignAheadCritic.
+- **`/imu/data` at 100 Hz in the bag ring**: ~26 MB/h compressed (+45 % on the 11-12 mow pin
+  of ~57 MB/h), ~8 % of a core while mowing.
+- **Sim**: the antenna is 0.324 m up (`gps_antenna_height`), so slopes move `/fix` and the
+  loc_drift estimate, and the field model mirrors the compensation.
+- **Gate** (`-d -l -s 2 -x 3`):
+  - real_run5: FAIL (i only, as before). Entry |d| 2.33 -> 1.97 cm and entry heading 3.51 ->
+    2.97 deg against the master-equivalent run. The master run itself went STUCK at a
+    transit corner pivot.
+  - Slope: with tilt compensation off, the map estimate sits 5.4 cm downhill of the truth;
+    with it on, 0.0-0.3 cm. The rerun with it on was a 0.135 / 65 (V2 master 0.162 / 89). The
+    first run with it on had a post-mow transit STUCK, read as spread.
+- **Next**: field A/B with `gps_tilt_compensation:=false`, the entry metrics per direction, and
+  the roll regression on the 100 Hz `/imu/data`.

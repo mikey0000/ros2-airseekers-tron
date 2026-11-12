@@ -67,6 +67,7 @@ from mower_interfaces.msg import MowerBaseDevStatus, MowerSensorInfo
 from mower_mcu_driver.safety_relay import emergency_fields
 from mowgli_interfaces.msg import Emergency
 from mower_interfaces.srv import ChargingControl, CutterControl, SetCutterHeight
+from mower_localization.gps_tilt import tilt_offset_enu
 
 from .ctrl_rate import CtrlRateKeeper
 from .kinematics import DiffDrive, DriveParams, with_field_slip
@@ -182,6 +183,13 @@ class SimNode(Node):
         # owner measured 0.10): /fix is the antenna's position, as on the robot (navsat removes it)
         d('gps_antenna_x', 0.098)
         d('gps_antenna_y', 0.0)
+        # 2026-11-12: antenna height above the ground (URDF gps z 0.214 + wheel radius 0.11):
+        # body roll / pitch move /fix (and the loc_drift map estimate) by h sin(tilt), as in
+        # the field. gps_tilt_compensation / gps_tilt_gain mirror gps_gate's tilt compensation
+        # for loc_drift (the real gps_gate runs only with localization:=ekf).
+        d('gps_antenna_height', 0.324)
+        d('gps_tilt_compensation', True)
+        d('gps_tilt_gain', 1.0)
         d('bumper_hold_s', 0.3)
         # ground disturbance (kinematics.DriveParams.disturb_*; all off by default)
         d('disturb_wheel_bias', 0.0)
@@ -253,6 +261,10 @@ class SimNode(Node):
             kw = dict(enabled=True, seed=int(gp('loc_drift_seed').value))
             if field:
                 kw['fix_latency_s'] = float(gp('field_fix_latency_s').value)
+                h = float(gp('gps_antenna_height').value)
+                kw['antenna_height'] = h
+                kw['tilt_comp_height'] = h * float(gp('gps_tilt_gain').value) \
+                    if bool(gp('gps_tilt_compensation').value) else 0.0
             self.drift = LocDrift(loc_params_for(loc_model, **kw), (p0.x, p0.y, p0.yaw))
             dp = self.drift.p
             self.get_logger().warn(
@@ -653,7 +665,8 @@ class SimNode(Node):
 
     def _publish_map_odom(self, stamp, pose, odom):
         """loc_drift: ekf_map's outputs, a new map estimate and the map -> odom it implies."""
-        (mx, my, myaw), (tx, ty, tyaw) = self.drift.sample((pose.x, pose.y, pose.yaw))
+        (mx, my, myaw), (tx, ty, tyaw) = self.drift.sample((pose.x, pose.y, pose.yaw),
+                                                           self.roll, self.pitch)
         if self.rtk is not None and self.rtk_mode != 'fixed':
             from .loc_drift import compose, inverse
             if self.rtk_mode == DROPOUT:
@@ -746,6 +759,9 @@ class SimNode(Node):
         pose = self.drive.pose
         ax, ay = antenna_xy(pose.x, pose.y, pose.yaw, float(self.get_parameter('gps_antenna_x').value),
                             float(self.get_parameter('gps_antenna_y').value))
+        tilt_e, tilt_n = tilt_offset_enu(self.roll, self.pitch, pose.yaw,
+                                         float(self.get_parameter('gps_antenna_height').value))
+        ax, ay = ax + tilt_e, ay + tilt_n
         mode = 'fixed'
         if self.rtk is not None:
             self.rtk.notify(t, s.is_docking_done, self.cutting, self.drive.v, self.drive.w)

@@ -306,6 +306,10 @@ manual drive, were lost. The 2026-10-08 tuning bags had to be recorded by hand w
   driving** (x86). Scaled by the measured mower/x86 ratio (~1.7) that is **~12 % parked,
   ~15 % driving** on the RK3588. The dropped topics and what still covers them are listed above
   `DEFAULT_TOPICS`; add any back with `extra_topics` (a 100 Hz topic costs ~8 % of a core).
+  2026-11-12: `/imu/data` (100 Hz) is back in `DEFAULT_TOPICS` for the row-straightness work
+  (roll wobble, antenna tilt A/B; docs/analysis/2026-11-12_row_straightness.md): about +8 % of a
+  core while the full ring runs and ~26 MB per hour compressed (~141 MB/h before zstd); the
+  low-power ring does not record it.
   Topic discovery polls every 5 s (`polling_ms`; 1 s cost ~1 %), so a topic appearing late is
   picked up within 5 s.
 

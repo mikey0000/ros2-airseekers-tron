@@ -132,3 +132,37 @@ TEST(PathTrim, ShiftMovesOnlyAlongTheNormal)
   EXPECT_NEAR(px(2), 2.0f, 1e-6f);           // beyond n: untouched
   EXPECT_NEAR(py(2), 0.0f, 1e-6f);
 }
+
+TEST(PathTrim, RollFilterLowPassesTheWobble)
+{
+  // 2026-11-12: a 0.5 Hz, 0.6 deg roll wobble on a 5 deg side slope, 100 Hz samples
+  pt::RollFilter f;
+  const float slope = static_cast<float>(5.0 * M_PI / 180.0);
+  const float wob = static_cast<float>(0.6 * M_PI / 180.0);
+  EXPECT_FLOAT_EQ(f.update(0.0, slope + wob, 3.0f, 1.0f), slope + wob);   // starts at the sample
+  float lo = 1e9f, hi = -1e9f;
+  for (int k = 1; k <= 3000; ++k) {
+    const double t = 0.01 * k;
+    const float x = slope + wob * static_cast<float>(std::sin(2.0 * M_PI * 0.5 * t));
+    const float y = f.update(t, x, 3.0f, 1.0f);
+    if (t > 20.0) {lo = std::min(lo, y); hi = std::max(hi, y);}
+  }
+  EXPECT_NEAR(0.5f * (lo + hi), slope, 0.01f * slope);     // the steady slope passes
+  // first order at 0.5 Hz, tau 3 s: |H| = 1 / sqrt(1 + (2 pi 0.5 3)^2) ~ 0.106
+  EXPECT_NEAR(0.5f * (hi - lo) / wob, 0.106f, 0.01f);
+}
+
+TEST(PathTrim, RollFilterStepResponseAndReset)
+{
+  pt::RollFilter f;
+  f.update(0.0, 0.0f, 3.0f, 1.0f);
+  float y = 0.0f;
+  for (int k = 1; k <= 300; ++k) {y = f.update(0.01 * k, 0.1f, 3.0f, 1.0f);}
+  EXPECT_NEAR(y, 0.1f * (1.0f - std::exp(-1.0f)), 1e-4f);   // one time constant: 63 %
+  // a gap longer than reset_after (stale roll): restart at the new sample
+  EXPECT_FLOAT_EQ(f.update(10.0, -0.05f, 3.0f, 1.0f), -0.05f);
+  // tau 0: raw roll, as before 2026-11-12
+  pt::RollFilter raw;
+  raw.update(0.0, 0.0f, 0.0f, 1.0f);
+  EXPECT_FLOAT_EQ(raw.update(0.01, 0.2f, 0.0f, 1.0f), 0.2f);
+}

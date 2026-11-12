@@ -414,7 +414,27 @@ controller_server:
       transform_tolerance: 0.5
       enforce_path_inversion: false
       critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignAheadCritic",
-                "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic", "WheelFloorCritic"]
+                "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic", "WheelFloorCritic",
+                "RowEntryCritic"]
+      # Row entry speed hold (2026-11-12, mowgli_nav2_plugins row_entry.hpp,
+      # docs/analysis/2026-11-12_row_straightness.md): a new path that starts with a >= 1.0 m
+      # straight row while the heading is > 2.6 deg off it is driven at <= 0.10 m/s until the
+      # heading is within 2.6 deg, then the cap rises at 0.1 m/s^2 and lets go at 0.30 (the
+      # MCU clamp). At most 3 m. Field: the pivot handed over 8.3 deg rms off and MPPI was at
+      # 0.20 m/s at once; the first 1.5 m were 3.3 cm rms. 0.10 m/s keeps the inner wheel
+      # above the 0.06 floor up to |w| 0.2. Revert: drop it from the list (or enabled: false).
+      RowEntryCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 30.0
+        entry_speed: 0.10
+        heading_tol_deg: 2.6
+        ramp_accel: 0.10
+        release_speed: 0.30
+        max_entry_m: 3.0
+        row_min_m: 1.0     # < prune_distance (1.2): MPPI's path ends there
+        row_straight_tol_deg: 6.0
+        new_goal_m: 0.25   # goal jump per cycle that marks a new path (the goal creeps with map -> odom)
       ConstraintCritic:
         enabled: true
         cost_power: 1
@@ -461,6 +481,11 @@ controller_server:
         k_roll: 1.0
         roll_topic: "/imu/data"
         roll_timeout_s: 1.0
+        # 2026-11-12 row straightness (docs/analysis/2026-11-12_row_straightness.md): k_roll
+        # read the raw roll every cycle, so the 0.6 deg in-band roll wobble moved the target
+        # (~-5 % weave). The feed-forward is for the steady slope creep: first-order low-pass,
+        # tau 3 s (0 = raw).
+        roll_tau_s: 3.0
       PathFollowCritic:
         enabled: true
         cost_power: 1

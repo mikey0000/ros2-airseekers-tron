@@ -343,6 +343,12 @@ def generate_launch_description() -> LaunchDescription:
             'dual mode, field A/B (2026-10-29, review B13-2): ekf_map smooths RTK with wheels + '
             'IMU (x/y process noise 1e-4, ~0.9 s time constant; '
             'mower_localization/config/ekf_map_gnss_smoothing.yaml). false = raw-RTK tracking.'),
+        arg('gps_tilt_compensation', 'true',
+            '2026-11-12 row straightness: gps_gate moves the fix from the antenna (~0.324 m up) '
+            'to the ground point with IMU roll / pitch (docs/analysis/'
+            '2026-11-12_row_straightness.md). false = the fix passes unmoved (field A/B).'),
+        arg('gps_tilt_gain', '1.0',
+            'Antenna height scale for the tilt compensation (field regression ~1.3; A/B).'),
         arg('publish_static_map_odom', 'true',
             'Publish identity map -> odom when localization_mode is single (or localization '
             'is false). Never together with ekf_map (two map -> odom owners).'),
@@ -597,6 +603,8 @@ def generate_launch_description() -> LaunchDescription:
             'vio': LaunchConfiguration('vio'),
             'localization_mode': LaunchConfiguration('localization_mode'),
             'gnss_smoothing': LaunchConfiguration('gnss_smoothing'),
+            'gps_tilt_compensation': LaunchConfiguration('gps_tilt_compensation'),
+            'gps_tilt_gain': LaunchConfiguration('gps_tilt_gain'),
         }.items(),
         condition=enabled('localization'),
     )

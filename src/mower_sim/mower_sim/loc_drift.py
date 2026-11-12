@@ -51,6 +51,8 @@ from collections import deque
 from dataclasses import dataclass, replace
 from typing import Tuple
 
+from mower_localization.gps_tilt import tilt_offset_enu
+
 Pose = Tuple[float, float, float]
 
 
@@ -93,6 +95,11 @@ class LocDriftParams:
     antenna_x: float = 0.0           # GNSS antenna ahead of base_link (truth), m
     navsat_lever_x: float = 0.0      # lever arm navsat removes along the current yaw, m
     odom_lateral: bool = True        # odom integrates the true lateral motion (legacy)
+    # 2026-11-12 antenna tilt: the antenna's height above the ground (truth; roll / pitch move
+    # it sideways) and the height gps_gate's tilt compensation removes (tilt_gain x height; 0 =
+    # compensation off). Both 0 = the pre-2026-11-12 model (antenna height ignored).
+    antenna_height: float = 0.0
+    tilt_comp_height: float = 0.0
 
     def active(self) -> bool:
         return bool(self.enabled)
@@ -210,14 +217,21 @@ class LocDrift:
             prev = (tk, pk)
         return truth
 
-    def gnss_base(self, truth: Pose) -> Tuple[float, float]:
+    def gnss_base(self, truth: Pose, roll: float = 0.0,
+                  pitch: float = 0.0) -> Tuple[float, float]:
         """Where navsat puts base_link: the (delayed) antenna minus the lever along the
         current yaw. Equal to the truth when the antenna and the lever agree and there is
-        no latency (legacy)."""
+        no latency (legacy). With ``antenna_height`` the body tilt (``roll`` / ``pitch``, rad,
+        REP-103) moves the antenna, and gps_gate's compensation (``tilt_comp_height``) moves
+        it back (both with the current attitude: the sim's tilt changes slowly)."""
         p = self.p
         d = self._delayed(truth)
         ax = d[0] + p.antenna_x * math.cos(d[2])
         ay = d[1] + p.antenna_x * math.sin(d[2])
+        h = p.antenna_height - p.tilt_comp_height
+        if h != 0.0 and (roll != 0.0 or pitch != 0.0):
+            tx, ty = tilt_offset_enu(roll, pitch, truth[2], h)
+            ax, ay = ax + tx, ay + ty
         return (ax - p.navsat_lever_x * math.cos(truth[2]),
                 ay - p.navsat_lever_x * math.sin(truth[2]))
 
@@ -230,8 +244,9 @@ class LocDrift:
             return True
         return False
 
-    def sample(self, truth: Pose) -> Tuple[Pose, Pose]:
-        """New map estimate of the true pose and the map -> odom it implies."""
+    def sample(self, truth: Pose, roll: float = 0.0, pitch: float = 0.0) -> Tuple[Pose, Pose]:
+        """New map estimate of the true pose (body tilt ``roll`` / ``pitch``) and the
+        map -> odom it implies."""
         p = self.p
         if not p.active():
             self.map_est, self.map_to_odom = truth, (0.0, 0.0, 0.0)
@@ -240,7 +255,7 @@ class LocDrift:
         jx = self.rng.gauss(0.0, p.jitter_std * scale)
         jy = self.rng.gauss(0.0, p.jitter_std * scale)
         jth = self.rng.gauss(0.0, p.yaw_jitter_std * scale)
-        bx, by = self.gnss_base(truth)
+        bx, by = self.gnss_base(truth, roll, pitch)
         self.map_est = (bx + self.err[0] + jx, by + self.err[1] + jy, _wrap(truth[2] + jth))
         self.map_to_odom = compose(self.map_est, inverse(self.odom))
         return self.map_est, self.map_to_odom
