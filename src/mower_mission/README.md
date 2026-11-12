@@ -250,8 +250,11 @@ Runs: each area is planned and mowed once per run, in order:
   continuing across sessions: the number of finished alternate runs per area name is kept in
   `alternate_state_path` (JSON).
 * On an AUTO angle (-1) a +90 deg turn is sent as the goal's `perpendicular=true` (the bridge
-  learns the auto angle and re-plans at +90); any other turn uses the offset from 0 deg (map
-  x axis). Same rule for `cross` and `alternate`.
+  learns the auto angle and re-plans at +90). Any other `cross` turn is taken from the rows
+  the AUTO run planned this session (`auto_offset_deg` on the run, `resolved_run`). If those
+  rows are not known (resumed straight into run 2 after a restart), it falls back to the
+  offset from 0 deg with a warning. `alternate` turns on AUTO use the offset from 0 deg (map
+  x axis).
 * `~/active_area_settings` carries `run` / `runs`, the run's goal angle (`run_mow_angle_deg`,
   -1 = auto) and `run_line_angles_deg`: the row direction of every run of the area, a fixed
   angle as set, an auto one from the planned swaths (first SEGMENT_SWATH heading) once a run

@@ -1942,8 +1942,11 @@ when run 1 finishes cleanly (`outcome.py`). But:
   new key; default 90 gives today's behaviour). The GUI shows "Start direction" and "Cross
   angle" (5-175) in cross mode, and "Angle change per mow" in alternate. A cross angle of 0 / 180
   is refused by the GUI and the Go backend, and the mission takes it as 90 with a warning. On
-  AUTO only 90 uses the perpendicular flag; other angles are measured from 0 deg, as in
-  alternate. Bridge unchanged: it already handles the flag only as +90.
+  AUTO only 90 uses the perpendicular flag. Bridge unchanged: it already handles the flag only
+  as +90. Since 2026-11-12 (ws/crossauto1112), other cross angles on AUTO turn from the rows
+  the AUTO run planned, in the mow and in the preview. Before, they were measured from 0 deg:
+  AUTO + 45 planned run 2 at 45 deg, whatever the auto rows were. The fallback to 0 deg
+  (with a warning) applies only when the AUTO rows are not known in this session.
 - Mission: `run_line_angles_deg` on `~/active_area_settings` gives the row direction of every
   run: a fixed angle as set, an auto one from the first planned swath. It is re-published when
   a plan arrives. Preview segments carry `run`, and each area carries `run_line_angles_deg`.
