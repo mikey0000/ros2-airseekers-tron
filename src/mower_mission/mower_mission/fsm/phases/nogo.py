@@ -173,7 +173,7 @@ class NogoMixin:
                   % (m.nogo_replans[idx], int(p.nogo_replan_max_per_area), idx, why, txt))
         self._incident('nogo_replan', txt)
         self._go(self.phase, 'no-go zone: re-planning area %d' % idx)
-        self._start_plan(purpose='nogo_replan')
+        self._plan_area(purpose='nogo_replan')
         return True
 
     def _nogo_on_plan(self, outcome, result):
@@ -193,7 +193,9 @@ class NogoMixin:
         if p.path_conditioning:
             subpaths = self._condition_subpaths(subpaths, result.get(CONDITIONED_KEY))
         old_ac = self.cursor.area(m.area_idx)
-        done, prefix = self._raster_progress(subpaths, old_ac.raster)
+        sub_runs = self._plan_sub_runs(result, subpaths)
+        done, prefix = self._run_raster_progress(subpaths, old_ac.raster, sub_runs)
+        done |= self._earlier_run_subpaths(sub_runs)
         for k, sp in enumerate(subpaths):
             if geo.plan_fingerprint([sp]) in old_ac.done_fps:
                 done.add(k)
@@ -201,6 +203,7 @@ class NogoMixin:
         # consecutive sweep skips carried over (review 2026-11-02)
         m.sweep_skips = {}
         m.subpaths = subpaths
+        m.sub_runs = sub_runs
         m.planned_total += len(subpaths)
         m.cum = [geo.cumulative_lengths(sp) for sp in subpaths]
         m.lengths = [c[-1] for c in m.cum]

@@ -64,3 +64,14 @@ def test_plan_geometry_keeps_a_straight_row_straight():
     off = [(x - row[0][0]) * nx + (y - row[0][1]) * ny for x, y in subs[0]]
     assert max(abs(o) for o in off) <= 0.0008
     assert pid == '4:0:1:200:-23.72,-8.27'
+
+
+def test_plan_runs_and_a_cross_plan_id_that_stays_across_its_runs():
+    f = _fsm()
+    assert mow_progress.plan_runs(f) == [0, 0, 0]          # no run tags: the run in progress
+    f.mission.plan_runs, f.mission.sub_runs = [0, 1], [0, 0, 1]
+    pid = mow_progress.plan_geometry(f)[0]
+    assert mow_progress.plan_runs(f) == [0, 0, 1]
+    f.mission.run_i = 1                                     # run 2's rows: same plan
+    assert mow_progress.plan_geometry(f)[0] == pid
+    assert mow_progress.plan_runs(SimpleNamespace(mission=None)) == []

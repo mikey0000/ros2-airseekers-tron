@@ -92,6 +92,10 @@ class CoverageServer(Node):
         # edge_laps: the edge layout's number of edge laps (area edge_laps, default 3 = stock);
         # the rows move with them (soft: rows 0.15 x edge_laps in, 0 = rows from the line; hard: >= 1)
         p('edge_laps', 3)
+        # include_rings: false = the plan's rings (perimeter / edge laps) are left out of the
+        # result, the rows keep the inset the rings give them (the mission's cross mow plans
+        # its later row sets so: the laps are driven once, with the first row set)
+        p('include_rings', True)
         self.add_on_set_parameters_callback(self._on_set_parameters)
         # Coverage verification of the last plan (the action result has no
         # field for it): latched JSON {coverage_fraction, gap_count,
@@ -291,7 +295,7 @@ class CoverageServer(Node):
             ring_count=resp.ring_count, swath_count=resp.swath_count,
             transit_gap_m=gap, turn_split_deg=self._float('turn_split_deg'),
             fences=fences, holes=holes, swaths_first=swaths_first,
-            pose_flags=list(resp.pose_flags))
+            pose_flags=list(resp.pose_flags), drop_rings=not self._bool('include_rings'))
         if result.mode != splitter.MODE_STRUCTURAL:
             self.get_logger().warn(
                 'planner path did not match its ring/swath counts (%d/%d); '

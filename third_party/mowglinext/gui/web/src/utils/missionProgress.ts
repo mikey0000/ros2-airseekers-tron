@@ -12,6 +12,9 @@ export interface MissionPlan {
     plan_id: string;
     area: number;
     subpaths: XY[][];
+    // run index (0-based) of each sub-path: a cross plan holds the laps and every run's
+    // rows (one plan since 2026-11-12); [] from an older mission
+    runs: number[];
 }
 
 export interface ObstaclePolicy {
@@ -74,6 +77,8 @@ export function parseMissionPlan(raw: unknown): MissionPlan | null {
         plan_id: d.plan_id,
         area: num(d.area, -1),
         subpaths: d.subpaths.map((sp: unknown) => (Array.isArray(sp) ? sp.filter(isXY).map(([x, y]) => [x, y] as XY) : [])),
+        runs: Array.isArray(d.runs) && d.runs.length === d.subpaths.length
+            ? d.runs.map((r: unknown) => num(r)) : [],
     };
 }
 
@@ -108,6 +113,15 @@ export type StretchKind = "mowed" | "current" | "remaining" | "skipped";
 export interface Stretch {
     kind: StretchKind;
     points: XY[];
+    // the sub-path belongs to the cross row set of a plan that holds several runs (cross:
+    // runs alternate start angle / cross angle, so the odd runs are the cross rows)
+    cross: boolean;
+}
+
+/** Per sub-path: the cross row set of a multi-run (cross) plan. */
+export function crossSubpaths(plan: MissionPlan): boolean[] {
+    const several = new Set(plan.runs).size > 1;
+    return plan.subpaths.map((_sp, i) => several && (plan.runs[i] ?? 0) % 2 === 1);
 }
 
 const inRanges = (i: number, rs: XY[]) => rs.some(([a, b]) => i >= a && i <= b);
@@ -124,8 +138,9 @@ export function planStretches(plan: MissionPlan | null, progress: MissionProgres
     if (!plan || !progress || progress.plan_id !== plan.plan_id) return [];
     const out: Stretch[] = [];
     const cur = progress.current_segment;
+    const cross = crossSubpaths(plan);
     let off = 0;
-    for (const sp of plan.subpaths) {
+    for (const [i, sp] of plan.subpaths.entries()) {
         let run: Stretch | null = null;
         for (let j = 0; j + 1 < sp.length; j++) {
             const a = off + j, b = a + 1;
@@ -137,7 +152,7 @@ export function planStretches(plan: MissionPlan | null, progress: MissionProgres
             if (run && run.kind === kind) {
                 run.points.push(sp[j + 1]);
             } else {
-                run = {kind, points: [sp[j], sp[j + 1]]};
+                run = {kind, points: [sp[j], sp[j + 1]], cross: cross[i]};
                 out.push(run);
             }
         }

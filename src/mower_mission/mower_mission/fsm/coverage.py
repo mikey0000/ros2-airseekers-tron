@@ -83,13 +83,31 @@ class CoverageMixin:
         half = 0.5 * self._swath_spacing(self.mission.settings or {})
         return raster.plan_progress(subpaths, half, off)
 
+    def _run_raster_progress(self, subpaths, raster, sub_runs):
+        """_raster_progress of the sub-paths of the run in progress only (``sub_runs``: the
+        run of each sub-path). The raster records what this run cut (a new one starts with
+        each run, _advance_run): a cross plan's later rows cross ground the earlier rows cut,
+        and the earlier rows are not judged by a later run's raster."""
+        done, prefix = self._raster_progress(subpaths, raster)
+        cur = self.mission.run_i
+        if len(sub_runs) != len(subpaths) or all(r == cur for r in sub_runs):
+            return done, prefix
+        return ({k for k in done if sub_runs[k] == cur},
+                {k: v for k, v in prefix.items() if sub_runs[k] == cur})
+
+    def _earlier_run_subpaths(self, sub_runs):
+        """Indices of the sub-paths of runs before the run in progress (``sub_runs``: the
+        run of each sub-path): the part of a cross plan a resume in a later run is past."""
+        cur = self.mission.run_i
+        return {k for k, r in enumerate(sub_runs) if r < cur}
+
     def _raster_resume(self, ac, subpaths):
         """Same plan as the cursor: the sub-paths the raster shows mowed are done as well, and
         the resume point moves forward to the end of the mowed lead-in of the first sub-path
         left when that lies beyond the stored one (never backwards: the cursor's progress is
         kept; an uncut gap is the missed-patch report's)."""
         m = self.mission
-        done, prefix = self._raster_progress(subpaths, ac.raster)
+        done, prefix = self._run_raster_progress(subpaths, ac.raster, m.sub_runs)
         added = done - ac.completed
         for k in added:
             ac.completed.add(k)

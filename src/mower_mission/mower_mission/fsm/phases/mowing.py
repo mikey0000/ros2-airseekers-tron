@@ -18,6 +18,7 @@ class MowingMixin:
         if m.sub_i >= len(m.subpaths):
             self._area_done()
             return
+        self._advance_run()
         m.start_local = 0
         m.boundary_recoveries = 0
         m.premature = 0

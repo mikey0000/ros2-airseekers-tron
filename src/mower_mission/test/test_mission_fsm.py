@@ -1623,7 +1623,7 @@ def test_area_settings_applied_before_planning():
     # swath_overlap_m is ignored: spacing = swath_width_m (default 0.18)
     assert cov == [{'operation_width': pytest.approx(0.18), 'headland_rings': 3,
                     'path_mode': 'spiral', 'mow_angle_deg': 30.0, 'edge_first': False,
-                    **DEFAULT_ROUTE}]
+                    'include_rings': True, **DEFAULT_ROUTE}]
     goal = h.goal(f.ACT_PLAN)
     assert goal['mow_angle_deg'] == 30.0 and goal['perpendicular'] is False
     # order: settings -> height -> coverage params -> plan goal, all blade off
@@ -1713,40 +1713,136 @@ def test_repeat_mows_the_area_n_times():
     assert h.since(0, f.PublishAreaSettings)[-1].settings == {}
 
 
-def test_cross_plans_twice_90_deg_apart():
+def _drive_plan(h, done, n=40):
+    """Mow on: finish the pending follow / transit (blade cutting) until ``done()``."""
+    for _ in range(n):
+        if done():
+            return
+        h.fsm.inputs.is_cutting = True
+        a = h.fsm._action
+        if a is None:
+            h.tick()
+        elif a.name == f.ACT_NAV:
+            g = h.goal(f.ACT_NAV)['pose']
+            h.fsm.inputs.pose = (g[0], g[1], g[2] if len(g) > 2 else 0.0)
+            h.finish(f.ACT_NAV)
+            h.tick()
+        elif a.name in (f.ACT_FOLLOW, f.ACT_SPIN):
+            h.finish(f.ACT_FOLLOW)
+        else:
+            h.finish(a.name)
+    assert done(), (h.name, h.fsm.sub_state)
+
+
+def test_cross_plans_once_laps_then_both_row_sets():
+    # owner 2026-11-12: the second row set was re-planned and mowed the perimeter again;
+    # a cross area is one plan: the laps once (run 1's plan), run 1's rows, run 2's rows
     h = Harness()
     h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0}}
     h.areas = [square(0, 0, 5), square(10, 0, 5)]
     start_until_planning(h)
+    assert '[cross, runs 1-2/2 in one plan]' in h.fsm.sub_state
     g1 = h.goal(f.ACT_PLAN)
-    assert param_calls(h, f.PARAM_NODE_COVERAGE)[-1]['path_mode'] == 'cross'
-    mow_area_once(h)
-    assert h.name == 'PLANNING' and h.fsm.mission.area_idx == 0
+    p1 = param_calls(h, f.PARAM_NODE_COVERAGE)[-1]
+    assert (p1['path_mode'], p1['include_rings'], p1['mow_angle_deg']) == ('cross', True, 30.0)
+    sp_a, sp_b = line(0, 0, 4, 0), line(4, 0, 4, 4)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp_a]))
+    assert h.name == 'PLANNING'                  # run 2's rows of the same plan
     g2 = h.goal(f.ACT_PLAN)
+    p2 = param_calls(h, f.PARAM_NODE_COVERAGE)[-1]
     assert (g1['mow_angle_deg'], g2['mow_angle_deg']) == (30.0, 120.0)
-    assert param_calls(h, f.PARAM_NODE_COVERAGE)[-1]['mow_angle_deg'] == 120.0
-    mow_area_once(h)
-    assert h.name == 'PLANNING' and h.fsm.mission.area_idx == 1   # then the next area
+    # the rows only: same planner settings (the rows keep the inset the laps give them)
+    assert p2['include_rings'] is False and p2['mow_angle_deg'] == 120.0
+    assert {k: v for k, v in p2.items() if k not in ('include_rings', 'mow_angle_deg')} == \
+        {k: v for k, v in p1.items() if k not in ('include_rings', 'mow_angle_deg')}
+    m = h.mark()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp_b]))
+    ms = h.fsm.mission
+    assert h.name == 'MOWING' and ms.plan_runs == [0, 1] and ms.run_i == 0
+    assert len(ms.subpaths) == 2 and ms.sub_runs == [0, 1]
+    assert len(h.since(m, f.PublishPlan)) == 1    # published once, both row sets
+    mp = __import__('mower_mission.mow_progress', fromlist=['x'])
+    pid = mp.plan_geometry(h.fsm)[0]
+    assert mp.plan_runs(h.fsm) == [0, 1]
+    follow_current(h)                            # run 1's rows
+    assert ms.run_i == 1 and h.fsm.cursor.area_runs[0] == 1
+    assert 'area_run 0 1' in h.saved
+    assert h.since(m, f.PublishAreaSettings)[-1].settings['run'] == 2
+    assert any('mowing the rows of run 2/2' in e.text for e in h.since(m, f.Log))
+    assert mp.plan_geometry(h.fsm)[0] == pid     # still the same plan for the GUI
+    _drive_plan(h, lambda: h.name == 'PLANNING')
+    assert h.fsm.mission.area_idx == 1           # then the next area: no third plan
+    # since run 2's goal: only area 1's first goal, area 0 was not planned a third time
+    assert len([e for e in h.since(m, f.StartAction) if e.name == f.ACT_PLAN]) == 1
+
+
+def test_alternate_and_zigzag_repeats_still_plan_each_run_with_its_laps():
+    for mode in ('alternate', 'zigzag'):
+        h = Harness()
+        h.area_settings = {0: {'path_mode': mode, 'repeat': 2, 'mow_angle_deg': 10.0}}
+        start_until_planning(h)
+        for run in range(2):
+            assert h.fsm.mission.plan_runs == [run]
+            assert param_calls(h, f.PARAM_NODE_COVERAGE)[-1]['include_rings'] is True
+            mow_area_once(h)
+        assert h.name == 'RETURNING_HOME'
+
+
+def test_cross_edge_last_puts_the_laps_with_the_last_row_set():
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0, 'edge_first': False,
+                           'repeat': 2}}
+    start_until_planning(h)
+    rings = []
+    for _ in range(4):
+        h.goal(f.ACT_PLAN)
+        rings.append(param_calls(h, f.PARAM_NODE_COVERAGE)[-1]['include_rings'])
+        h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+        h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    assert rings == [False, False, False, True]
+    assert h.name == 'MOWING' and h.fsm.mission.sub_runs == [0, 1, 2, 3]
+
+
+def test_cross_plan_failing_in_a_later_run_fails_the_area_plan():
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0}}
+    h.areas = [square(0, 0, 5), square(10, 0, 5)]
+    start_until_planning(h)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    m = h.mark()
+    h.finish(f.ACT_PLAN, f.ABORTED, {'success': False, 'message': 'no swaths'})
+    assert any('area 0: coverage planning failed (run 2/2: no swaths)' in e.text
+               for e in h.since(m, f.Log))
+    assert h.name == 'PLANNING' and h.fsm.mission.area_idx == 1
 
 
 def test_cross_on_auto_angle_uses_perpendicular_flag():
     h = Harness()
     h.area_settings = {0: {'path_mode': 'cross', 'repeat': 2}}
     start_until_planning(h)
-    goals = []
-    for _ in range(4):
+    goals, rings = [], []
+    for _ in range(4):                           # repeat 2: four row sets, one plan
         g = h.goal(f.ACT_PLAN)
         goals.append((g['mow_angle_deg'], g['perpendicular']))
-        mow_area_once(h)
+        rings.append(param_calls(h, f.PARAM_NODE_COVERAGE)[-1]['include_rings'])
+        h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+        h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
     assert goals == [(-1.0, False), (-1.0, True)] * 2
+    assert rings == [True, False, False, False]  # the laps once per area, not per repeat
+    assert h.name == 'MOWING' and h.fsm.mission.plan_runs == [0, 1, 2, 3]
 
 
 def _cross_goals(h, n):
+    """The PlanCoverage goals of the area's one plan (n runs)."""
     goals = []
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
     for _ in range(n):
         g = h.goal(f.ACT_PLAN)
         goals.append((g['mow_angle_deg'], g['perpendicular']))
-        mow_area_once(h)
+        h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    assert h.name == 'MOWING' and h.fsm.mission.plan_runs == list(range(n))
     return goals
 
 
@@ -1780,21 +1876,21 @@ def test_cross_on_auto_angle_turns_the_second_run_from_the_auto_rows():
                            'repeat': 2}}
     start_until_planning(h)
     goals = []
-    for k, line in enumerate((105.0, 150.0, 105.0, 150.0)):
-        assert h.name == 'PLANNING' and h.fsm.mission.run_i == k
+    m = h.mark()
+    for k, line_deg in enumerate((105.0, 150.0, 105.0, 150.0)):
+        assert h.name == 'PLANNING' and h.fsm._planned_run() == k
         g = h.goal(f.ACT_PLAN)
         goals.append((g['mow_angle_deg'], g['perpendicular']))
         if k == 1:
             assert param_calls(h, f.PARAM_NODE_COVERAGE)[-1]['mow_angle_deg'] == 150.0
             assert h.fsm.run_line_angles()[:2] == [105.0, 150.0]
         h.fsm.inputs.pose = (2.5, 1.5, 0.0)
-        h.finish(f.ACT_PLAN, f.SUCCEEDED, _rows_plan(line))
-        for _ in range(20):
-            if h.name != 'MOWING':
-                break
-            follow_current(h)
-    # the AUTO rows are re-learned each repeat: run 3 is AUTO again, run 4 from its rows
+        h.finish(f.ACT_PLAN, f.SUCCEEDED, _rows_plan(line_deg))
+    # the AUTO rows are re-learned for each repeat's AUTO run (the same rows), the run
+    # after it from them; all in one plan
     assert goals == [(-1.0, False), (150.0, False), (-1.0, False), (150.0, False)]
+    assert h.name == 'MOWING' and h.fsm.mission.sub_runs == [0, 1, 2, 3]
+    assert not any('AUTO rows not planned' in e.text for e in h.since(m, f.Log))
 
 
 def test_cross_on_auto_with_unknown_auto_rows_falls_back_to_0_deg_with_a_warning():
@@ -1843,13 +1939,14 @@ def test_active_settings_report_every_run_row_angle_on_auto():
     act = h.since(m, f.PublishAreaSettings)[-1].settings
     assert act['run_line_angles_deg'] == [105.0, 15.0]
     assert act['run_mow_angle_deg'] == -1.0
-    for _ in range(10):
-        if h.name == 'PLANNING':
-            break
-        follow_current(h)
-    assert h.name == 'PLANNING' and h.fsm.mission.run_i == 1
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, _rows_plan(15.0))
+    assert h.name == 'MOWING' and h.fsm.mission.run_i == 0
+    assert h.since(m, f.PublishAreaSettings)[-1].settings['run'] == 1
+    # the label follows the rows being mowed: run 2 once its first sub-path is next
+    _drive_plan(h, lambda: h.fsm.mission.run_i == 1)
     act = h.since(m, f.PublishAreaSettings)[-1].settings
     assert (act['run'], act['run_line_angles_deg']) == (2, [105.0, 15.0])
+    assert h.name in ('MOWING', 'TRANSIT')
 
 
 def test_run_line_angles_fixed_and_learned_from_the_perpendicular_run():
@@ -3143,9 +3240,9 @@ def mowing_two_swaths(h):
     return tuple(h.fsm.mission.subpaths)
 
 
-def static_abort_and_detour(h, sp0):
+def static_abort_and_detour(h, sp0, off=0):
     """Chair at 3 m: detour_skip_m (2 m) past the abort pose. Returns the skipped
-    stretch's (abort, rejoin) indices."""
+    stretch's (abort, rejoin) indices (local to sp0; ``off``: its first absolute index)."""
     h.fsm.inputs.pose = (3.0, 0.0, 0.0)
     policy(h, 'static', 'chair')
     h.tick()
@@ -3163,8 +3260,8 @@ def static_abort_and_detour(h, sp0):
     assert h.name == 'MOWING'
     h.tick()
     assert h.goal(f.ACT_FOLLOW)['poses'][0] == sp0[b]
-    assert h.fsm.cursor.areas[0].skipped == [(a, b)]
-    assert 'area_skip 0 %d %d' % (a, b) in h.saved
+    assert h.fsm.cursor.areas[0].skipped == [(off + a, off + b)]
+    assert 'area_skip 0 %d %d' % (off + a, off + b) in h.saved
     return a, b
 
 
@@ -3207,28 +3304,67 @@ def test_skipped_stretch_still_blocked_ends_incomplete():
     assert cur.available and not h.blade
 
 
-def test_cross_run_with_only_a_blocked_stretch_goes_on_to_the_next_run():
-    # owner 2026-11-11: a cross whose first run ends with a stretch still blocked must
-    # still mow the cross pass instead of ending the area (and docking)
-    h = Harness(return_home_on_incomplete=False)
+def _serpentine(x0, x1, y0, y1, step):
+    """One sub-path of rows along y from x0 to x1, ``step`` apart (0.1 m poses)."""
+    out, x, k = [], x0, 0
+    while x <= x1 + 1e-9:
+        a, b = (y0, y1) if k % 2 == 0 else (y1, y0)
+        n = int(round(abs(b - a) / 0.1))
+        out.extend((x, a + (b - a) * i / n, 0.0) for i in range(n + 1))
+        x, k = x + step, k + 1
+    return out
+
+
+def _cross_blocked_on_run_1(h, run2):
+    """Cross area, one plan: run 1 = two rows along x (the chair blocks a stretch of the
+    first one: detour, then the end-of-area retry is blocked again), run 2 = ``run2``."""
     h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0}}
-    sp0, sp1 = mowing_two_swaths(h)
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    sp0, sp1 = line(0, 0, 10, 0, n=21), line(10, 1, 0, 1, n=21)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp0, sp1]))
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(run2))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    assert h.fsm.mission.sub_runs == [0, 0] + [1] * len(run2)
+    sp0 = h.fsm.mission.subpaths[0]
     static_abort_and_detour(h, sp0)
     h.finish(f.ACT_FOLLOW)
     h.finish(f.ACT_NAV)
     h.tick()
-    h.finish(f.ACT_FOLLOW)
+    h.finish(f.ACT_FOLLOW)                        # run 1 done (but the stretch)
+    assert h.fsm.mission.run_i == 1
+    h.fsm.inputs.obstacle_kind = 'none'
+    _drive_plan(h, lambda: h.fsm.mission.requeue is not None or h.name not in (
+        'MOWING', 'TRANSIT'))                     # run 2, then the end-of-area pass
     h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    policy(h, 'static', 'chair')
     h.finish(f.ACT_NAV)
     h.tick()
     m = h.mark()
     h.finish(f.ACT_FOLLOW, f.ABORTED)             # chair still there
-    assert h.name == 'PLANNING' and h.fsm.mission.run_i == 1
-    assert h.goal(f.ACT_PLAN)['mow_angle_deg'] == 120.0
-    assert not h.fsm.mission.blocked
-    assert any('going on to run 2' in e.text for e in h.since(m, f.Log))
+    return m
+
+
+def test_cross_stretch_blocked_on_run_1_rows_mowed_by_run_2_completes_the_area():
+    # owner 2026-11-11: a cross whose first rows end with a stretch still blocked must not
+    # end the area (and dock) for it; in one plan run 2's rows mow over it
+    h = Harness(return_home_on_incomplete=False, path_conditioning=False)
+    m = _cross_blocked_on_run_1(h, [_serpentine(2.0, 6.0, -0.5, 1.5, 0.15)])
+    assert h.name == 'RETURNING_HOME', (h.name, h.fsm.sub_state)
+    assert any('mowed over by the later run(s)' in e.text for e in h.since(m, f.Log))
+    assert any(e.kind == 'run_blocked_continue' for e in h.since(m, f.RecordIncident))
+
+
+def test_cross_stretch_blocked_where_run_2_does_not_mow_ends_incomplete():
+    # e.g. on the laps: they are driven once, no later run mows there
+    h = Harness(return_home_on_incomplete=False, path_conditioning=False)
+    _cross_blocked_on_run_1(h, [_serpentine(7.0, 9.0, -0.5, 1.5, 0.15)])
+    assert h.name == 'MOWING_INCOMPLETE'
+    assert h.fsm.sub_state.startswith('1 stretch blocked by obstacles (')
     cur = ResumeCursor.loads(h.saved)
-    assert cur.area_runs[0] == 1 and not cur.areas[0].skipped
+    assert cur.area_runs[0] == 1 and cur.areas[0].skipped
 
 
 def test_last_run_with_a_blocked_stretch_still_ends_incomplete():
@@ -3236,16 +3372,16 @@ def test_last_run_with_a_blocked_stretch_still_ends_incomplete():
     h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0}}
     h.areas = [square(-1, -1, 12)]
     start_until_planning(h)
-    mow_area_once(h)                              # run 1 clean
-    assert h.fsm.mission.run_i == 1
-    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.fsm.inputs.pose = (0.0, 9.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 9, 4, 9)]))     # run 1, clean
     sp0, sp1 = line(0, 0, 10, 0, n=21), line(10, 1, 0, 1, n=21)
-    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp0, sp1]))
-    h.fsm.inputs.is_cutting = True
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp0, sp1]))             # run 2
+    follow_current(h)
+    _drive_plan(h, lambda: h.fsm.mission.run_i == 1 and h.fsm.mission.sub_i == 1
+                and h.name == 'MOWING')
+    sp0, sp1 = tuple(h.fsm.mission.subpaths[1:])
     h.tick()
-    assert h.goal(f.ACT_FOLLOW)['poses'][0] == sp0[0]
-    sp0, sp1 = tuple(h.fsm.mission.subpaths)
-    static_abort_and_detour(h, sp0)
+    static_abort_and_detour(h, sp0, off=len(h.fsm.mission.subpaths[0]))
     h.finish(f.ACT_FOLLOW)
     h.finish(f.ACT_NAV)
     h.tick()
@@ -3535,7 +3671,7 @@ def test_preview_plans_area_without_state_change():
     assert [c.request for c in calls(h, m, f.SRV_GET_AREA_SETTINGS)] == [{'index': 1}]
     assert param_calls(h, f.PARAM_NODE_COVERAGE, m) == [{
         'operation_width': pytest.approx(0.18), 'headland_rings': 3, 'path_mode': 'spiral',
-        'mow_angle_deg': 45.0, 'edge_first': False, **DEFAULT_ROUTE}]
+        'mow_angle_deg': 45.0, 'edge_first': False, 'include_rings': True, **DEFAULT_ROUTE}]
     # no blade height / cut speed / motion while previewing
     assert not calls(h, m, f.SRV_CUTTER_HEIGHT)
     assert not param_calls(h, f.PARAM_NODE_CONTROLLER, m)
@@ -5235,6 +5371,9 @@ def test_preview_cross_plans_both_row_sets():
     h.answer_services()
     assert h.goal(f.ACT_PLAN)['mow_angle_deg'] == 120.0
     assert [c['mow_angle_deg'] for c in param_calls(h, f.PARAM_NODE_COVERAGE, m)] == [30.0, 120.0]
+    # as the mow plans it (2026-11-12): the laps once, with the first row set
+    assert [c['include_rings'] for c in param_calls(h, f.PARAM_NODE_COVERAGE, m)] == \
+        [True, False]
     h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan(1.0))
     assert len([e for e in h.since(m, f.StartAction) if e.name == f.ACT_PLAN]) == 2
     plans = h.since(m, f.PublishPlan)
@@ -5296,6 +5435,7 @@ def test_preview_zigzag_repeat_plans_once_and_cross_second_failure_reports():
     h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan())
     assert len([e for e in h.since(m, f.StartAction) if e.name == f.ACT_PLAN]) == 1
     assert summaries(h, m)[-1]['areas'][0]['preview_runs'] == 1
+    assert param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]['include_rings'] is True
     h.area_settings = {0: {'path_mode': 'cross'}}
     m = h.mark()
     assert preview(h, 0)[0]

@@ -10,7 +10,10 @@ from mower_mission.fsm.common import (ACT_PLAN, AREA_SETTINGS_DEFAULTS, AreaCurs
     PublishAreaSettings, PublishPlan, ROUTE_ORDERS, ROW_LINK_MODES, SEGMENT_SWATH,
     SRV_CUTTER_HEIGHT, SRV_GET_AREA_SETTINGS,
     SRV_SET_PARAMS, STEREO_STALE_SUB, SUCCEEDED, TURN_TYPES, UNAVAILABLE, absolute_to_local,
-    coverage_route_params, geo, json, math, subpath_offsets)  # noqa: F401
+    condition_plan, coverage_route_params, geo, json, math, subpath_offsets)  # noqa: F401
+
+# merged plan result of several runs (_merge_plan_runs): the run index of every sub-path
+PLAN_RUNS_KEY = 'sub_runs'
 
 
 
@@ -34,6 +37,14 @@ def resolved_run(run, auto_line):
     if off is None or auto_line is None:
         return run
     return dict(run, angle=round((float(auto_line) + float(off)) % 180.0, 3))
+
+
+def rings_position(n_runs, edge_first):
+    """Position (0 .. n_runs - 1) of the run whose plan carries the rings (perimeter / edge
+    laps) when ``n_runs`` runs share one plan (cross): the first with edge_first, else the
+    last (the laps after all rows). The other runs are planned with include_rings false."""
+    return 0 if edge_first else max(0, int(n_runs) - 1)
+
 
 class AreasMixin:
     """Area progression, per-area mowing settings, planning."""
@@ -74,6 +85,8 @@ class AreasMixin:
         m.requeue_subs, m.retry_entry = None, None
         self.cursor.current_area = idx
         m.settings, m.runs = None, []
+        m.plan_runs, m.sub_runs, m.plan_acc = [], [], None
+        # the run in progress: a cross plan holds every run, this one's rows are being mowed
         m.run_i = int(self.cursor.area_runs.get(idx, 0))
         if self.p.use_area_settings:
             self._go('PLANNING', 'area %d %s: loading settings' % (idx, area.get('name', '')))
@@ -195,6 +208,7 @@ class AreasMixin:
         flag (the bridge learns the auto angle). Any other cross turn on AUTO is marked
         ``auto_offset_deg`` and turned from the rows the first run planned (see
         :func:`resolved_run`); alternate turns on AUTO are taken from 0 deg (the map x axis).
+        A cross area's runs share one plan (_plan_group); the other modes plan each run.
         """
         base = float(st['mow_angle_deg'])
         mode = st['path_mode']
@@ -322,38 +336,84 @@ class AreasMixin:
             'operation_width_m': round(self._swath_spacing(m.settings), 4)})
         return out
 
+    def _planned_run(self):
+        """Index of the run being planned: the current one of m.plan_runs while the area's
+        plan is planned, else the run in progress."""
+        m = self.mission
+        acc = m.plan_acc
+        if acc is not None and acc['k'] < len(m.plan_runs):
+            return m.plan_runs[acc['k']]
+        return m.run_i
+
     def _current_run(self):
         """The run being planned, an AUTO-relative cross turn resolved against the rows an
         earlier AUTO run of this area planned (from 0 deg, with a warning, until known)."""
         m = self.mission
-        run = m.runs[m.run_i]
+        i = self._planned_run()
+        run = m.runs[i]
         if run.get('auto_offset_deg') is None:
             return run
         auto = auto_line_angle(m.runs, m.line_angles)
         if auto is None:
             self._log('warn', 'area %d run %d: AUTO rows not planned in this session: '
                               'cross angle %.0f deg taken from 0 deg'
-                      % (m.area_idx, m.run_i + 1, float(run['auto_offset_deg'])))
+                      % (m.area_idx, i + 1, float(run['auto_offset_deg'])))
         return resolved_run(run, auto)
 
+    def _plan_group(self):
+        """Indices of the runs the area's next plan holds, from the run in progress. Cross:
+        every run, so the plan is the laps once, then each run's rows, mowed and tracked as
+        one plan (owner 2026-11-12: the second run re-planned and mowed the perimeter again).
+        Zigzag / alternate: the one run (each repeat is planned again, laps included)."""
+        m = self.mission
+        if m.settings['path_mode'] == 'cross':
+            return list(range(len(m.runs)))
+        return [m.run_i]
+
     def _plan_run(self):
+        """PLANNING: plan the area's next plan (the runs of _plan_group)."""
+        m = self.mission
+        st = m.settings
+        m.plan_runs = self._plan_group()
+        self._fx.append(PublishAreaSettings(self.active_settings()))
+        if len(m.plan_runs) == 1:
+            what = 'run %d/%d' % (m.plan_runs[0] + 1, len(m.runs))
+        else:
+            what = 'runs %d-%d/%d in one plan' % (m.plan_runs[0] + 1, m.plan_runs[-1] + 1,
+                                                  len(m.runs))
+        self._go('PLANNING', 'area %d %s [%s, %s]' % (
+            m.area_idx, self._area_name(), st['path_mode'], what))
+        self._plan_area()
+
+    def _plan_area(self, purpose=None):
+        """Plan the runs of m.plan_runs one after the other (coverage parameters, then the
+        PlanCoverage goal, per run); _on_plan collects them into one plan. ``purpose``
+        'nogo_replan': the mid-mow re-plan around a no-go zone (fsm/phases/nogo.py)."""
+        self.mission.plan_acc = {'k': 0, 'parts': [], 'purpose': purpose}
+        self._plan_params()
+
+    def _plan_params(self):
+        """/coverage_server parameters of the run being planned; its goal follows on the
+        reply (_start_plan). Of several runs in one plan only one carries the rings
+        (rings_position); the others are its rows, inside the same inset."""
         m = self.mission
         st, run = m.settings, self._current_run()
-        self._fx.append(PublishAreaSettings(self.active_settings()))
-        self._go('PLANNING', 'area %d %s [%s, run %d/%d]' % (
-            m.area_idx, self._area_name(), st['path_mode'], m.run_i + 1, len(m.runs)))
+        pos = m.plan_acc['k']
         self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_COVERAGE, 'params': {
             'operation_width': self._swath_spacing(st),
             'headland_rings': int(st['perimeter_laps']),
             'path_mode': str(st['path_mode']),
             'mow_angle_deg': float(run['angle']),
             'edge_first': bool(st['edge_first']),
+            'include_rings': pos == rings_position(len(m.plan_runs), st['edge_first']),
             **coverage_route_params(st)}}, purpose='coverage_params')
 
     def _start_plan(self, purpose=None):
         m = self.mission
+        if purpose is None and m.plan_acc is not None:
+            purpose = m.plan_acc['purpose']
         area, run = m.areas[m.area_idx], resolved_run(
-            m.runs[m.run_i], auto_line_angle(m.runs, m.line_angles))
+            m.runs[self._planned_run()], auto_line_angle(m.runs, m.line_angles))
         self._start_action(ACT_PLAN, {
             'outer_boundary': self._plan_outline(area.get('outer', [])),
             # + no-go zones added mid-mow (option C, fsm/phases/nogo.py)
@@ -362,11 +422,135 @@ class AreasMixin:
             'perpendicular': bool(run['perpendicular'])}, self.p.plan_timeout_s,
             purpose=purpose)
 
+    def _collect_plan_run(self, outcome, result):
+        """One run of m.plan_runs planned: its row direction is learned (the AUTO
+        resolution of the later runs) and the next run is planned. Returns None while runs
+        are left, else (outcome, result) of the whole plan: the one run's own result, the
+        runs' results merged (_merge_plan_runs), or the failed run's (its run named)."""
+        m = self.mission
+        acc, m.plan_acc = m.plan_acc, None
+        if acc is None or not m.plan_runs:
+            return outcome, result
+        k = m.plan_runs[acc['k']]
+        planned = bool(self._plan_subpaths(outcome, result))
+        if planned:
+            line = geo.swath_angle_deg(result.get('segments') or [],
+                                       result.get('segment_types') or [], SEGMENT_SWATH)
+            if line is not None:
+                m.line_angles[k] = line
+                self._fx.append(PublishAreaSettings(self.active_settings()))
+        if len(m.plan_runs) == 1:
+            return outcome, result
+        if not planned:
+            return outcome, dict(result, message='run %d/%d: %s' % (
+                k + 1, len(m.runs), result.get('message') or outcome))
+        acc['parts'].append((k, result))
+        acc['k'] += 1
+        if acc['k'] < len(m.plan_runs):
+            m.plan_acc = acc
+            self._plan_params()
+            return None
+        return SUCCEEDED, self._merge_plan_runs(acc['parts'])
+
+    def _merge_plan_runs(self, parts):
+        """One PlanCoverage-like result of the runs' results ``parts`` [(run, result)] in
+        mowing order: drivable sub-paths, typed segments and full path concatenated. With
+        path conditioning each run is conditioned on its own (as the node does for every
+        plan result) and the outcomes merged under CONDITIONED_KEY; PLAN_RUNS_KEY holds the
+        run of every sub-path as driven (after conditioning). The step from one run's last
+        sub-path to the next run's first is an ordinary inter-sub-path link."""
+        cond = self.p.path_conditioning
+        raw, segs, types, full, runs, msgs = [], [], [], [], [], []
+        pre_all = {'n_in': 0, 'subpaths': [], 'cond': {}, 'cond_errors': {},
+                   'corner_body': [], 'logs': []}
+        for k, res in parts:
+            sps = self._plan_subpaths(SUCCEEDED, res)
+            raw.extend(sps)
+            s = [list(x) for x in res.get('segments') or []]
+            t = list(res.get('segment_types') or [])
+            if len(t) == len(s):
+                segs.extend(s)
+                types.extend(t)
+            full.extend(res.get('full_path') or [q for sp in sps for q in sp])
+            msgs.append('run %d: %s' % (k + 1, res.get('message', '')))
+            out = sps
+            if cond:
+                pre = res.get(CONDITIONED_KEY)
+                if pre is None or pre.get('n_in') != len(sps):
+                    pre = condition_plan(self._conditioning_job(sps))
+                off = len(pre_all['subpaths'])
+                out = [list(sp) for sp in pre['subpaths']]
+                pre_all['subpaths'].extend(out)
+                pre_all['cond'].update({i + off: v for i, v in pre['cond'].items()})
+                pre_all['cond_errors'].update({i + off: v
+                                               for i, v in pre['cond_errors'].items()})
+                pre_all['corner_body'].extend(pre.get('corner_body') or [])
+                pre_all['logs'].extend(pre.get('logs') or [])
+            pre_all['n_in'] += len(sps)
+            runs.extend([k] * len(out))
+        merged = {'success': True, 'drivable_subpaths': raw, 'segments': segs,
+                  'segment_types': types, 'full_path': full, 'message': '; '.join(msgs),
+                  PLAN_RUNS_KEY: runs}
+        if cond:
+            merged[CONDITIONED_KEY] = pre_all
+        return merged
+
+    def _plan_sub_runs(self, result, subpaths):
+        """Run index of each of the plan's (drivable, conditioned) ``subpaths``: from a
+        merged result (_merge_plan_runs), else all the plan's one run."""
+        m = self.mission
+        runs = result.get(PLAN_RUNS_KEY)
+        if runs is not None and len(runs) == len(subpaths):
+            return [int(r) for r in runs]
+        return [m.plan_runs[0] if m.plan_runs else m.run_i] * len(subpaths)
+
+    def _later_run_ahead(self):
+        """The run of the next sub-path to mow when it is a later run than the one in
+        progress (a cross plan's next row set), else None."""
+        m = self.mission
+        if not 0 <= m.sub_i < len(m.sub_runs):
+            return None
+        k = m.sub_runs[m.sub_i]
+        return k if k > m.run_i else None
+
+    def _advance_run(self):
+        """Before mowing a sub-path: when it belongs to a later run of the plan (cross: the
+        next row set), that run is in progress from here: the GUI's run label, the resume
+        cursor's area_run, and a new mowed raster (the later rows mow ground the earlier ones
+        cut, so the raster of the earlier run would mark them mowed; its cut report is
+        logged first). An earlier run's sub-path left over (a resumed failure) changes
+        nothing."""
+        m = self.mission
+        k = self._later_run_ahead()
+        if k is None:
+            return
+        self._area_cut_report()
+        prev, m.run_i = m.run_i, k
+        self.cursor.area_runs[m.area_idx] = k
+        ac = self.cursor.area(m.area_idx)
+        ac.raster = self._area_raster(None)
+        self._persist()
+        self._log('info', 'area %d: run %d/%d done, mowing the rows of run %d/%d (%s, one plan)'
+                  % (m.area_idx, prev + 1, len(m.runs), k + 1, len(m.runs),
+                     m.settings['path_mode'] if m.settings else '?'))
+        self._fx.append(PublishAreaSettings(self.active_settings()))
+
+    def _run_after_plan(self):
+        """Index of the run after the current plan's runs (a zigzag / alternate repeat
+        still to plan), None when the plan holds the area's last run."""
+        m = self.mission
+        last = m.plan_runs[-1] if m.plan_runs else m.run_i
+        return last + 1 if m.runs and last + 1 < len(m.runs) else None
+
     def _on_plan(self, outcome, result):
         m = self.mission
         if outcome == UNAVAILABLE:
             self._mission_failed('/plan_coverage action server unavailable')
             return
+        whole = self._collect_plan_run(outcome, result)
+        if whole is None:
+            return                              # the next run of the plan is being planned
+        outcome, result = whole
         if m.nogo_replan is not None:          # option C mid-mow re-plan
             self._nogo_on_plan(outcome, result)
             return
@@ -397,16 +581,12 @@ class AreasMixin:
         # consecutive sweep skips carried over (review 2026-11-02)
         m.sweep_skips = {}
         m.subpaths = subpaths
+        m.sub_runs = self._plan_sub_runs(result, subpaths)
         m.planned_total += len(subpaths)
         m.cum = [geo.cumulative_lengths(sp) for sp in subpaths]
         m.lengths = [c[-1] for c in m.cum]
         full = result.get('full_path') or [p for sp in subpaths for p in sp]
         self._fx.append(PublishPlan(list(full)))
-        line = geo.swath_angle_deg(result.get('segments') or [], result.get('segment_types') or [],
-                                   SEGMENT_SWATH)
-        if line is not None:
-            m.line_angles[m.run_i] = line
-            self._fx.append(PublishAreaSettings(self.active_settings()))
         self._plan_shown = True
         self._preview_shown = False
         fp = geo.plan_fingerprint(subpaths)
@@ -446,6 +626,11 @@ class AreasMixin:
         m = self.mission
         new = AreaCursor(total, fp, -1, set())
         m.resume_sub = None
+        # a cross plan resumed in a later run (also an old per-run cursor, area_run > 0):
+        # the laps and the earlier runs' rows are behind it
+        for k in self._earlier_run_subpaths(m.sub_runs):
+            new.completed.add(k)
+            new.done_fps.add(geo.plan_fingerprint([subpaths[k]]))
         if ac is None:
             return new
         had = bool(ac.completed or ac.resume_index >= 0)
@@ -453,11 +638,11 @@ class AreasMixin:
         if ac.done_fps:
             for k, sp in enumerate(subpaths):
                 f = geo.plan_fingerprint([sp])
-                if f in ac.done_fps:
+                if f in ac.done_fps and k not in new.completed:
                     new.completed.add(k)
                     new.done_fps.add(f)
                     kept += 1
-        mapped, prefix = self._raster_progress(subpaths, raster)
+        mapped, prefix = self._run_raster_progress(subpaths, raster, m.sub_runs)
         for k in mapped - new.completed:
             new.completed.add(k)
             new.done_fps.add(geo.plan_fingerprint([subpaths[k]]))

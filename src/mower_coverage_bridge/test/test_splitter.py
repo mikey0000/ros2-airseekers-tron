@@ -420,3 +420,22 @@ def test_snake_link_joins_racetrack_rows_into_one_subpath():
     res = splitter.plan(pts, ring_count=0, swath_count=2, pose_flags=[0, 0, 1, 1, 0, 0])
     assert len(res.subpaths) == 1 and not res.subpaths[0].reverse
     assert res.subpaths[0].points == pts
+
+
+# ---- include_rings false (2026-11-12: the later row sets of a cross mow) ----
+
+def test_drop_rings_keeps_the_rows_as_planned():
+    full = sp.plan(rect_plan(), ring_count=2, swath_count=5)
+    rows = sp.plan(rect_plan(), ring_count=2, swath_count=5, drop_rings=True)
+    assert rows.mode == sp.MODE_STRUCTURAL
+    assert (rows.ring_count, rows.swath_count) == (0, 5)
+    assert [s.points for s in rows.segments] == \
+        [s.points for s in full.segments if s.kind == SEGMENT_SWATH]
+    swath_pts = {p for s in rows.segments for p in s.points}
+    assert all(p in swath_pts for s in rows.subpaths for p in s.points)
+
+
+def test_drop_rings_on_a_swaths_first_plan():
+    rows = sp.plan(swaths_first_plan(), ring_count=2, swath_count=5, swaths_first=True,
+                   drop_rings=True)
+    assert [s.kind for s in rows.segments] == [SEGMENT_SWATH] * 5

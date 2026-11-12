@@ -706,7 +706,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         if (datum[0] === 0) return {type: "FeatureCollection", features: []};
         const toLonLat = (pts: [number, number][]) => pts.map(([x, y]) => transpose(offsetX, offsetY, datum, y, x));
         const features: Feature[] = liveStretches.map((st, i) => ({
-            type: "Feature", id: `live-${i}`, properties: {kind: st.kind},
+            type: "Feature", id: `live-${i}`, properties: {kind: st.kind, cross: st.cross},
             geometry: {type: "LineString", coordinates: toLonLat(st.points)},
         }));
         if (track.length > 1) {
@@ -2040,7 +2040,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     <Source type={"geojson"} id={"mow-live"} maxzoom={LINE_SOURCE_MAXZOOM} data={liveCollection}>
                         <Layer type={"line"} id={"mow-live-remaining"} filter={['==', ['get', 'kind'], 'remaining']}
                             layout={{'line-cap': 'round', 'line-join': 'round'}}
-                            paint={{'line-color': LAYER_COLORS.liveRemaining, 'line-width': 2, 'line-opacity': 0.8}}/>
+                            paint={{'line-color': ['case', ['==', ['get', 'cross'], true],
+                                LAYER_COLORS.previewSwathCross, LAYER_COLORS.liveRemaining],
+                                'line-width': 2, 'line-opacity': 0.8}}/>
                         <Layer type={"line"} id={"mow-live-mowed"} filter={['==', ['get', 'kind'], 'mowed']}
                             layout={{'line-cap': 'round', 'line-join': 'round'}}
                             paint={{'line-color': LAYER_COLORS.liveMowed, 'line-width': 4}}/>

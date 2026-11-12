@@ -135,8 +135,9 @@ to [0, 180)) appears in `message`.
 | `mow_angle_deg` | `-1.0` | used only when the goal's `mow_angle_deg` is < 0 (the goal wins) |
 | `edge_laps` | `3` | edge layout (`edge_layout` soft / hard): number of edge laps, set per area by the mission (area setting `edge_laps`), forwarded as PlanCoverage `edge_laps`; the rows move with them. Soft: laps at 0 / 0.15 / … (base_link from the line), rows (sides, ends, turns) 0.15 × `edge_laps` in: 3 = stock (rows from 0.45), 1 = rows from 0.15, 0 = rows from the line. Hard: laps at 0.45 / 0.63 / … plus the band-closing lap, rows from 0.45 + 0.18 × `edge_laps` + 0.11 (ends never under 0.745); 0 is taken as 1 (rows start >= 0.745 in, a lapless band would stay uncut). Ignored by the legacy layout (`headland_rings`). Validated 0..10 |
 | `edge_first` | `true` | `false`: the planner lays out the swaths first, then the rings innermost first; the splitter is told so (`swaths_first`) |
+| `include_rings` | `true` | `false`: the rings (perimeter / edge laps) are left out of the result (`segments`, `drivable_subpaths`, `ring_count` 0). The planner still lays them out, so the rows keep exactly the inset they have in the full plan. The mission plans the later row sets of a cross mow this way: the laps are driven once (2026-11-12) |
 
-The last four are the per-area mowing settings. `behavior_tree_node` (mower_mission) sets
+From `headland_rings` on, these are the per-area mowing settings. `behavior_tree_node` (mower_mission) sets
 them with `set_parameters` right before every PlanCoverage goal, together with
 `operation_width` (= `cut_width_m` - the area's `swath_overlap_m`). They stay set until
 the next change, so a goal from another client plans with the last area's pattern. A

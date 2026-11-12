@@ -533,12 +533,19 @@ def plan(points: Sequence[Point],
          fences: Sequence[Sequence[Point]] = (),
          holes: Sequence[Sequence[Point]] = (),
          swaths_first: bool = False,
-         pose_flags: Optional[Sequence[int]] = None) -> SplitResult:
+         pose_flags: Optional[Sequence[int]] = None,
+         drop_rings: bool = False) -> SplitResult:
     """Full pipeline: strip turns, segment, join into drivable sub-paths
-    (re-inserting the turns), then cut reverse runs into their own sub-paths."""
+    (re-inserting the turns), then cut reverse runs into their own sub-paths.
+
+    ``drop_rings``: leave the ring segments out (the rows only). The planner laid the rows
+    out inside its rings, so they keep the inset they have in the full plan: the second row
+    set of a cross mow, whose perimeter laps the first row set's plan already drives."""
     base, turns = strip_turns(points, pose_flags)
     segs, mode = split_segments(base, ring_count, swath_count, transit_gap_m, turn_split_deg,
                                 swaths_first=swaths_first)
+    if drop_rings:
+        segs = [s for s in segs if s.kind != SEGMENT_RING]
     subs = split_reverse(join_subpaths(segs, transit_gap_m, fences, holes, turns))
     return SplitResult(segs, subs, mode)
 

@@ -1111,7 +1111,11 @@ class HoldsMixin:
                 self._record_saved(True)
         elif s.purpose in ('area_settings', 'coverage_params'):
             m = self.mission
-            if m is None or self.phase != 'PLANNING' or m.area_idx is None:
+            # coverage parameters also come back mid-mow: a no-go re-plan plans every run
+            # of the area's plan (areas._plan_area)
+            replanning = (m is not None and s.purpose == 'coverage_params'
+                          and m.nogo_replan is not None)
+            if m is None or m.area_idx is None or (self.phase != 'PLANNING' and not replanning):
                 return
             if s.purpose == 'area_settings':
                 self._on_area_settings(ok, resp)
