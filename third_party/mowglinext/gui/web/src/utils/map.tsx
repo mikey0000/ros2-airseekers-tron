@@ -4,6 +4,17 @@ import type {RobotGeometry} from "../hooks/useRobotDescription.ts";
 // Metres per degree of latitude (WGS84 equatorial radius × deg→rad)
 const METERS_PER_DEG = 6378137.0 * Math.PI / 180.0;
 
+/**
+ * `maxzoom` for GeoJSON sources that draw map-frame lines (mow plan, live progress, track,
+ * coverage path, recorded paths). Mapbox GL tiles a GeoJSON source only up to its
+ * `maxzoom` (default 18) and overzooms that tile beyond it, so every vertex is snapped to
+ * the 8192-unit grid of a z18 tile: 1.87 cm x cos(lat), a whole CSS pixel at the map's
+ * maximum zoom 22. Along a 105 deg mow row with a pose every 5 cm that snapping drew a
+ * +-1 px zigzag (rms 5 mm against the dead-straight plan; 2026-11-12). Tiling up to the
+ * map's own maximum zoom shrinks the grid 16x, below 1 mm.
+ */
+export const LINE_SOURCE_MAXZOOM = 22;
+
 export function getQuaternionFromHeading(heading: number): Quaternion {
     const q = {
         x: 0,

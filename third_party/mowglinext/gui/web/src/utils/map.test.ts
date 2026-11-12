@@ -1,5 +1,5 @@
 import {describe, it, expect} from 'vitest';
-import {dedupePoints, getQuaternionFromHeading, transpose, itranspose, pointInPolygon} from './map.tsx';
+import {dedupePoints, getQuaternionFromHeading, transpose, itranspose, pointInPolygon, LINE_SOURCE_MAXZOOM} from './map.tsx';
 
 describe('dedupePoints', () => {
     it('returns empty array for empty input', () => {
@@ -150,5 +150,31 @@ describe("pointInPolygon", () => {
         const withHole = [...square, [[4, 4], [6, 4], [6, 6], [4, 6], [4, 4]]];
         expect(pointInPolygon([5, 5], withHole)).toBe(false);
         expect(pointInPolygon([2, 2], withHole)).toBe(true);
+    });
+});
+
+describe('LINE_SOURCE_MAXZOOM', () => {
+    // Mapbox GL snaps GeoJSON vertices to the 8192-unit grid of the source's maxzoom tile.
+    const gridM = (z: number, latDeg: number) => 40075016.686 * Math.cos(latDeg * Math.PI / 180) / (2 ** z * 8192);
+
+    it('the default maxzoom 18 grid is about a centimetre, a pixel at zoom 22 (the row wobble)', () => {
+        expect(gridM(18, -40)).toBeGreaterThan(0.014);
+        expect(gridM(18, -40) / (40075016.686 * Math.cos(-40 * Math.PI / 180) / (512 * 2 ** 22))).toBeCloseTo(1, 6);
+    });
+
+    it('line sources tile to the map maximum zoom, grid below 1.2 mm at any latitude', () => {
+        expect(LINE_SOURCE_MAXZOOM).toBeGreaterThanOrEqual(22);
+        expect(gridM(LINE_SOURCE_MAXZOOM, 0)).toBeLessThan(0.0012);
+    });
+
+    it('transpose keeps a straight 5 cm-spaced row straight to well below a millimetre', () => {
+        const datum: [number, number, number] = [-40.5, 172.25, 0];  // made-up datum
+        const d = 105 * Math.PI / 180;
+        const pts = Array.from({length: 200}, (_, k) => [3 + 0.05 * k * Math.cos(d), -2 + 0.05 * k * Math.sin(d)]);
+        for (const [x, y] of pts) {
+            const [lon, lat] = transpose(0, 0, datum, y, x);
+            const [bx, by] = itranspose(0, 0, datum, lat, lon);
+            expect(Math.abs((bx - 3) * -Math.sin(d) + (by + 2) * Math.cos(d))).toBeLessThan(1e-6);
+        }
     });
 });
