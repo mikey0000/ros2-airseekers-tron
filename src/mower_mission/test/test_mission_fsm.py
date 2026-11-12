@@ -3183,7 +3183,8 @@ def test_skipped_stretch_still_blocked_ends_incomplete():
 def test_cross_run_with_only_a_blocked_stretch_goes_on_to_the_next_run():
     # owner 2026-11-11: a cross whose first run ends with a stretch still blocked must
     # still mow the cross pass instead of ending the area (and docking)
-    h = Harness(return_home_on_incomplete=False)
+    h = Harness(return_home_on_incomplete=False, static_skip_excludes=False,
+                skipped_retry_once=False)
     h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0}}
     sp0, sp1 = mowing_two_swaths(h)
     static_abort_and_detour(h, sp0)
@@ -3205,7 +3206,8 @@ def test_cross_run_with_only_a_blocked_stretch_goes_on_to_the_next_run():
 
 
 def test_last_run_with_a_blocked_stretch_still_ends_incomplete():
-    h = Harness(return_home_on_incomplete=False)
+    h = Harness(return_home_on_incomplete=False, static_skip_excludes=False,
+                skipped_retry_once=False)
     h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0}}
     h.areas = [square(-1, -1, 12)]
     start_until_planning(h)
