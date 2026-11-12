@@ -587,8 +587,16 @@ def test_default_topics_leave_out_the_high_rate_streams():
     for hot in ('/imu/data_aligned', '/mower_base/status', '/odom', '/tf', '/rosout',
                 '/mower_base/bumper_routing_status', '/local_plan'):
         assert hot not in t, hot
-    assert len(t) <= 64   # + /collision_monitor_state (2026-10-21), the docking diagnostics,
-    #                       /cmd_vel_nav_raw + _smoothed (2026-11-06 weave diagnosis)
+    assert len(t) <= 65   # + /collision_monitor_state (2026-10-21), the docking diagnostics,
+    #                       /cmd_vel_nav_raw + _smoothed (2026-11-06 weave diagnosis),
+    #                       /imu/data (2026-11-12 row straightness)
+
+
+def test_default_topics_record_the_raw_imu():
+    # 2026-11-12: the one 100 Hz stream kept on purpose (roll wobble / antenna tilt A/B);
+    # the low-power ring stays without it
+    assert '/imu/data' in bag_recorder.DEFAULT_TOPICS
+    assert '/imu/data' not in bag_recorder.LOW_POWER_TOPICS
 
 
 def test_record_cmd_polling_default_5s():
