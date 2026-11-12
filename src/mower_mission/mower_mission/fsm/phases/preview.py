@@ -7,6 +7,7 @@ from mower_mission.fsm.common import (ACT_PLAN, CancelActions, PARAM_NODE_COVERA
     PREVIEW_ALL, PREVIEW_CLEAR, PREVIEW_PHASES, PublishPlan, PublishPreviewSummary,
     SEGMENT_RING, SEGMENT_SWATH, SRV_GET_AREA, SRV_GET_AREA_SETTINGS, SRV_SET_PARAMS,
     SUCCEEDED, accepted_area, coverage_route_params, geo)  # noqa: F401
+from mower_mission.fsm.phases.areas import auto_line_angle, resolved_run
 
 
 class PreviewMixin:
@@ -110,7 +111,7 @@ class PreviewMixin:
                 self._log('warn', 'preview area %d: /coverage_server set_parameters failed (%s): '
                                   'planning with its current parameters'
                           % (cur['index'], resp.get('message') or 'unavailable'))
-            area, run = pv['areas'][cur['index']], cur['preview_runs'][cur['run_k']]
+            area, run = pv['areas'][cur['index']], self._preview_run(cur)
             self._start_action(ACT_PLAN, {
                 'outer_boundary': self._plan_outline(area.get('outer', [])),
                 'obstacles': [list(o) for o in area.get('obstacles', [])] +
@@ -130,8 +131,16 @@ class PreviewMixin:
                 out.append(r)
         return out or list(runs[:1])
 
+    @staticmethod
+    def _preview_run(cur):
+        """The preview run being planned, an AUTO-relative cross turn resolved against the
+        rows the AUTO run planned earlier in this preview (see areas.resolved_run)."""
+        runs = cur['preview_runs']
+        lines = {k: a['line'] for k, a in enumerate(cur['acc'])}
+        return resolved_run(runs[cur['run_k']], auto_line_angle(runs, lines))
+
     def _preview_params(self, cur):
-        st, run = cur['settings'], cur['preview_runs'][cur['run_k']]
+        st, run = cur['settings'], self._preview_run(cur)
         self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_COVERAGE, 'params': {
             'operation_width': self._swath_spacing(st),
             'headland_rings': int(st['perimeter_laps']),
@@ -175,7 +184,9 @@ class PreviewMixin:
                 'perpendicular': bool(run0['perpendicular']),
                 'runs': len(cur['runs']), 'settings_source': cur['source'],
                 'preview_runs': len(cur['preview_runs']),
-                'run_angles_deg': [float(r['angle']) for r in cur['preview_runs']],
+                'run_angles_deg': [float(resolved_run(r, auto_line_angle(
+                    cur['preview_runs'], {k: a['line'] for k, a in enumerate(cur['acc'])}))
+                    ['angle']) for r in cur['preview_runs']],
                 'run_perpendicular': [bool(r['perpendicular']) for r in cur['preview_runs']],
                 'operation_width_m': round(self._swath_spacing(st), 4),
                 'swath_width_m': round(self._swath_spacing(st), 4),

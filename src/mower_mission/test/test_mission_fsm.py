@@ -1772,13 +1772,40 @@ def test_cross_default_offset_is_today_90_deg():
     assert _cross_goals(h, 2) == [(20.0, False), (110.0, False)]
 
 
-def test_cross_on_auto_angle_with_other_offset_is_taken_from_0_deg():
-    # only +90 has the bridge's auto perpendicular flag; any other turn on an AUTO angle
-    # follows the alternate rule (from the map x axis)
+def test_cross_on_auto_angle_turns_the_second_run_from_the_auto_rows():
+    # owner 2026-11-12: the cross angle is relative to the first run's rows on AUTO too
+    # (it used to be taken from the map x axis: AUTO + 45 planned run 2 at 45 deg)
     h = Harness()
-    h.area_settings = {0: {'path_mode': 'cross', 'alternate_angle_offset_deg': 45.0}}
+    h.area_settings = {0: {'path_mode': 'cross', 'alternate_angle_offset_deg': 45.0,
+                           'repeat': 2}}
     start_until_planning(h)
-    assert _cross_goals(h, 2) == [(-1.0, False), (45.0, False)]
+    goals = []
+    for k, line in enumerate((105.0, 150.0, 105.0, 150.0)):
+        assert h.name == 'PLANNING' and h.fsm.mission.run_i == k
+        g = h.goal(f.ACT_PLAN)
+        goals.append((g['mow_angle_deg'], g['perpendicular']))
+        if k == 1:
+            assert param_calls(h, f.PARAM_NODE_COVERAGE)[-1]['mow_angle_deg'] == 150.0
+            assert h.fsm.run_line_angles()[:2] == [105.0, 150.0]
+        h.fsm.inputs.pose = (2.5, 1.5, 0.0)
+        h.finish(f.ACT_PLAN, f.SUCCEEDED, _rows_plan(line))
+        for _ in range(20):
+            if h.name != 'MOWING':
+                break
+            follow_current(h)
+    # the AUTO rows are re-learned each repeat: run 3 is AUTO again, run 4 from its rows
+    assert goals == [(-1.0, False), (150.0, False), (-1.0, False), (150.0, False)]
+
+
+def test_cross_on_auto_with_unknown_auto_rows_falls_back_to_0_deg_with_a_warning():
+    areas = __import__('mower_mission.fsm.phases.areas', fromlist=['x'])
+    run = {'angle': 45.0, 'perpendicular': False, 'auto_offset_deg': 45.0}
+    assert areas.resolved_run(run, None) == run
+    assert areas.resolved_run(run, 170.0)['angle'] == 35.0
+    runs = [{'angle': -1.0, 'perpendicular': False}, run]
+    assert areas.auto_line_angle(runs, {}) is None
+    assert areas.auto_line_angle(runs, {0: 100.0}) == 100.0
+    assert areas.auto_line_angle([{'angle': -1.0, 'perpendicular': True}], {0: 10.0}) == 100.0
 
 
 def test_cross_angle_0_or_180_falls_back_to_90():
@@ -5236,6 +5263,27 @@ def test_preview_cross_auto_angle_uses_perpendicular_flag():
     assert h.goal(f.ACT_PLAN)['perpendicular'] is True
     h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan())
     assert summaries(h)[-1]['areas'][0]['run_perpendicular'] == [False, True]
+
+
+def test_preview_cross_auto_angle_other_offset_turns_from_the_auto_rows():
+    # owner 2026-11-12: AUTO + cross 45 previewed run 2 at 45 deg (map x axis); it now
+    # turns from the rows the AUTO run planned
+    h = Harness()
+    h.areas = [square(0, 0, 5)]
+    h.area_settings = {0: {'path_mode': 'cross', 'alternate_angle_offset_deg': 45.0}}
+    m = h.mark()
+    assert preview(h, 0)[0]
+    h.answer_services()
+    assert h.goal(f.ACT_PLAN)['mow_angle_deg'] == -1.0
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, _rows_plan(105.0))
+    h.answer_services()
+    g = h.goal(f.ACT_PLAN)
+    assert (g['mow_angle_deg'], g['perpendicular']) == (150.0, False)
+    assert param_calls(h, f.PARAM_NODE_COVERAGE, m)[-1]['mow_angle_deg'] == 150.0
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, _rows_plan(150.0))
+    a = summaries(h, m)[-1]['areas'][0]
+    assert a['run_angles_deg'] == [-1.0, 150.0]
+    assert a['run_line_angles_deg'] == [105.0, 150.0]
 
 
 def test_preview_zigzag_repeat_plans_once_and_cross_second_failure_reports():

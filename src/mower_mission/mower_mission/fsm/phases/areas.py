@@ -15,6 +15,26 @@ from mower_mission.fsm.common import (ACT_PLAN, AREA_SETTINGS_DEFAULTS, AreaCurs
 
 
 
+
+def auto_line_angle(runs, line_angles):
+    """Row direction (deg, [0, 180)) of the AUTO angle, learned from the planned rows of an
+    AUTO run (or its perpendicular twin, less 90 deg); None until one is planned.
+    ``line_angles`` maps run index -> planned row angle."""
+    auto = None
+    for i, a in sorted(line_angles.items()):
+        if a is not None and i < len(runs) and float(runs[i]['angle']) < 0.0:
+            auto = (float(a) - (90.0 if runs[i]['perpendicular'] else 0.0)) % 180.0
+    return auto
+
+
+def resolved_run(run, auto_line):
+    """``run`` with an AUTO-relative cross turn (``auto_offset_deg``) applied to the AUTO
+    rows ``auto_line``; unchanged when it has none or the AUTO rows are not known yet."""
+    off = run.get('auto_offset_deg')
+    if off is None or auto_line is None:
+        return run
+    return dict(run, angle=round((float(auto_line) + float(off)) % 180.0, 3))
+
 class AreasMixin:
     """Area progression, per-area mowing settings, planning."""
 
@@ -172,15 +192,16 @@ class AreasMixin:
         GUI's "cross angle", default 90) from the first. alternate: the angle turns by
         alternate_angle_offset_deg on every run, continuing across sessions
         (alternate_counts). On an AUTO angle a +90 deg turn is the goal's ``perpendicular``
-        flag (the bridge learns the auto angle); any other turn is taken from 0 deg (the
-        map x axis), in both modes.
+        flag (the bridge learns the auto angle). Any other cross turn on AUTO is marked
+        ``auto_offset_deg`` and turned from the rows the first run planned (see
+        :func:`resolved_run`); alternate turns on AUTO are taken from 0 deg (the map x axis).
         """
         base = float(st['mow_angle_deg'])
         mode = st['path_mode']
         n = int(st['repeat'])
         off = float(st['alternate_angle_offset_deg'])
 
-        def run(rot):
+        def run(rot, from_auto=False):
             rot = math.fmod(rot, 180.0)
             if base >= 0.0:
                 return {'angle': math.fmod(base + rot, 180.0), 'perpendicular': False}
@@ -188,10 +209,13 @@ class AreasMixin:
                 return {'angle': -1.0, 'perpendicular': False}
             if abs(rot - 90.0) < 1e-6:
                 return {'angle': -1.0, 'perpendicular': True}
+            if from_auto:
+                # angle: the fallback until the AUTO rows are planned (from 0 deg)
+                return {'angle': rot, 'perpendicular': False, 'auto_offset_deg': rot}
             return {'angle': rot, 'perpendicular': False}
 
         if mode == 'cross':
-            return [r for _ in range(n) for r in (run(0.0), run(off))]
+            return [r for _ in range(n) for r in (run(0.0), run(off, from_auto=True))]
         if mode == 'alternate':
             done = int(self.alternate_counts.get(
                 self._area_name() if area_name is None else area_name, 0))
@@ -205,14 +229,14 @@ class AreasMixin:
         m = self.mission
         if m is None or not m.runs:
             return []
-        auto = None
-        for i, a in sorted(m.line_angles.items()):
-            if i < len(m.runs) and float(m.runs[i]['angle']) < 0.0:
-                auto = (a - (90.0 if m.runs[i]['perpendicular'] else 0.0)) % 180.0
+        auto = auto_line_angle(m.runs, m.line_angles)
         out = []
         for i, r in enumerate(m.runs):
             if i in m.line_angles:
                 out.append(round(m.line_angles[i], 1))
+            elif r.get('auto_offset_deg') is not None:
+                out.append(None if auto is None
+                           else round(float(resolved_run(r, auto)['angle']), 1))
             elif float(r['angle']) >= 0.0:
                 out.append(round(float(r['angle']) % 180.0, 1))
             elif auto is not None:
@@ -298,9 +322,23 @@ class AreasMixin:
             'operation_width_m': round(self._swath_spacing(m.settings), 4)})
         return out
 
+    def _current_run(self):
+        """The run being planned, an AUTO-relative cross turn resolved against the rows an
+        earlier AUTO run of this area planned (from 0 deg, with a warning, until known)."""
+        m = self.mission
+        run = m.runs[m.run_i]
+        if run.get('auto_offset_deg') is None:
+            return run
+        auto = auto_line_angle(m.runs, m.line_angles)
+        if auto is None:
+            self._log('warn', 'area %d run %d: AUTO rows not planned in this session: '
+                              'cross angle %.0f deg taken from 0 deg'
+                      % (m.area_idx, m.run_i + 1, float(run['auto_offset_deg'])))
+        return resolved_run(run, auto)
+
     def _plan_run(self):
         m = self.mission
-        st, run = m.settings, m.runs[m.run_i]
+        st, run = m.settings, self._current_run()
         self._fx.append(PublishAreaSettings(self.active_settings()))
         self._go('PLANNING', 'area %d %s [%s, run %d/%d]' % (
             m.area_idx, self._area_name(), st['path_mode'], m.run_i + 1, len(m.runs)))
@@ -314,7 +352,8 @@ class AreasMixin:
 
     def _start_plan(self, purpose=None):
         m = self.mission
-        area, run = m.areas[m.area_idx], m.runs[m.run_i]
+        area, run = m.areas[m.area_idx], resolved_run(
+            m.runs[m.run_i], auto_line_angle(m.runs, m.line_angles))
         self._start_action(ACT_PLAN, {
             'outer_boundary': self._plan_outline(area.get('outer', [])),
             # + no-go zones added mid-mow (option C, fsm/phases/nogo.py)
