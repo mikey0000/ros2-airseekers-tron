@@ -96,8 +96,10 @@ def generate_launch_description():
                 'odom_linear_scale': 1.06,
                 # B13-2 GNSS smoothing (off by default): ekf_map can only lean on the wheels
                 # when /odom says they are good to ~1 cm/s and sideways-still.
+                # vy default 0.05 (2026-11-13 RTK dropout): ekf_map fuses vy = 0 loosely so a
+                # stale lateral velocity does not drift the pose while no RTK is fused.
                 'odom_vx_variance': _smoothing_variance(1e-4, 0.02),
-                'odom_vy_variance': _smoothing_variance(1e-4, 1e6),
+                'odom_vy_variance': _smoothing_variance(1e-4, 0.05),
             }],
             output='screen',
             respawn=True,
