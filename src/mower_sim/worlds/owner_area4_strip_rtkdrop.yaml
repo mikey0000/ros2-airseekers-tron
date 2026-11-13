@@ -1,0 +1,28 @@
+# 2026-11-13 RTK dropout on the Area 4 strip (docs/analysis/2026-11-13_rtk_dropout.md): the
+# strip world (owner_area4_strip.yaml, copied below) with the field's loss sequence injected
+# on the south-most pass (strip5-l-s1: forward on it 262-288 s after blade on):
+#   RTK FIXED -> SINGLE 14.5 s (NTRIP corrections aged out; gps_gate drops single, ekf_map
+#   sigma grows: degraded, the mission stops) -> FLOAT 11 s with the fix 0.3 m south of the
+#   truth, all of it in the map pose (the jump the boundary guard saw) -> FIXED.
+# Expected: hold within 3 s, blade off, no recovery moves on the float pose, resume only
+# after RTK FIXED has settled (criterion k, one 'single+float' window).
+# Gate: SIM_GATE_OUT=<abs> ./scripts/sim_gate.sh -w src/mower_sim/worlds/owner_area4_strip_rtkdrop.yaml \
+#   -n rtkdrop -l -x 3 -s 1 -t 4000
+name: owner_area4_strip_rtkdrop
+datum: {lat: 48.0, lon: 9.0}
+areas_file: owner_far_areas.dat
+areas_select: [Area 1, lawn section, Area 4, Dock path, Path 2, Path 3, Path 4]
+lawn_area: Area 4
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+obstacles: []
+battery: {voltage: 25.0, percentage: 0.9}
+area_settings:
+  Area 4: {edge_mode: soft, edge_laps: 3, perimeter_laps: 2, edge_margin_m: 0.05,
+           path_mode: zigzag, route_order: racetrack, mow_angle_deg: 17.74}
+rtk:
+  anchor: blade
+  ekf_sigma_m: 0.5
+  events:
+    - {t0: 275.0, dur: 14.5, kind: single, ekf_sigma_m: 0.5}
+    - {t0: 289.5, dur: 11.0, kind: float, offset: [0.0, -0.3], map_gain: 1.0, ekf_sigma_m: 0.07}
