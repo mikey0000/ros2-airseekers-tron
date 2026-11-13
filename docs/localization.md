@@ -295,6 +295,11 @@ interrupted mow.
 
 Stock Tron for comparison: wheels-only for 10 s, VIO for 100 m.
 
+Measured dead-reckoning drift (bag replay, 2026-11-13,
+`analysis/2026-11-13_dead_reckoning_drift.md`): with ekf_map's wheel vy, p90 0.20 m after
+7 m on flat ground and after 1.5 m on an 11 deg slope; the 3 cm + 3 %/m estimate holds on flat
+ground and is far too optimistic on the slope.
+
 **ekf_map wheel vy (2026-11-13).** `ekf_map` fuses the wheel odometry's vy = 0 at mcu_node's
 `odom_vy_variance` 0.05 (m/s)^2 (it was published as unobserved, 1e6, and not fused). Without
 it the lateral velocity the RTK updates left in the state was integrated while no fix was
