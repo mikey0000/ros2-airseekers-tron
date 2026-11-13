@@ -96,7 +96,7 @@ def test_stale_status_is_degraded():
     assert h.fsm.mission.step == 'loc_hold' and h.fsm._loc is not None
     assert h.since(m, f.BladeOff)
     assert 'stale' in h.fsm.sub_state or 'degraded' in h.fsm.sub_state
-    run(h, 'ok', 4.0)                   # the monitor is back and ok: resumes
+    run(h, 'ok', 6.5)                   # back, ok and RTK fixed >= loc_fixed_settle_s: resumes
     assert h.fsm.mission.step == 'follow' and h.fsm._loc is None
 
 
@@ -118,7 +118,7 @@ def test_disabled_param_does_not_hold():
 
 # ---- 5: resume -----------------------------------------------------------------------------
 def test_resume_needs_continuous_ok_for_loc_resume_s():
-    h = Harness()
+    h = Harness(loc_resume_require_fixed=False)       # the pre-2026-11-13 resume rule
     mow_follow(h)
     hold(h)
     run(h, 'ok', 2.0)                   # < 3 s
@@ -140,7 +140,7 @@ def test_degraded_interrupts_ok_and_resets_resume_timer():
     run(h, 'ok', 2.5)
     assert held(h)
     run(h, 'degraded', 0.5)             # resets
-    run(h, 'ok', 2.5)                   # 2.5 s again: still < 3 s
+    run(h, 'ok', 4.5)                   # 4.5 s again: RTK fixed still < 5 s settle
     assert held(h)
     run(h, 'ok', 1.0)
     assert not held(h) and h.fsm._loc is None
@@ -165,7 +165,7 @@ def test_transit_hold_cancels_nav_and_resends_goal_on_resume():
     assert h.name == 'TRANSIT' and held(h) and h.fsm._action is None
     assert h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst)
     assert h.fsm.sub_state.startswith('localization degraded')
-    run(h, 'ok', 3.5)
+    run(h, 'ok', 5.5)
     assert h.fsm._loc is None and h.fsm.mission.step == 'transit'
     assert h.name == 'TRANSIT' and h.goal(f.ACT_NAV)['pose'] == target
 
@@ -229,7 +229,8 @@ def test_docking_is_not_held():
 LOC_DEFAULTS = (('loc_status_stale_s', 5.0), ('loc_resume_s', 3.0),
                 ('caution_speed_mps', 0.15), ('loc_degraded_edge_margin_m', 0.3),
                 ('loc_lost_retrace_s', 120.0), ('loc_lost_retrace_max_m', 3.0),
-                ('loc_lost_dock_s', 600.0), ('loc_hold_dock_exempt_max_s', 60.0))
+                ('loc_lost_dock_s', 600.0), ('loc_hold_dock_exempt_max_s', 60.0),
+                ('loc_fixed_settle_s', 5.0))
 
 
 def test_param_defaults_and_yaml_keys():

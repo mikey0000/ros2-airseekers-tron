@@ -44,6 +44,80 @@ class BoundaryGuardMixin:
         tr.append((float(pose[0]), float(pose[1])))
         del tr[:-(int(float(self.p.hard_boundary_trail_m) / step) + 1)]
 
+    # ------------------------------------------------------------------
+    # trips on an untrusted pose (field 2026-11-13, analysis/2026-11-13_rtk_dropout.md): RTK
+    # float came back 0.3 m off, the map pose jumped 0.68 m with the wheels still, and the
+    # guard drove three recovery moves on that pose and resumed mowing on float
+    # ------------------------------------------------------------------
+    def _hb_motion_add(self):
+        """Every hard-boundary tick: (t, wheel odom xy, map xy) over the last
+        hard_boundary_jump_window_s, oldest first."""
+        pose, ring = self.inputs.pose, self._hb_motion
+        if pose is None:
+            return
+        ring.append((self._now, self.inputs.wheel_xy, (float(pose[0]), float(pose[1]))))
+        win = float(self.p.hard_boundary_jump_window_s)
+        while len(ring) > 1 and self._now - ring[0][0] > win:
+            ring.pop(0)
+
+    def _hb_pose_jump(self):
+        """(map m, wheel m, s) when the map pose moved hard_boundary_jump_pose_m more than the
+        wheel odometry over the jump window, else None (also without wheel odometry)."""
+        ring = self._hb_motion
+        if len(ring) < 2:
+            return None
+        (t0, w0, p0), (t1, w1, p1) = ring[0], ring[-1]
+        if w0 is None or w1 is None:
+            return None
+        dm = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+        dw = math.hypot(w1[0] - w0[0], w1[1] - w0[1])
+        if dm - dw <= float(self.p.hard_boundary_jump_pose_m):
+            return None
+        return dm, dw, t1 - t0
+
+    def _hb_pose_untrusted(self):
+        """Why a boundary trip now may come from the pose rather than the robot, else None
+        (MOWING / TRANSIT, once a /localization/status was received): the fix wait after a localization stop is pending; the
+        status reads degraded / lost; the receiver class changed within loc_fixed_settle_s;
+        or, RTK not settled-fixed, the map pose moved more than the wheels (a pose jump)."""
+        p = self.p
+        if not p.hard_boundary_loc_defer or not p.loc_hold or self.mission is None or \
+                self.phase not in ('MOWING', 'TRANSIT') or self.inputs.loc_stamp is None:
+            return None                       # no status ever: no hold either (bench)
+        if self._loc_fix_pending():
+            return 'waiting for RTK fixed after a localization stop'
+        state, reason = self._loc_view()
+        if state in ('degraded', 'lost'):
+            return 'localization %s (%s)' % (state, reason or 'no reason')
+        ago = self._loc_rtk_changed_ago()
+        if ago is not None and ago < float(p.loc_fixed_settle_s):
+            return 'RTK %s for only %.1f s' % (self._loc_rtk_class() or 'unknown', ago)
+        if self._loc_fixed_settled():
+            return None
+        jump = self._hb_pose_jump()
+        if jump is not None:
+            return 'map pose moved %.2f m, wheels %.2f m in %.1f s (RTK %s)' % (
+                jump[0], jump[1], jump[2], self._loc_rtk_class() or 'unknown')
+        return None
+
+    def _hb_defer_to_loc_hold(self, what):
+        """A trip (``what``) on an untrusted pose is a localization event: the localization
+        hold (stop, blade off, wait for RTK fixed; started here unless one runs) instead of
+        recovery moves. Nothing is counted. After the hold the guard checks the settled pose
+        again. True = deferred."""
+        why = self._hb_pose_untrusted()
+        if why is None:
+            return False
+        if self._loc is None:
+            self._loc_hold_begin(self._dyn_context() or 'follow', 'boundary trip on an '
+                                 'untrusted pose', why)
+        if self._hb_deferred != self._loc['since']:
+            self._hb_deferred = self._loc['since']
+            self._log('warn', 'boundary: %s while %s: pose not trusted, no recovery move; '
+                              'holding (blade off) for RTK fixed, then checking again'
+                      % (what, why))
+        return True
+
     def _hb_body_mode(self, pose):
         """edge_mode ('soft' | 'hard') of the body check at ``pose``, or None = the base_link
         point check (a dock phase, the dock corridor, a drawn path only, no area snapshot)."""
@@ -211,6 +285,7 @@ class BoundaryGuardMixin:
             self._hb_retrace_tick()
             return True
         self._hb_trail_add()
+        self._hb_motion_add()
         self._hb_grace_travel()
         hcal = self.phase == 'WAITING_FOR_RTK' and self._hcal is not None
         if self.phase not in HARD_BOUNDARY_PHASES and not hcal:
@@ -267,6 +342,10 @@ class BoundaryGuardMixin:
             else:
                 entry = False
                 what = 'base_link %.2f m outside (> %.2f)' % (out, float(self.p.hard_boundary_m))
+        if not hcal and self._hb_defer_to_loc_hold(what):
+            if entry:
+                self._hb_entry = True         # the check after the hold is still the entry one
+            return False                      # the localization hold owns the robot
         where = '(%.2f, %.2f)' % (pose[0], pose[1]) if pose is not None else 'unknown pose'
         if hcal:
             # unverified heading: no retrace on the EKF track, just stop where it is

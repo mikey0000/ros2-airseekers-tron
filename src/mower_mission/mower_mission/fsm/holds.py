@@ -625,11 +625,20 @@ class HoldsMixin:
             self._loc_drop()                 # another guard / command took over
             return False
         if d is None:
-            if not self.p.loc_hold or state in ('', 'ok'):
+            pending = self._loc_fix_pending()
+            if not self.p.loc_hold or (state in ('', 'ok') and not pending):
                 self._loc_swath = None
                 return False
             ctx = self._dyn_context()
             if ctx is None:
+                return False
+            if state in ('', 'ok') and ctx != 'dock':
+                # a fix wait is pending and something else resumed the mission (catch-all:
+                # the guarded resume paths call _loc_hold_instead_of_resume first)
+                self._loc_hold_begin(ctx, 'rtk %s' % (self.inputs.loc_rtk or 'unknown'),
+                                     'resumed before RTK fixed settled')
+                return True
+            if state in ('', 'ok'):
                 return False
             if ctx == 'dock':
                 lost = self._loc_lost_since
@@ -637,37 +646,35 @@ class HoldsMixin:
                     return False             # dock transit / docking exempt (MowgliNext)
             elif self._loc_swath_continue(state):
                 return False
-            if ctx == 'follow' and m.step == 'follow':
-                m.start_local = self._track_progress()
-            self._loc = {'ctx': ctx, 'since': self._now, 'ok_since': None, 'sub': self.sub_state,
-                         'phase': self.phase, 'purpose': self._dock_purpose, 'rt': None,
-                         'retraced': False,
-                         'budget': None if m is None else
-                         {k: getattr(m, k) for k in self._LOC_BUDGETS}}
-            Hold.stop(self, 'localization %s' % state)
-            if ctx != 'dock':
-                m.step = 'loc_hold'
-            self._blade_off('localization %s' % state)
-            self._log('warn', 'localization %s (%s): stopped, blade off, waiting for RTK fixed'
-                      % (state, reason or 'no reason'))
-            self._go(self.phase, 'localization %s: holding' % state)
+            self._loc_hold_begin(ctx, state, reason)
             return True
         held = self._now - d['since']
+        fixed = d['ctx'] == 'dock' or not self.p.loc_resume_require_fixed or \
+            self._loc_fixed_settled()
         if state == 'ok':
             if d['rt'] is not None:
                 self._loc_retrace_stop('localization ok')
             if d['ok_since'] is None:
                 d['ok_since'] = self._now
-            if self._now - d['ok_since'] >= float(self.p.loc_resume_s):
+            if not fixed and not d.get('float_logged'):
+                d['float_logged'] = True
+                self._log('info', 'localization ok on RTK %s: still waiting for RTK fixed '
+                          '(held %.1f s) before resuming'
+                          % (self.inputs.loc_rtk or 'unknown', float(self.p.loc_fixed_settle_s)))
+            if fixed and self._now - d['ok_since'] >= float(self.p.loc_resume_s):
                 self._loc = None
-                self._log('info', 'localization ok again after %.0f s: resuming' % held)
+                self._loc_fix_wait = None
+                self._log('info', 'localization ok again after %.0f s: resuming%s'
+                          % (held, '' if d['ctx'] == 'dock' or not self.p.loc_resume_require_fixed
+                             else ' (RTK fixed for %.1f s)' % (self._now - self._loc_fixed_since)))
                 self._loc_restore_budgets(d)
                 Hold.resume(self, d)
                 return True
         else:
             d['ok_since'] = None
         if held >= float(self.p.loc_lost_dock_s):
-            self._loc_give_up(d, held, state, reason)
+            self._loc_give_up(d, held, state, reason or ('RTK %s, not fixed'
+                                                          % (self.inputs.loc_rtk or 'unknown')))
             return True
         if d['rt'] is not None:
             self._loc_retrace_tick(d)
@@ -675,8 +682,101 @@ class HoldsMixin:
         if state != 'ok' and not d['retraced'] and held >= float(self.p.loc_lost_retrace_s):
             self._loc_retrace_begin(d)
             return True
-        Hold.show_wait(self, 'localization %s: holding (%d s)'
-                       % (state or 'unknown', int(held)))
+        if state == 'ok' and not fixed:
+            Hold.show_wait(self, 'localization ok (RTK %s): waiting for RTK fixed (%d s)'
+                           % (self.inputs.loc_rtk or 'unknown', int(held)))
+        else:
+            Hold.show_wait(self, 'localization %s: holding (%d s)'
+                           % (state or 'unknown', int(held)))
+        return True
+
+    def _loc_hold_begin(self, ctx, state, reason):
+        """Start the localization hold for ``ctx`` (follow / transit / dock): stop, blade off,
+        keep the goal to resume. A mission hold latches the fix wait (_loc_fix_wait)."""
+        m = self.mission
+        if ctx == 'follow' and m is not None and m.step == 'follow':
+            m.start_local = self._track_progress()
+        self._loc = {'ctx': ctx, 'since': self._now, 'ok_since': None, 'sub': self.sub_state,
+                     'phase': self.phase, 'purpose': self._dock_purpose, 'rt': None,
+                     'retraced': False,
+                     'budget': None if m is None else
+                     {k: getattr(m, k) for k in self._LOC_BUDGETS}}
+        Hold.stop(self, 'localization %s' % state)
+        if ctx != 'dock':
+            m.step = 'loc_hold'
+            if self._loc_fix_wait is None:
+                self._loc_fix_wait = self._now
+        self._blade_off('localization %s' % state)
+        self._log('warn', 'localization %s (%s): stopped, blade off, waiting for RTK fixed'
+                  % (state, reason or 'no reason'))
+        self._go(self.phase, 'localization %s: holding' % state)
+
+    # ---- fix wait after a dropout (2026-11-13, analysis/2026-11-13_rtk_dropout.md) ----
+    # Once a hold has stopped the mission, the mission moves again only on RTK FIXED held
+    # loc_fixed_settle_s: float passed the sigma gate 0.3 m off truth, and a boundary
+    # recovery resumed on it without going back through the hold.
+    def _loc_rtk_class(self):
+        """The receiver class of a fresh status, 'stale' for an old one, '' before any."""
+        i = self.inputs
+        if i.loc_stamp is None:
+            return ''
+        if self._now - i.loc_stamp > float(self.p.loc_status_stale_s):
+            return 'stale'
+        return i.loc_rtk or ''
+
+    def _loc_fix_track(self):
+        """Every tick: the receiver class change time, the current RTK-fixed run and the fix
+        wait latch. A degraded / lost status while an escape manoeuvre owns the tick (the hold
+        cannot start then) latches the wait too. The latch clears once fixed has settled or
+        no mission is left."""
+        rtk, seen = self._loc_rtk_class(), self._loc_rtk_seen
+        if seen is None or seen[0] != rtk:
+            self._loc_rtk_seen = (rtk, self._now if seen is not None and seen[0] else None)
+        if self._loc_fixed():
+            if self._loc_fixed_since is None:
+                self._loc_fixed_since = self._now
+        else:
+            self._loc_fixed_since = None
+        if self._loc_fix_wait is None and self.p.loc_hold and self.mission is not None and \
+                self.phase in ('MOWING', 'TRANSIT') and \
+                any(k is not None for k in (self._hb, self._stk, self._tob)) and \
+                self._loc_view()[0] in ('degraded', 'lost'):
+            self._loc_fix_wait = self._now
+            self._log('warn', 'localization %s during a recovery manoeuvre: its resume waits '
+                      'for RTK fixed' % self._loc_view()[0])
+        if self._loc_fix_wait is not None and (self.mission is None or self._loc_fixed_settled()):
+            self._loc_fix_wait = None
+
+    def _loc_rtk_changed_ago(self):
+        """Seconds since the receiver class last changed (None: no change seen yet)."""
+        seen = self._loc_rtk_seen
+        if seen is None or seen[1] is None:
+            return None
+        return self._now - seen[1]
+
+    def _loc_fixed_settled(self):
+        """RTK FIXED (fresh status) continuously for loc_fixed_settle_s."""
+        return self._loc_fixed_since is not None and self._loc_fixed() and \
+            self._now - self._loc_fixed_since >= float(self.p.loc_fixed_settle_s)
+
+    def _loc_fix_pending(self):
+        """A hold stopped the mission and RTK fixed has not settled since."""
+        return bool(self.p.loc_resume_require_fixed) and self._loc_fix_wait is not None and \
+            not self._loc_fixed_settled()
+
+    def _loc_hold_instead_of_resume(self, who):
+        """A guard about to resume the mission (``who``) while the fix wait is pending: start
+        the localization hold instead (its resume re-dispatches once RTK fixed settles).
+        True = held, the caller must not resume."""
+        m = self.mission
+        if not self.p.loc_hold or m is None or not self._loc_fix_pending():
+            return False
+        transit = self.phase == 'TRANSIT' and m.transit_target is not None
+        if transit:
+            m.step = 'transit'
+        self._loc_hold_begin('transit' if transit else 'follow',
+                             'rtk %s' % (self.inputs.loc_rtk or 'unknown'),
+                             '%s done before RTK fixed settled' % who)
         return True
 
     def _loc_restore_budgets(self, d):

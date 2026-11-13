@@ -51,7 +51,7 @@ def test_loc_hold_mid_pivot_redoes_the_pivot_on_resume():
     h.tick()
     assert h.fsm.mission.step == 'loc_hold' and h.fsm._action is None
     mk = h.mark()
-    run(h, 'ok', 3.5)                    # loc_resume_s 3 s
+    run(h, 'ok', 5.5)                    # RTK fixed settled (loc_fixed_settle_s 5 s)
     h.tick(n=3)                          # blade spin-up (is_cutting) -> _follow
     assert _first_motion(h, mk) == (f.ACT_SPIN, 'cov_pivot'), _after(h, mk)
     spin = h.goal(f.ACT_SPIN)
@@ -83,6 +83,6 @@ def test_hold_resume_after_a_finished_pivot_does_not_pivot_again():
     set_loc(h, 'degraded')
     h.tick()
     mk = h.mark()
-    run(h, 'ok', 3.5)
+    run(h, 'ok', 5.5)
     h.tick(n=3)
     assert _first_motion(h, mk)[0] == f.ACT_FOLLOW, _after(h, mk)

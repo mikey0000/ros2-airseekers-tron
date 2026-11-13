@@ -262,6 +262,9 @@ class SpinDriftGuardMixin:
         self._hb_stop()
         self._hb_trail = []
         why = 'left the boundary (%s)' % k.get('what', '%.2f m outside' % k['out0'])
+        if k['phase'] not in DOCK_PHASES and \
+                self._loc_hold_instead_of_resume('boundary recovery'):
+            return
         if Escape.resume_dock_or_idle(self, k, 'resuming after the boundary retrace',
                                       'boundary retrace: nothing to resume'):
             return
