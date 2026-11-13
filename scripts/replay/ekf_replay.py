@@ -284,7 +284,7 @@ def main():
     ap.add_argument('--t0', type=float, required=True)
     ap.add_argument('--t1', type=float, required=True)
     ap.add_argument('--variant', action='append', required=True,
-                    help="name:vy_var=V,fuse_vy=0|1 (repeat)")
+                    help='name:vy_var=V,fuse_vy=0|1 (repeat)')
     ap.add_argument('--speed', type=float, default=4.0)
     ap.add_argument('--vx-var', type=float, default=0.02)
     a = ap.parse_args()
