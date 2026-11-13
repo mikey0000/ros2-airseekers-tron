@@ -279,7 +279,7 @@ parameters are in `config/mission.yaml`:
 | lost | Hold: stop, blade off, the interrupted goal kept. | |
 | held 120 s, not ok | Retrace the driven track (a ring of the last 10 m, sampled every 0.1 m in every phase whatever the RTK state) back toward the last fix, at most 3 m at 0.10 m/s on `/cmd_vel_emergency`, with the stuck guard suppressed. Then wait. Runs once per hold. A return to `ok` stops it. | `loc_lost_retrace_s` 120, `loc_lost_retrace_max_m` 3.0, `loc_lost_retrace_speed_mps` 0.10, `loc_trail_step_m` 0.1, `loc_trail_len_m` 10 |
 | held 600 s | Resume cursor saved, MOWING_INCOMPLETE. With RTK FIXED (the status is fresh and its `rtk` is `fixed`, for example when only the sigma gate keeps it from `ok`) the robot then docks as `return_home_on_incomplete` says. Without a fix it stays stopped and logs the reason; mower_alerts raises `mowIncomplete` from the state. | `loc_lost_dock_s` 600 (replaces `loc_hold_max_s`) |
-| ok for 3 s | Resume: a follow re-dispatches from its held progress (transit back first after a retrace), a transit re-sends its goal, a dock re-docks. | `loc_resume_s` 3 |
+| ok for 3 s and RTK FIXED for 5 s | Resume: a follow re-dispatches from its held progress (transit back first after a retrace), a transit re-sends its goal, a dock re-docks. Since 2026-11-13 a mow / transit hold also needs the receiver at RTK FIXED, fresh, for `loc_fixed_settle_s`: `ok` on RTK float (sigma under the gate) keeps it waiting, up to `loc_lost_dock_s`. The hold latches a fix wait; while it is pending the boundary recovery, stuck escape and BOUNDARY_PAUSED resumes start the hold instead of moving, and the hold restarts if any other path resumed. A boundary trip on an untrusted pose (the wait pending, degraded / lost, an RTK class change within the settle window, or the map pose moving 0.15 m more than the wheel odometry in 3 s without a settled fix) joins the hold instead of driving recovery moves (`analysis/2026-11-13_rtk_dropout.md`). | `loc_resume_s` 3, `loc_resume_require_fixed` true, `loc_fixed_settle_s` 5, `hard_boundary_loc_defer` true, `hard_boundary_jump_window_s` 3, `hard_boundary_jump_pose_m` 0.15 |
 
 As in MowgliNext, a hold is a guard pause and never charges a budget. The sub-path's
 `transit_fails`, `follow_fails`, `recovery_fails`, `route_plan_fails`, `route_aborts` and
@@ -294,6 +294,13 @@ NAV_TO_DOCK_FAILED (alert `dockFailed`). `_dock()` ends any localization hold of
 interrupted mow.
 
 Stock Tron for comparison: wheels-only for 10 s, VIO for 100 m.
+
+**ekf_map wheel vy (2026-11-13).** `ekf_map` fuses the wheel odometry's vy = 0 at mcu_node's
+`odom_vy_variance` 0.05 (m/s)^2 (it was published as unobserved, 1e6, and not fused). Without
+it the lateral velocity the RTK updates left in the state was integrated while no fix was
+fused: standing still through 14 s of RTK single the map pose ran 0.41 m at ~3 cm/s. Bag
+replay (`scripts/replay/ekf_replay.py`): 0.53 m -> 0.02 m, RTK-fixed tracking unchanged.
+`ekf_node` (no GPS) and the single-filter `ekf.yaml` are unchanged.
 
 Tests: `mower_localization/test/test_localization_status.py::TestSigmaGate`,
 `mower_mission/test/test_loc_hold.py`, `mower_mission/test/test_loc_policy.py`.
