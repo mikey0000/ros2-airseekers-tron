@@ -46,6 +46,7 @@ do_sync() {
     --exclude third_party/mowglinext/gui/web/dist/ \
     --exclude third_party/mowglinext/gui/mowglinext \
     --exclude third_party/open_vins/ \
+    --exclude .vio_build/ \
     --exclude config/gui/mowgli_robot.yaml \
     "$STACK_ROOT/" "$MOWER_USER@$MOWER_HOST:$REMOTE_DIR/"
   # config/gui/mowgli_robot.yaml is DEVICE-OWNED (datum, GUI-saved settings): never overwrite it;

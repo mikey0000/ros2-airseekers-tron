@@ -16,8 +16,10 @@
 #   * Sources: the third_party/open_vins git submodule (pinned upstream rpng/open_vins;
 #     `git submodule update --init` after cloning). third_party/ is COLCON_IGNOREd, so the
 #     normal stack build never compiles it; a patched copy goes to
-#     /userdata/ros2/src_ext/open_vins, outside the stack's colcon tree. Patches: config/vio/patches/*.patch (image topics use
-#     SensorDataQoS, otherwise ov_msckf never receives stereo_cam's best-effort frames).
+#     /userdata/ros2/src_ext/open_vins, outside the stack's colcon tree, staged by
+#     scripts/vio/stage_openvins.sh with config/vio/patches/*.patch (image topics use
+#     SensorDataQoS, otherwise ov_msckf never receives stereo_cam's best-effort frames; deep
+#     IMU queue; the serial-runner CMake option, left OFF here).
 #   * Output goes into the stack's install space (/work/install/ov_*), so the normal
 #     `source /work/install/setup.bash` finds ov_msckf; build tree in /userdata/ros2/build_ov.
 set -euo pipefail
@@ -55,12 +57,9 @@ sync_sources() {
   echo "== staging patched OpenVINS from $OV_SRC"
   local tmp; tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' RETURN
-  rsync -a --exclude .git --exclude docs --exclude 'Dockerfile*' "$OV_SRC/" "$tmp/open_vins/"
-  # ov_eval/ov_data are not needed on the robot.
-  touch "$tmp/open_vins/ov_eval/COLCON_IGNORE" "$tmp/open_vins/ov_data/COLCON_IGNORE"
-  for p in "$STACK_ROOT"/config/vio/patches/*.patch; do
-    echo "   applying $(basename "$p")"; (cd "$tmp/open_vins" && patch -p1 --forward < "$p")
-  done
+  # patched copy (ov_eval/ov_data ignored); the serial bag runner it adds stays unbuilt here
+  # (OV_ROS2_SERIAL defaults to OFF)
+  OV_SRC="$OV_SRC" "$SCRIPT_DIR/vio/stage_openvins.sh" "$tmp/open_vins"
   remote "mkdir -p $REMOTE_SRC $REMOTE_BUILD"
   rsync -a --delete -e "sshpass -e ssh ${SSH_OPTS[*]}" "$tmp/open_vins/" "$MOWER:$REMOTE_SRC/open_vins/"
 }
