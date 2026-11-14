@@ -85,6 +85,11 @@ behavior_tree_node:
     loc_hold_dock_exempt_max_s: 60.0  # dock transit / docking held only when lost longer than this
     loc_trail_step_m: 0.1             # driven-track sample spacing for the retrace
     loc_trail_len_m: 10.0             # driven-track ring length kept (every phase, any RTK state)
+    # RTK dropout 2026-11-13 (docs/analysis/2026-11-13_rtk_dropout.md): once a hold has stopped
+    # the mission, every resume waits for RTK FIXED held this long (float passed the sigma gate
+    # while 0.3 m off); false = the old 'ok for loc_resume_s' resume
+    loc_resume_require_fixed: true
+    loc_fixed_settle_s: 5.0           # RTK fixed this long = settled (also the boundary distrust window)
     # 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py,
     # docs/analysis/2026-10-23_obstacle_nogo_options.md section C)
     nogo_enabled: true
@@ -528,6 +533,12 @@ behavior_tree_node:
     hard_boundary_entry_m: 0.02          # START / resume this far out: inward first, not counted
     hard_boundary_jump_m: 1.0            # a > 1 m jump in one tick is ignored (map reload race)
     hard_boundary_jump_hold_s: 2.0
+    # a trip on an untrusted pose (2026-11-13: float re-acquired 0.3 m off, the map pose jumped
+    # 0.68 m while the wheels stood still) is a localization event: stop, blade off, wait for
+    # RTK fixed (the localization hold), re-check on the settled pose; no recovery moves
+    hard_boundary_loc_defer: true
+    hard_boundary_jump_window_s: 3.0     # wheel vs map displacement window
+    hard_boundary_jump_pose_m: 0.15      # map moved this much more than the wheels: pose jump (RTK not fixed)
     # boundary recovery on a side slope (field 2026-11-02; mission_fsm Params)
     boundary_recover_footprint_plan: true  # simulate the footprint per candidate motion, never worsen
     boundary_recover_max_worsen_m: 0.05

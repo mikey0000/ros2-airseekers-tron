@@ -2155,3 +2155,14 @@ cut 46 % while reporting "98.8 % mowed". Details: `analysis/2026-11-13_narrow_st
   - the evaluator's (i) now judges reverse segments facing the right way.
 - **Open**: field test. The transit's entry and exit pivots at the strip's west tip remain.
   The entry end is chosen without slope data.
+
+## RTK dropout: resume on a settled fix, no boundary moves on a jumped pose, ekf_map vy (2026-11-13, branch ws/rtkdrop1113, unit + bag replay + sim; not field tested)
+
+Field 2026-11-13, Area 4 strip: an NTRIP outage dropped RTK to single while mowing. The hold
+stopped the mower, the map pose drifted 0.41 m standing still, float came back 0.3 m off and
+the pose jumped 0.72 m, the body guard tripped on that jump, drove three recovery moves and
+resumed mowing on float. Fixes: a dropout hold resumes only on RTK FIXED held 5 s, and every
+resume path waits for it; a boundary trip on an untrusted pose joins the hold instead of
+moving; ekf_map fuses wheel vy = 0 at 0.05 (m/s)^2 (bag replay: drift 0.53 -> 0.02 m,
+fixed-RTK tracking unchanged). New sim injection (`single`, fixed float offset) and world
+`owner_area4_strip_rtkdrop.yaml`. Details, tests and sim: `analysis/2026-11-13_rtk_dropout.md`.

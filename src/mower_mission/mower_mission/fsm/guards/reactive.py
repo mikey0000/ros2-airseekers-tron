@@ -85,7 +85,8 @@ class ReactiveGuardsMixin:
                 return True
             # A soft violation pauses only while the blade may be on (MOWING); a
             # blade-off TRANSIT is exactly how the robot gets back inside.
-            if i.boundary_violation and self.phase == 'MOWING':
+            if i.boundary_violation and self.phase == 'MOWING' and \
+                    not self._hb_defer_to_loc_hold('boundary violation flag'):
                 self._boundary_pause()
                 return True
 

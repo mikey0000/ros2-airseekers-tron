@@ -169,8 +169,8 @@ def test_loop_guard_restarts_with_every_new_goal_and_does_not_fire_in_a_hold():
         i.loc_state, i.loc_reason, i.loc_stamp = 'degraded', 'rtk float', h.t
         h.tick(dt=1.0)
     assert h.fsm.mission.step == 'loc_hold'
-    for _ in range(5):
-        i.loc_state, i.loc_stamp = 'ok', h.t
+    for _ in range(7):                           # RTK fixed settles (loc_fixed_settle_s 5 s)
+        i.loc_state, i.loc_rtk, i.loc_stamp = 'ok', 'fixed', h.t
         h.tick(dt=1.0)
     assert h.fsm.mission.step == 'follow'
     tok = h.pending_action(f.ACT_FOLLOW).token

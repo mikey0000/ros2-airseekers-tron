@@ -1195,6 +1195,14 @@ class Params:
     hard_boundary_entry_m: float = 0.02
     hard_boundary_jump_m: float = 1.0
     hard_boundary_jump_hold_s: float = 2.0
+    # 2026-11-13: a trip while the pose is untrusted (fix wait pending, localization degraded /
+    # lost, an RTK class change within loc_fixed_settle_s, or, RTK not settled-fixed, the map
+    # pose moving hard_boundary_jump_pose_m more than the wheels within
+    # hard_boundary_jump_window_s) is a localization event: the localization hold (stop, blade
+    # off, wait for RTK fixed) instead of recovery moves; re-checked on the settled pose.
+    hard_boundary_loc_defer: bool = True
+    hard_boundary_jump_window_s: float = 3.0
+    hard_boundary_jump_pose_m: float = 0.15
     # --- boundary recovery on a side slope (field 2026-11-02, area edge, 8-12 deg roll: the
     # lining-up pivot swung the nose from 0.43 to 0.69 m out, the retrace / inward moves slid
     # downhill on spinning wheels, STUCK_NEEDS_HELP named the stale trip origin).
@@ -1477,6 +1485,12 @@ class Params:
     loc_hold_dock_exempt_max_s: float = 60.0
     loc_trail_step_m: float = 0.1
     loc_trail_len_m: float = 10.0   # driven-track ring kept for the retrace
+    # RTK dropout 2026-11-13 (analysis/2026-11-13_rtk_dropout.md): a hold that stopped the
+    # mission latches a fix wait (_loc_fix_wait); the hold, and every other resume path while
+    # the wait is pending, resumes only on RTK FIXED held loc_fixed_settle_s. Float passed the
+    # sigma gate 0.3 m off truth and the boundary recovery resumed on it.
+    loc_resume_require_fixed: bool = True
+    loc_fixed_settle_s: float = 5.0
     # ---- 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py) ----
     nogo_enabled: bool = True
     nogo_zones_max_age_s: float = 10.0       # /obstacle_tracker/nogo_zones receipt age

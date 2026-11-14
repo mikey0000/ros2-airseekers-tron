@@ -96,8 +96,14 @@ class TestSameSensorRowsAsSingleFilter:
         ref = _params(single, 'ekf_node')
         for node in dual:
             p = _params(dual, node)
-            assert p['odom0_config'] == ref['odom0_config'], node
             assert p['imu0_config'] == ref['imu0_config'], node
+        assert _params(dual, 'ekf_node')['odom0_config'] == ref['odom0_config']
+
+    def test_ekf_map_also_fuses_wheel_vy(self, dual, single):
+        """2026-11-13 RTK dropout: vy = 0 in ekf_map only (the stale vy drift)."""
+        ref = _params(single, 'ekf_node')['odom0_config']
+        cfg = _params(dual, 'ekf_map')['odom0_config']
+        assert [i for i in range(15) if cfg[i] != ref[i]] == [7] and cfg[7] is True
 
 
 class TestVioOverlay:
@@ -167,12 +173,13 @@ class TestGnssSmoothingOverlay:
             assert len(v) == 225
             assert all(isinstance(x, float) for x in v)
 
-    def test_odom_adds_only_the_vy_constraint(self, dual, overlay):
+    def test_odom_keeps_the_vy_constraint(self, dual, overlay):
+        # since 2026-11-13 the base ekf_map fuses vy too; the overlay tightens its variance
+        # (bringup) and lowers the x/y process noise
         base = _params(dual, 'ekf_map')['odom0_config']
         new = _params(overlay, 'ekf_map')['odom0_config']
         assert len(new) == 15 and all(isinstance(x, bool) for x in new)
-        assert [i for i in range(15) if new[i] != base[i]] == [7]
-        assert new[7] is True
+        assert new == base and new[7] is True
 
     def test_bringup_tightens_the_odom_twist_covariance_only_when_on(self):
         stack = os.path.dirname(os.path.dirname(PKG))
@@ -182,7 +189,7 @@ class TestGnssSmoothingOverlay:
         with open(path) as f:
             src = f.read()
         assert "'odom_vx_variance': _smoothing_variance(1e-4, 0.02)" in src
-        assert "'odom_vy_variance': _smoothing_variance(1e-4, 1e6)" in src
+        assert "'odom_vy_variance': _smoothing_variance(1e-4, 0.05)" in src
 
     def test_only_xy_process_noise_lowered(self, dual, overlay):
         base = _params(dual, 'ekf_map')['process_noise_covariance']

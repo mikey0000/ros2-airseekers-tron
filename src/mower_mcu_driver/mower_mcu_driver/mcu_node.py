@@ -64,8 +64,10 @@ Parameters
                                  with no scale or wheel geometry, so stock odom reads short too.
                                  Not the command path (``linear_scale``); ``/mcu/measured_speed``
                                  stays the raw MCU value so ``wheel_cal.py`` keeps measuring it.
-``odom_vx_variance`` ``0.02`` / ``odom_vy_variance`` ``1e6``  ``/odom`` twist covariance while
-                                 measured; bringup sets 1e-4 / 1e-4 with ``gnss_smoothing:=true``
+``odom_vx_variance`` ``0.02`` / ``odom_vy_variance`` ``0.05``  ``/odom`` twist covariance while
+                                 measured; bringup sets 1e-4 / 1e-4 with ``gnss_smoothing:=true``.
+                                 vy was 1e6 (unobserved) until 2026-11-13; ekf_map now fuses
+                                 vy = 0 at this loose variance (RTK-dropout drift)
 ``linear_max`` ``0.3`` / ``angular_max`` ``0.7``        clamp (m/s, rad/s; 0.7 = stock MoveUtils::Rotation max, 2026-11-06)
 ``battery_voltage_scale`` ``0.1``  raw 0.1 V units -> volts (set 1.0 to mimic the stock node)
 ``battery_current_scale`` ``-0.1`` raw 0.1 A, positive = discharging -> ROS amperes (negative
@@ -563,7 +565,7 @@ class McuNode(Node):
         # motion on the wheels (robot_localization replay of the 10-28 bag: with vx 0.02 and
         # vy unobserved the ekf_map pose follows RTK whatever its x/y process noise).
         self.declare_parameter('odom_vx_variance', 0.02)
-        self.declare_parameter('odom_vy_variance', 1e6)
+        self.declare_parameter('odom_vy_variance', 0.05)   # loose vy = 0 (2026-11-13)
         # Vendor PidControllerROS clamps its /cmd_vel output to +-0.3; mirror it until the
         # wheel scale/sign has been characterised wheels-up.
         self.declare_parameter('linear_max', 0.3)
@@ -1938,7 +1940,7 @@ _MOTOR_FIELD_ALIASES = {'speed': 'speed_rpm'}
 
 # Dead reckoning covariances (row-major 6x6).  Unobserved axes are marked with 1e6.
 _POSE_COVARIANCE = _diag6(0.05, 0.05, 0.10, 0.50, 0.50, 0.10)
-_TWIST_COVARIANCE_MEASURED = _diag6(0.02, 1e6, 1e6, 1e6, 1e6, 0.05)
+_TWIST_COVARIANCE_MEASURED = _diag6(0.02, 0.05, 1e6, 1e6, 1e6, 0.05)
 _TWIST_COVARIANCE_COMMANDED = _diag6(1.00, 1e6, 1e6, 1e6, 1e6, 1.00)
 
 

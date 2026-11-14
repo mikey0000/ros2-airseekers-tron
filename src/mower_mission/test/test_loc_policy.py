@@ -167,7 +167,7 @@ def test_lost_retraces_toward_the_last_fix_then_waits_and_resumes():
     m = h.mark()
     run(h, 'lost', 30.0, dt=5.0)        # waits, no second retrace
     assert not [c for c in drive_cmds(h, m) if c.linear != 0.0]
-    run(h, 'ok', 3.5)                   # fixed again: resumes the mow
+    run(h, 'ok', 5.5)                   # fixed again (settled): resumes the mow
     assert h.fsm._loc is None and h.fsm.mission is not None
     # 2 m back from the held progress: transit to it, then the follow resumes there
     assert h.name == 'TRANSIT' and h.pending_action(f.ACT_NAV)
@@ -194,7 +194,7 @@ def test_ok_during_retrace_stops_it_and_resumes():
     m = h.mark()
     run(h, 'ok', 0.5)
     assert h.fsm._loc['rt'] is None and h.since(m, f.DriveCmd)[-1].linear == 0.0
-    run(h, 'ok', 3.0)
+    run(h, 'ok', 5.0)
     assert h.fsm._loc is None
 
 
@@ -228,7 +228,7 @@ def test_hold_never_charges_retry_budgets():
     # anything the stop / cancel would have charged is given back on resume
     mm.follow_fails, mm.transit_fails, mm.route_plan_fails, mm.detours = 5, 5, 5, 5
     h.fsm._route_watch = {'token': -1, 's': 0.0, 't': 0.0}
-    run(h, 'ok', 3.5)
+    run(h, 'ok', 5.5)
     assert h.fsm._loc is None
     assert (mm.follow_fails, mm.transit_fails, mm.route_plan_fails, mm.detours) == (1, 2, 0, 0)
     assert h.fsm._route_watch is None or h.fsm._route_watch['token'] != -1
@@ -239,7 +239,7 @@ def test_transit_hold_keeps_transit_fails():
     transit(h)
     n = h.fsm.mission.transit_fails
     run(h, 'lost', 200.0, dt=5.0)
-    run(h, 'ok', 3.5)
+    run(h, 'ok', 5.5)
     assert h.fsm.mission.transit_fails == n and h.fsm.mission.step == 'transit'
 
 

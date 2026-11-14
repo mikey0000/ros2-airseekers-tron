@@ -8,7 +8,7 @@ import pytest
 
 from mower_sim import world as W
 from mower_sim.kinematics import DiffDrive
-from mower_sim.rtk import DROPOUT, FIXED, FLOAT, RtkModel, parse_spec, rtk_from_dict
+from mower_sim.rtk import DROPOUT, FIXED, FLOAT, SINGLE, RtkModel, parse_spec, rtk_from_dict
 from mower_sim.terrain import terrain_from_dict
 
 DT = 0.02
@@ -193,3 +193,22 @@ def test_rtk_pivot_anchor_min_duration_and_ekf_sigma_param():
     for t in (3.0, 4.0, 5.0):                   # a long one: anchored 2 s in
         m.notify(t, False, True, 0.0, 0.5)
     assert m.anchor_t == 5.0
+
+
+def test_rtk_single_then_fixed_offset_float():
+    """2026-11-13 dropout injection: single (fix dropped by gps_gate) then float with a
+    fixed offset, a map gain and an ekf sigma per event."""
+    m = RtkModel(rtk_from_dict({'anchor': 'sim', 'events': [
+        {'t0': 10, 'dur': 14, 'kind': 'single', 'ekf_sigma_m': 0.5},
+        {'t0': 24, 'dur': 11, 'kind': 'float', 'offset': [0.0, -0.3], 'map_gain': 1.0,
+         'ekf_sigma_m': 0.07}]}))
+    rows = {round(r[0], 1): r[1:] for r in _steps(m, 0.0, 40.0)}
+    assert rows[9.9][0] == FIXED and rows[10.0][0] == SINGLE and rows[23.9][0] == SINGLE
+    assert rows[10.0][1:] == (0.0, 0.0)
+    assert rows[24.0] == (FLOAT, 0.0, -0.3) and rows[34.9] == (FLOAT, 0.0, -0.3)
+    assert rows[35.0][0] == FIXED
+    m.step(30.0, 0.1, 0.0, 0.0)
+    assert m.event.map_gain == 1.0 and m.event.ekf_sigma_m == 0.07
+    m.step(12.0, 0.1, 0.0, 0.0)
+    assert m.event.kind == SINGLE and m.event.ekf_sigma_m == 0.5
+    assert parse_spec('5:2:single').kind == SINGLE

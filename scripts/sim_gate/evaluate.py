@@ -190,7 +190,9 @@ def slip_events(wodom, gt, t0=0.0, win=SLIP_WIN_S, min_m=SLIP_MIN_M, ratio=SLIP_
 
 
 def rtk_windows(simx, t0=0.0):
-    """[t_from, t_to, mode] runs of a non-fixed sim RTK mode (/sim/status 'rtk')."""
+    """[t_from, t_to, mode] runs of a non-fixed sim RTK mode (/sim/status 'rtk'). Back-to-back
+    non-fixed modes are one loss episode (2026-11-13: single then float, mode
+    'single+float'): the hold must last until RTK FIXED comes back."""
     out = []
     for r in simx:
         mode = r[4] if len(r) > 4 else None
@@ -198,10 +200,10 @@ def rtk_windows(simx, t0=0.0):
             if out and out[-1][1] is None:
                 out[-1][1] = r[0] - t0
             continue
-        if out and out[-1][1] is None and out[-1][2] == mode:
-            continue
         if out and out[-1][1] is None:
-            out[-1][1] = r[0] - t0
+            if out[-1][2].split('+')[-1] != mode:
+                out[-1][2] += '+' + mode
+            continue
         out.append([r[0] - t0, None, mode])
     if out and out[-1][1] is None:
         out[-1][1] = (simx[-1][0] - t0) if simx else out[-1][0]

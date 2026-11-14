@@ -14,6 +14,12 @@ declare::
       events:
         - {t0: 120, dur: 60, kind: float}     # FLOAT: /fix offset by a random walk
         - {t0: 400, dur: 30, kind: dropout}   # no /fix, no /fix_status at all
+        - {t0: 500, dur: 14, kind: single}    # /fix + /fix_status SINGLE (gps_gate drops it;
+                                              # field 2026-11-13: NTRIP corrections aged out)
+        - {t0: 514, dur: 11, kind: float,     # optional per event (2026-11-13 dropout):
+           offset: [0.0, -0.3],               #   fixed float offset (map m) instead of the walk
+           map_gain: 1.0,                     #   share of it in the map estimate (loc_drift)
+           ekf_sigma_m: 0.07}                 #   ekf_map sigma while it lasts (else the block's)
       float_min_m: 0.3         # float offset magnitude kept in [min, max]
       float_max_m: 1.0
       float_std_m: 0.5         # Ornstein-Uhlenbeck per axis (std, correlation time)
@@ -42,7 +48,8 @@ from typing import List, Optional, Sequence, Tuple
 
 from .terrain import _edge_dist, _pip
 
-FIXED, FLOAT, DROPOUT = 'fixed', 'float', 'dropout'
+FIXED, FLOAT, DROPOUT, SINGLE = 'fixed', 'float', 'dropout', 'single'
+KINDS = (FLOAT, DROPOUT, SINGLE)
 ANCHORS = ('blade', 'undock', 'sim', 'pivot')
 PIVOT_MIN_S = 0.4        # anchor 'pivot': in-place rotation held this long
 PIVOT_V, PIVOT_W = 0.02, 0.15   # |v| below, |w| above: rotating in place
@@ -53,6 +60,9 @@ class RtkEvent:
     t0: float
     dur: float
     kind: str = FLOAT
+    offset: Optional[Tuple[float, float]] = None    # float: fixed offset (map m)
+    map_gain: Optional[float] = None                # float: share in the map estimate
+    ekf_sigma_m: Optional[float] = None             # ekf_map sigma while active
 
 
 @dataclass
@@ -107,8 +117,8 @@ def parse_spec(spec: str) -> RtkEvent:
     if len(parts) not in (2, 3):
         raise ValueError('rtk-loss %r: want t0:dur[:float|dropout]' % spec)
     kind = parts[2] if len(parts) == 3 else DROPOUT
-    if kind not in (FLOAT, DROPOUT):
-        raise ValueError('rtk-loss %r: kind must be float or dropout' % spec)
+    if kind not in KINDS:
+        raise ValueError('rtk-loss %r: kind must be float, dropout or single' % spec)
     return RtkEvent(float(parts[0]), float(parts[1]), kind)
 
 
@@ -118,9 +128,13 @@ def rtk_from_dict(doc: Optional[dict]) -> Optional[RtkParams]:
     ev = []
     for e in doc.get('events') or []:
         kind = str(e.get('kind', FLOAT))
-        if kind not in (FLOAT, DROPOUT):
-            raise ValueError('rtk: event kind %r (float | dropout)' % kind)
-        ev.append(RtkEvent(float(e['t0']), float(e['dur']), kind))
+        if kind not in KINDS:
+            raise ValueError('rtk: event kind %r (float | dropout | single)' % kind)
+        off = e.get('offset')
+        ev.append(RtkEvent(float(e['t0']), float(e['dur']), kind,
+                           None if off is None else (float(off[0]), float(off[1])),
+                           None if e.get('map_gain') is None else float(e['map_gain']),
+                           None if e.get('ekf_sigma_m') is None else float(e['ekf_sigma_m'])))
     anchor = str(doc.get('anchor', 'blade'))
     if anchor not in ANCHORS:
         raise ValueError('rtk: anchor %r not in %s' % (anchor, ANCHORS))
@@ -148,6 +162,7 @@ class RtkModel:
         self._rot_since: Optional[float] = None
         self.err = [0.0, 0.0]
         self.mode = FIXED
+        self.event: Optional[RtkEvent] = None    # the event that set the current mode
 
     def notify(self, t: float, docked: bool, cutting: bool, v: float = 0.0, w: float = 0.0):
         """Feed the anchor: first cutter on (blade) / first departure from the dock / first
@@ -171,27 +186,34 @@ class RtkModel:
                 self.anchor_t = t
 
     def event_mode(self, t: float) -> str:
+        return self.active_event(t)[0]
+
+    def active_event(self, t: float) -> Tuple[str, Optional[RtkEvent]]:
+        """(mode, event) at sim time t: dropout over single over float, else fixed."""
         if self.anchor_t is None:
-            return FIXED
+            return FIXED, None
         rel = t - self.anchor_t
-        mode = FIXED
+        best = (FIXED, None)
+        rank = {FIXED: 0, FLOAT: 1, SINGLE: 2, DROPOUT: 3}
         for e in self.p.events:
-            if e.t0 <= rel < e.t0 + e.dur:
-                if e.kind == DROPOUT:
-                    return DROPOUT
-                mode = FLOAT
-        return mode
+            if e.t0 <= rel < e.t0 + e.dur and rank[e.kind] > rank[best[0]]:
+                best = (e.kind, e)
+        return best
 
     def step(self, t: float, dt: float, ax: float, ay: float) -> Tuple[str, float, float]:
         """(mode, dx, dy) for the antenna at (ax, ay) at sim time t."""
         p = self.p
-        mode = self.event_mode(t)
+        mode, self.event = self.active_event(t)
         bx = by = 0.0
         if p.multipath is not None:
             bx, by, mp_float = p.multipath.at(ax, ay)
             if mp_float and mode == FIXED:
                 mode = FLOAT
-        if mode == FLOAT:
+        if mode == FLOAT and self.event is not None and self.event.offset is not None:
+            self.err = list(self.event.offset)
+            bx += self.err[0]
+            by += self.err[1]
+        elif mode == FLOAT:
             if self.mode != FLOAT:          # entering float: a fresh offset of >= min
                 a = self.rng.uniform(0.0, 2.0 * math.pi)
                 self.err = [p.float_min_m * math.cos(a), p.float_min_m * math.sin(a)]

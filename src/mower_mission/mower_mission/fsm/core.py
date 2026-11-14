@@ -125,6 +125,9 @@ class MissionFSM(PreviewMixin,
         self._loc_capped = False            # degraded speed cap sent to the controllers
         self._loc_lost_since = None         # start of the current 'lost' run
         self._loc_trail = []                # [(x, y)] ring: last loc_trail_len_m of driven track
+        self._loc_fix_wait = None           # time a loc hold stopped the mission: resume on FIXED
+        self._loc_fixed_since = None        # start of the current fresh RTK-fixed run
+        self._loc_rtk_seen = None           # (receiver class, time it changed) last observed
         self._blk = None                    # path-blocked wait context (see _blocked)
         self.obstacle_decision = {'kind': 'none'}   # /mission/obstacle_decision (GUI)
         self._dyn_ignore = None             # post-timeout ignore window (see _dyn_ignored)
@@ -151,6 +154,8 @@ class MissionFSM(PreviewMixin,
         self._hb_jump = None                # (last fresh boundary value, t, jump hold since)
         self._hb_resumed = None             # last recovery resume: grace window (t, travel)
         self._hb_entry = False              # first boundary reading after START / resume
+        self._hb_motion = []                # [(t, wheel_xy, (x, y))] last jump window, oldest first
+        self._hb_deferred = None            # boundary trip deferred to the loc hold (logged once)
         self._spin_from = None              # (token, x, y) where the running Spin started
         self._spin_drifts = {}              # coverage leg key -> Spin drifts
         self._spin_resend = None            # delayed pivot re-send (pivot_retry_pause_s)
@@ -474,6 +479,7 @@ class MissionFSM(PreviewMixin,
             self._heading_was_aligned = True
         self._charge_limit_tick()
         self._coverage_tick()
+        self._loc_fix_track()
         if not self._guards():
             self._run_phase()
         return self._end()

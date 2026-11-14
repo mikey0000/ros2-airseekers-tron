@@ -167,6 +167,8 @@ class StuckGuardMixin:
         m = self.mission
         m.detour = None
         m.start_local = self._track_progress()
+        if self._loc_hold_instead_of_resume('stuck escape'):
+            return
         self._dispatch()
 
     def _skip_failing_piece(self):

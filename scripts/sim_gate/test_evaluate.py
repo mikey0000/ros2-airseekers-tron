@@ -58,6 +58,9 @@ def test_rtk_windows():
     simx = [[t, None, None, None, m] for t, m in
             [(0, 'fixed'), (1, 'float'), (2, 'float'), (3, 'fixed'), (5, 'dropout'), (6, 'dropout')]]
     assert E.rtk_windows(simx) == [[1, 3, 'float'], [5, 6, 'dropout']]
+    simx = [[t, None, None, None, m] for t, m in
+            [(0, 'fixed'), (1, 'single'), (2, 'single'), (3, 'float'), (4, 'float'), (5, 'fixed')]]
+    assert E.rtk_windows(simx) == [[1, 5, 'single+float']]
 
 
 def test_rtk_handling_hold_resume():

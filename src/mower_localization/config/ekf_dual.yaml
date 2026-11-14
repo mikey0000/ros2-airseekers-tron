@@ -9,7 +9,8 @@
 #             Nav2 controller and local costmap need. Publishes odom -> base_link and
 #             /odometry/filtered (Nav2 odom_topic, docking progress, localization_monitor
 #             distance).
-#   ekf_map   world_frame map: the same inputs + /odometry/gps (navsat_transform_node, fed
+#   ekf_map   world_frame map: the same inputs (+ wheel vy = 0, 2026-11-13) + /odometry/gps
+#             (navsat_transform_node, fed
 #             by THIS filter's output, so /odometry/gps is in the map frame). Publishes
 #             map -> odom (robot_localization computes it from its map pose and the
 #             ekf_node odom -> base_link TF) and /odometry/filtered_map (remapped in the
@@ -99,10 +100,19 @@ ekf_map:
     base_link_frame: base_link
     world_frame: map
 
+    # wheel odometry: vx + yaw rate, and vy = 0 (2026-11-13 RTK dropout,
+    # docs/analysis/2026-11-13_rtk_dropout.md). Without vy the lateral velocity the RTK
+    # updates left in the state was integrated whenever /odometry/gps stopped: standing
+    # still through 14 s of RTK single the map pose ran 0.41 m north at ~3 cm/s, and the
+    # float return then jumped 0.72 m. mcu_node publishes vy with a LOOSE variance
+    # (odom_vy_variance 0.05 (m/s)^2): enough to zero the stale vy within about a second,
+    # too loose to pull the pose (bag replay: drift 0.53 -> 0.02 m, RTK-fixed tracking
+    # unchanged). Not the GNSS-smoothing A/B (ekf_map_gnss_smoothing.yaml: 1e-4 plus a low
+    # x/y process noise). ekf_node does not need it: it has no GPS to bias vy.
     odom0: /odom
     odom0_config: [false, false, false,
                    false, false, false,
-                   true,  false, false,
+                   true,  true,  false,
                    false, false, true,
                    false, false, false]
     odom0_differential: false

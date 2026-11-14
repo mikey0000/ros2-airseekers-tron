@@ -146,6 +146,8 @@ class PhaseDispatchMixin:
             self._fallback_corridor_tick()
         elif ph == 'BOUNDARY_PAUSED' and self.mission is not None:
             m = self.mission
+            if self._loc_hold_instead_of_resume('boundary pause'):
+                return
             if not i.boundary_violation:
                 self._log('info', 'boundary violation cleared: resuming the sub-path')
                 m.start_local = self._track_progress()

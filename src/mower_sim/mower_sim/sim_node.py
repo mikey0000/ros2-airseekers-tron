@@ -76,7 +76,7 @@ from .loc_drift import params_for as loc_params_for
 from .detections import DetectionSource, DetParams, disc_base
 from .marker import RearCamera, RearCameraParams
 from .sensors import StereoParams, StereoRaycaster, bumper_sides
-from .rtk import DROPOUT, FLOAT, RtkModel, parse_spec
+from .rtk import DROPOUT, FLOAT, SINGLE, RtkModel, parse_spec
 from .world import antenna_xy, enu_to_latlon, load_world
 
 try:  # /tilt/status contract (terrain worlds): the real tilt_monitor's band logic
@@ -669,17 +669,20 @@ class SimNode(Node):
                                                            self.roll, self.pitch)
         if self.rtk is not None and self.rtk_mode != 'fixed':
             from .loc_drift import compose, inverse
-            if self.rtk_mode == DROPOUT:
-                # no GNSS: ekf_map dead-reckons on odom, map -> odom freezes
+            if self.rtk_mode in (DROPOUT, SINGLE):
+                # no usable GNSS (gps_gate drops single): ekf_map dead-reckons on odom,
+                # map -> odom freezes
                 if self._rtk_hold is None:
                     self._rtk_hold = self.drift.map_to_odom
                 mx, my, myaw = compose(self._rtk_hold, self.drift.odom)
             else:
-                g = float(self.get_parameter('rtk_float_map_gain').value)
+                ev = self.rtk.event
+                g = ev.map_gain if ev is not None and ev.map_gain is not None else \
+                    float(self.get_parameter('rtk_float_map_gain').value)
                 mx, my = mx + g * self._rtk_off[0], my + g * self._rtk_off[1]
             tx, ty, tyaw = compose((mx, my, myaw), inverse(self.drift.odom))
             self.drift.map_est, self.drift.map_to_odom = (mx, my, myaw), (tx, ty, tyaw)
-        if self.rtk is not None and self.rtk_mode != DROPOUT:
+        if self.rtk is not None and self.rtk_mode not in (DROPOUT, SINGLE):
             self._rtk_hold = None
         tf = TransformStamped()
         tf.header.stamp = stamp
@@ -696,9 +699,14 @@ class SimNode(Node):
         (m.pose.pose.orientation.x, m.pose.pose.orientation.y, m.pose.pose.orientation.z,
          m.pose.pose.orientation.w) = _quat(myaw)
         m.pose.covariance = odom.pose.covariance
-        if self.rtk is not None and self.rtk_mode != 'fixed' and self.rtk.p.ekf_sigma_m > 0.0:
+        sig = 0.0
+        if self.rtk is not None and self.rtk_mode != 'fixed':
+            ev = self.rtk.event
+            sig = ev.ekf_sigma_m if ev is not None and ev.ekf_sigma_m is not None else \
+                float(self.rtk.p.ekf_sigma_m)
+        if sig > 0.0:
             cov = list(odom.pose.covariance)
-            cov[0] = cov[7] = float(self.rtk.p.ekf_sigma_m) ** 2   # ekf_map under float / dropout
+            cov[0] = cov[7] = sig ** 2                  # ekf_map under float / dropout / single
             m.pose.covariance = cov
         m.twist.twist = odom.twist.twist
         self.pub_filtered_map.publish(m)
@@ -781,15 +789,20 @@ class SimNode(Node):
         sig2 = float(self.get_parameter('gps_sigma_m').value) ** 2
         if mode == FLOAT:
             sig2 = max(sig2, 0.5 ** 2)       # um960 BESTNAV float sigma (decimetres)
+        elif mode == SINGLE:
+            sig2 = max(sig2, 1.5 ** 2)
+            fix.status.status = NavSatStatus.STATUS_FIX
         fix.position_covariance = [sig2, 0.0, 0.0, 0.0, sig2, 0.0, 0.0, 0.0, 4 * sig2]
         fix.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
         if mode != DROPOUT:                  # dropout: the receiver sends nothing
             self.pub_fix.publish(fix)
-            self.pub_fix_status.publish(String(
-                data='um960=connected quality=RTK_FIXED solution=NARROW_INT sats=24/30 '
-                     'hdop=0.60 diff_age=1.0s age=0.10s (sim)' if mode != FLOAT else
-                     'um960=connected quality=RTK_FLOAT solution=NARROW_FLOAT sats=19/30 '
-                     'hdop=1.20 diff_age=3.0s age=0.10s (sim)'))
+            self.pub_fix_status.publish(String(data={
+                FLOAT: 'um960=connected quality=RTK_FLOAT solution=NARROW_FLOAT sats=19/30 '
+                       'hdop=1.20 diff_age=3.0s age=0.10s (sim)',
+                SINGLE: 'um960=connected quality=GPS solution=SINGLE sats=24/30 hdop=0.60 '
+                        'diff_age=120.0s age=0.10s (sim)'}.get(
+                    mode, 'um960=connected quality=RTK_FIXED solution=NARROW_INT sats=24/30 '
+                          'hdop=0.60 diff_age=1.0s age=0.10s (sim)')))
             vel = TwistStamped()
             vel.header = fix.header
             vel.twist.linear.x = self.drive.v
