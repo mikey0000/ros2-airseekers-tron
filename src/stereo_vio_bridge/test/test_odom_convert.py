@@ -42,8 +42,8 @@ def test_pose_unused():
 def test_base_twist_removes_lever_arm_of_metoak_imu():
     import math
     from stereo_vio_bridge.odom_convert import base_twist
-    from stereo_vio_bridge.vio_odom_bridge import _rpy_matrix
-    r = _rpy_matrix(-1.586797, 0.0, 1.570796)            # stereo_camera_imu -> base_link
+    from stereo_vio_bridge.odom_convert import rpy_matrix
+    r = rpy_matrix(-1.586797, 0.0, 1.570796)            # stereo_camera_imu -> base_link
     pos = (0.451, -0.0514, 0.2352)
     r_t = [[r[j][i] for j in range(3)] for i in range(3)]  # base -> imu
     # robot turning in place at 0.5 rad/s: base twist v=0, w=(0,0,0.5)

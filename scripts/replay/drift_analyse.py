@@ -4,7 +4,9 @@
 
 Each OUT_DIR is one ``ekf_replay.py`` run whose variants withheld the GPS in windows
 (``wh_len`` / ``wh_every`` / ``wh_phase``). Variant names start with ``b`` (ekf_map without wheel
-vy) or ``v`` (wheel vy fused); the rest of the name is the phase. Truth is the RTK-FIXED
+vy), ``v`` (wheel vy fused) or ``o`` (wheel vy fused + gated VIO, 2026-11-14,
+scripts/vio/eval_vio_bag.sh); the rest of the name is the phase. With both ``v`` and ``o``
+runs a side-by-side budget table compares wheel only against wheel + VIO. Truth is the RTK-FIXED
 ``/fix`` in the map frame (lever arm applied by ekf_replay), heading truth the COG measurement
 heading_aligner took at its next update.
 
@@ -34,6 +36,8 @@ FLAT_DEG = 4.0           # mean tilt below this: flat
 PRE_FIXED_S = 10.0       # the window start needs RTK FIXED for this long before it
 SLIP_WINDOW_S = 2.0      # s: wheel-odometry turn vs fused (gyro) turn compared over this window
 SLIP_RAD = 0.6           # a mismatch this large (34 deg) within the window is a slip event
+# variant name prefix -> label (report keys use the label)
+PREFIXES = (('v', 'vy fused (branch)'), ('b', 'vy not fused'), ('o', 'wheel + VIO'))
 
 
 def wrap(a):
@@ -523,12 +527,15 @@ def main():
     ap.add_argument('runs', nargs='+')
     ap.add_argument('--img', default=None)
     ap.add_argument('--json', default=None)
+    ap.add_argument('--min-n', type=int, default=15,
+                    help='windows needed at a distance step for the budget table')
     a = ap.parse_args()
     runs = [load_run(d) for d in a.runs]
     report = {}
-    wb = collect(runs, 'b')
-    wv = collect(runs, 'v')
-    print('usable windows: no-vy %d, vy %d' % (len(wb), len(wv)))
+    by_prefix = {p: collect(runs, p) for p, _ in PREFIXES}
+    wb, wv = by_prefix['b'], by_prefix['v']
+    print('usable windows: ' + ', '.join('%s %d' % (lab, len(by_prefix[p]))
+                                         for p, lab in PREFIXES))
     for rn in sorted({r for r, _ in wv}):
         ws = [rows for r, rows in wv if r == rn]
         dd = [rows[-1]['d'] for rows in ws]
@@ -536,7 +543,10 @@ def main():
         print('  %s: %d windows, distance per window p50 %.1f m, max %.1f m, mean tilt '
               'p50 %.1f p90 %.1f deg'
               % (rn, len(ws), pct(dd, 50), max(dd), pct(rolls, 50), pct(rolls, 90)))
-    for label, ws in (('vy fused (branch)', wv), ('vy not fused', wb)):
+    for prefix, label in PREFIXES:
+        ws = by_prefix[prefix]
+        if not ws:
+            continue
         print('\n## Position error by distance, %s' % label)
         t = dist_table(ws)
         report['dist_' + label] = t
@@ -556,7 +566,7 @@ def main():
         print('\n## Budget (distance to p90 error), %s' % label)
         report['budget_' + label] = {}
         for c, pred in CLASSES.items():
-            b, _ = budget(ws, pred)
+            b, _ = budget(ws, pred, min_n=a.min_n)
             report['budget_' + label][c] = b
             print('| %s | ' % c + ' | '.join(
                 (('%.2f m' % b[th]) if not isinstance(b[th], str) else b[th] + ' m')
@@ -588,6 +598,18 @@ def main():
                 print('  %s below the actual error, %s (no slip): %s' % (
                     name, lab2, ', '.join('%d m %.0f %% (n %d)' % (
                         m, v['under_estimated_pct'], v['n']) for m, v in mc.items())))
+    if by_prefix['v'] and by_prefix['o']:
+        print('\n## Budget: distance to p90 0.10 / 0.20 / 0.30 m, wheel only (v) against '
+              'wheel + VIO (o), same windows')
+        print('| class | wheel only | wheel + VIO |')
+        print('|---|---|---|')
+        for c in CLASSES:
+            cells = []
+            for lab in ('vy fused (branch)', 'wheel + VIO'):
+                b = report['budget_' + lab][c]
+                cells.append(' / '.join(('%.2f' % b[th]) if not isinstance(b[th], str)
+                                        else b[th] for th in THRESHOLDS_M) + ' m')
+            print('| %s | %s |' % (c, ' | '.join(cells)))
     hc = heading_from_cog(runs, 'v')
     report['heading_cog'] = hc
     print('\n## Heading error vs later COG updates (dead-reckoned yaw), n %d' % len(hc))
@@ -609,7 +631,9 @@ def main():
     print('  with pivot: |d offset| per min p50 %.2f p90 %.2f, per 90 deg pivot p50 %.2f p90 '
           '%.2f deg (n %d)' % (pct(rates_p, 50), pct(rates_p, 90), pct(per_piv, 50),
                                pct(per_piv, 90), len(per_piv)))
-    for lab, pre in (('vy', 'v'), ('no vy', 'b')):
+    for lab, pre in (('vy', 'v'), ('no vy', 'b'), ('vio', 'o')):
+        if not by_prefix[pre]:
+            continue
         pe = pivot_events(runs, pre)
         report['pivots_' + lab] = pe
         print('  pivots in windows (%s): n %d, |error change| across a pivot p50 %.3f p90 %.3f '

@@ -32,6 +32,22 @@ Several variants with staggered phases give overlapping windows::
 
     --variant base0:wh_len=90,wh_every=120,wh_phase=30 --variant base1:...,wh_phase=50
 
+Live inputs (VIO recordings, scripts/vio/record_vio_bag.sh, 2026-11-14): ``--live-inputs``
+takes ekf_map's real inputs instead of rebuilding them: /odom (mcu_node wheel twist, 50 Hz)
+and /imu/data_aligned (heading_aligner, 100 Hz). The ring bags do not record those two.
+
+VIO (2026-11-14): ``--vio FILE`` is the /odometry/vio stream (``scripts/vio/eval_vio_bag.py
+bridge``: t, vx, vy, vz, var_vx, var_vy, wz in base_link). A variant with ``vio=1`` adds
+``ekf_dual_vio.yaml``'s ekf_map overlay (odom2: vx, vy) and gets the stream through
+``vio_gate``'s logic, run per variant with that variant's withheld windows as RTK dropouts
+(``scripts/vio/vio_offline.run_gate``); ``vio_hz=N`` thins the gated stream to N Hz (default:
+every message, as live). Gate verdict changes go to ``OUT_DIR/gate_<variant>.csv``, the time
+shares inside the withheld windows to ``OUT_DIR/gate.json``. Name VIO variants with a prefix
+other than ``b`` / ``v`` (drift_analyse.py reads ``o`` as wheel + VIO)::
+
+    --live-inputs --vio OUT/vio.csv --variant v0:vy_var=0.05,fuse_vy=1,wh_len=100,... \
+        --variant o0:vy_var=0.05,fuse_vy=1,vio=1,wh_len=100,...
+
 Output: ``OUT_DIR/<variant>.csv`` (t, x, y, yaw), ``OUT_DIR/inputs.csv`` (t, kind, x, y,
 var / class; kinds field, gps, odom, mcu (/mcu/measured_speed vx, wz), tilt (roll, pitch
 deg), hdg (offset rad; offset rate rad/s, last COG time, last COG measured offset rad)),
@@ -58,15 +74,17 @@ sys.path.insert(0, os.path.join(STACK, 'src', 'mower_localization'))
 from mower_localization import rtk_quality   # noqa: E402
 
 EKF_YAML = os.path.join(STACK, 'src', 'mower_localization', 'config', 'ekf_dual.yaml')
+EKF_VIO_YAML = os.path.join(STACK, 'src', 'mower_localization', 'config', 'ekf_dual_vio.yaml')
 TOPICS = ('/odometry/filtered', '/fix', '/fix_status', '/odometry/filtered_map',
           '/heading_aligner/status', '/tilt/status', '/mcu/measured_speed')
+LIVE_TOPICS = ('/odom', '/imu/data_aligned')
 EARTH_R = 6378137.0
 _TIMES = {}
 
 
 # ---------------------------------------------------------------------------- bag reading
-def read_bag(bag, t0, t1):
-    """[(t, topic, msg)] of TOPICS between t0 and t1 (bag receive time, s), time order."""
+def read_bag(bag, t0, t1, topics=TOPICS):
+    """[(t, topic, msg)] of ``topics`` between t0 and t1 (bag receive time, s), time order."""
     import sqlite3
     from rclpy.serialization import deserialize_message
     from rosidl_runtime_py.utilities import get_message
@@ -74,9 +92,10 @@ def read_bag(bag, t0, t1):
                  key=lambda p: int(p.rsplit('_', 1)[1].split('.')[0]))
     out = []
     for d in dbs:
-        c = sqlite3.connect('file:%s?mode=ro' % d, uri=True)
+        # immutable: WAL-mode splits (bag_recorder's resilient preset) open on a read-only mount
+        c = sqlite3.connect('file:%s?mode=ro&immutable=1' % d, uri=True)
         tps = {r[0]: (r[1], r[2]) for r in c.execute('select id, name, type from topics')}
-        ids = [k for k, v in tps.items() if v[0] in TOPICS]
+        ids = [k for k, v in tps.items() if v[0] in topics]
         if not ids:
             continue
         q = 'select topic_id, timestamp, data from messages where topic_id in (%s) and ' \
@@ -110,23 +129,36 @@ def interp(series, t):
 
 
 # ---------------------------------------------------------------------------- inputs
-def build_inputs(msgs, aux=None):
+def build_inputs(msgs, aux=None, live=False):
     """(odom [(t, vx, wz)], imu [(t, yaw, wz)], fixes [(t, e, n, class, rx_var)],
     field_map [(t, x, y, yaw)]). ``aux`` (a dict), when given, gets ``tilt`` [(t, roll_deg,
-    pitch_deg)], ``mcu`` [(t, wheel vx, wheel yaw rate)] (/mcu/measured_speed) and ``hdg``
-    [(t, offset_rad, offset_rate_rad_s, last_cog_t, last COG measured offset rad)]."""
+    pitch_deg)], ``mcu`` [(t, wheel vx, wheel yaw rate)] (/mcu/measured_speed), ``hdg``
+    [(t, offset_rad, offset_rate_rad_s, last_cog_t, last COG measured offset rad)],
+    ``status`` [(t, /fix_status text)] and ``wheel`` [(t, vx)] (/odom when recorded, else
+    /mcu/measured_speed: vio_gate's wheel check). ``live``: odom from /odom and imu from
+    /imu/data_aligned instead of both from /odometry/filtered."""
     odom, imu, fixes, field = [], [], [], []
-    tilt, hdg, mcu = [], [], []
+    tilt, hdg, mcu, status, wodom = [], [], [], [], []
     cls, lat0, lon0 = None, None, None
     for t, name, m in msgs:
         if name == '/fix_status':
+            status.append((t, m.data))
             c = rtk_quality.classify_fix_status(m.data)
             if c is not None:
                 cls = c
         elif name == '/odometry/filtered':
-            vx, wz = m.twist.twist.linear.x, m.twist.twist.angular.z
-            odom.append((t, vx, wz))
-            imu.append((t, yaw_of(m.pose.pose.orientation), wz))
+            if not live:
+                vx, wz = m.twist.twist.linear.x, m.twist.twist.angular.z
+                odom.append((t, vx, wz))
+                imu.append((t, yaw_of(m.pose.pose.orientation), wz))
+        elif name == '/odom':
+            vx = m.twist.twist.linear.x
+            wodom.append((t, vx))
+            if live:
+                odom.append((t, vx, m.twist.twist.angular.z))
+        elif name == '/imu/data_aligned':
+            if live:
+                imu.append((t, yaw_of(m.orientation), m.angular_velocity.z))
         elif name == '/odometry/filtered_map':
             p = m.pose.pose
             field.append((t, p.position.x, p.position.y, yaw_of(p.orientation)))
@@ -156,7 +188,8 @@ def build_inputs(msgs, aux=None):
             rx = max(cov[0], cov[4]) if m.position_covariance_type else None
             fixes.append((t, e, n, cls, rx))
     if aux is not None:
-        aux['tilt'], aux['hdg'], aux['mcu'] = tilt, hdg, mcu
+        aux['tilt'], aux['hdg'], aux['mcu'], aux['status'] = tilt, hdg, mcu, status
+        aux['wheel'] = wodom or [(t, vx) for t, vx, _wz in mcu]
     return odom, imu, fixes, field
 
 
@@ -200,9 +233,11 @@ def gps_stream(fixes, field, fit):
 
 # ---------------------------------------------------------------------------- variants
 def parse_variant(text):
-    """'name:key=val,key=val' -> (name, {vy_var, fuse_vy, wh_len, wh_every, wh_phase})."""
+    """'name:key=val,key=val' -> (name, {vy_var, fuse_vy, wh_len, wh_every, wh_phase, vio,
+    vio_hz})."""
     name, _, rest = text.partition(':')
-    opts = {'vy_var': 1e6, 'fuse_vy': 0, 'wh_len': 0.0, 'wh_every': 0.0, 'wh_phase': 0.0}
+    opts = {'vy_var': 1e6, 'fuse_vy': 0, 'wh_len': 0.0, 'wh_every': 0.0, 'wh_phase': 0.0,
+            'vio': 0, 'vio_hz': 0.0}
     for kv in filter(None, rest.split(',')):
         k, _, v = kv.partition('=')
         opts[k.strip()] = float(v)
@@ -226,6 +261,39 @@ def in_windows(windows, t):
     import bisect
     k = bisect.bisect_right(windows, (t, math.inf)) - 1
     return k >= 0 and t < windows[k][1]
+
+
+def thin(rows, hz):
+    """Rows (t first) at most ``hz`` per second (0: all)."""
+    if hz <= 0.0:
+        return list(rows)
+    out, last = [], -math.inf
+    for r in rows:
+        if r[0] - last >= 1.0 / hz - 1e-6:
+            out.append(r)
+            last = r[0]
+    return out
+
+
+def gated_vio(vio, aux, windows, opts, out_dir, name):
+    """The variant's VIO stream after vio_gate (its windows are RTK dropouts), thinned to
+    ``vio_hz``. Writes the gate's verdict changes to gate_<name>.csv; returns (stream, gate
+    summary inside the windows)."""
+    sys.path.insert(0, os.path.join(STACK, 'scripts', 'vio'))
+    import vio_offline
+    verdicts = vio_offline.run_gate(vio, aux['status'], aux['wheel'], windows)
+    with open(os.path.join(out_dir, 'gate_%s.csv' % name), 'w', newline='') as fh:
+        w = csv.writer(fh)
+        w.writerow(['t', 'state'])
+        last = None
+        for t, r in verdicts:
+            c = vio_offline.reason_class(r)
+            if c != last:
+                w.writerow([t, c])
+                last = c
+    inside = [v for v in verdicts if in_windows(windows, v[0])]
+    passed = [row for row, (_t, r) in zip(vio, verdicts) if r is None]
+    return thin(passed, opts['vio_hz']), vio_offline.gate_summary(inside)
 
 
 def offset_at(hdg, t):
@@ -278,6 +346,10 @@ def write_params(out_dir, name, opts):
     cfg = list(p['odom0_config'])
     cfg[7] = bool(opts.get('fuse_vy'))
     p['odom0_config'] = cfg
+    if opts.get('vio'):
+        with open(EKF_VIO_YAML) as fh:
+            p.update(yaml.safe_load(fh)['ekf_map']['ros__parameters'])
+        p['odom2'] = '/rp/%s/vio' % name
     path = os.path.join(out_dir, 'params_%s.yaml' % name)
     with open(path, 'w') as fh:
         yaml.safe_dump({'/**': {'ros__parameters': p}}, fh)
@@ -285,12 +357,14 @@ def write_params(out_dir, name, opts):
 
 
 # ---------------------------------------------------------------------------- playback
-def play(odom, imu, gps, variants, speed, vx_var, out_dir):
+def play(odom, imu, gps, variants, speed, vx_var, out_dir, vio=None):
     """Publish /clock and every variant's inputs at ``speed`` x real time; record outputs.
 
     ``imu`` and ``gps`` are {variant: stream}: a variant's GPS skips its withheld windows and
-    its IMU yaw is dead-reckoned in them. The outputs are taken by an executor thread, so the
-    publishing loop never has to spin."""
+    its IMU yaw is dead-reckoned in them. ``vio`` {variant: gated stream} for the vio=1
+    variants. The outputs are taken by an executor thread, so the publishing loop never has
+    to spin."""
+    vio = vio or {}
     import threading
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
@@ -301,7 +375,8 @@ def play(odom, imu, gps, variants, speed, vx_var, out_dir):
     node = rclpy.create_node('ekf_replay_player')
     pub_clock = node.create_publisher(Clock, '/clock', 10)
     pub = {n: {k: node.create_publisher(Imu if k == 'imu' else Odometry, '/rp/%s/%s' % (n, k), 50)
-               for k in ('odom', 'imu', 'gps')} for n, _ in variants}
+               for k in ('odom', 'imu', 'gps') + (('vio',) if n in vio else ())}
+           for n, _ in variants}
     rec = {n: [] for n, _ in variants}
 
     def on_out(name):
@@ -325,11 +400,14 @@ def play(odom, imu, gps, variants, speed, vx_var, out_dir):
     for n, _ in variants:
         events += [(t, 'imu', n, r) for t, *r in imu[n]]
         events += [(t, 'gps', n, r) for t, *r in gps[n] if r[0] is not None]
+        events += [(t, 'vio', n, r) for t, *r in vio.get(n, ())]
     events.sort(key=lambda e: e[0])
     deadline = time.time() + 60.0
     while time.time() < deadline:
         if all(node.count_subscribers('/rp/%s/odom' % n) and
-               node.count_subscribers('/rp/%s/gps' % n) for n, _ in variants):
+               node.count_subscribers('/rp/%s/gps' % n) and
+               (n not in vio or node.count_subscribers('/rp/%s/vio' % n))
+               for n, _ in variants):
             break
         time.sleep(0.1)
     wall0, sim0 = time.time(), events[0][0]
@@ -361,6 +439,19 @@ def play(odom, imu, gps, variants, speed, vx_var, out_dir):
             m.angular_velocity_covariance = [1e-4, 0, 0, 0, 1e-4, 0, 0, 0, 1e-4]
             m.linear_acceleration_covariance = [-1.0] + [0.0] * 8
             pub[vn]['imu'].publish(m)
+        elif kind == 'vio':
+            # /odometry/vio_gated: body twist, vx / vy / vz variances (vio_odom_bridge)
+            m = Odometry()
+            stamp(m, t)
+            m.header.frame_id, m.child_frame_id = 'odom', 'base_link'
+            m.twist.twist.linear.x, m.twist.twist.linear.y, m.twist.twist.linear.z = r[:3]
+            cov = [0.0] * 36
+            cov[0], cov[7], cov[14], cov[21], cov[28], cov[35] = \
+                r[3], r[4], 1e6, 1e6, 1e6, 1e6
+            m.twist.covariance = cov
+            m.pose.covariance = [1e6 if i % 7 == 0 else 0.0 for i in range(36)]
+            m.pose.pose.orientation.w = 1.0
+            pub[vn]['vio'].publish(m)
         else:
             x, y, var, _c = r
             m = Odometry()
@@ -396,11 +487,15 @@ def main():
     ap.add_argument('--vx-var', type=float, default=0.02)
     ap.add_argument('--inputs-only', action='store_true',
                     help='write fit.json and inputs.csv, run no filter')
+    ap.add_argument('--live-inputs', action='store_true',
+                    help='odom from /odom, imu from /imu/data_aligned (VIO recordings)')
+    ap.add_argument('--vio', default=None,
+                    help='/odometry/vio CSV (eval_vio_bag.py bridge) for vio=1 variants')
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    msgs = read_bag(a.bag, a.t0, a.t1)
+    msgs = read_bag(a.bag, a.t0, a.t1, TOPICS + LIVE_TOPICS)
     aux = {}
-    odom, imu, fixes, field = build_inputs(msgs, aux)
+    odom, imu, fixes, field = build_inputs(msgs, aux, live=a.live_inputs)
     del msgs
     fit = fit_enu_to_map(fixes, field)
     gps = gps_stream(fixes, field, fit)
@@ -422,7 +517,13 @@ def main():
     variants = [parse_variant(v) for v in a.variant]
     t_first = min(r[0] for r in odom)
     t_last = max(r[0] for r in odom)
-    imu_v, gps_v = {}, {}
+    imu_v, gps_v, vio_v, gate = {}, {}, {}, {}
+    vio_rows = None
+    if a.vio:
+        with open(a.vio, newline='') as fh:
+            r = csv.reader(fh)
+            next(r)
+            vio_rows = [tuple(float(x) for x in row[:7]) for row in r]
     with open(os.path.join(a.out, 'windows.csv'), 'w', newline='') as fh:
         w = csv.writer(fh)
         w.writerow(['variant', 'start', 'end'])
@@ -431,6 +532,15 @@ def main():
             w.writerows([(n, s, e) for s, e in wins])
             imu_v[n] = dead_reckoned_yaw(imu, aux['hdg'], wins)
             gps_v[n] = [g for g in gps if not in_windows(wins, g[0])]
+            if opts['vio']:
+                if vio_rows is None:
+                    sys.exit('variant %s has vio=1 but no --vio stream' % n)
+                stream, gate[n] = gated_vio(vio_rows, aux, wins, opts, a.out, n)
+                # (t, vx, vy, vz, var_vx, var_vy)
+                vio_v[n] = [row[:6] for row in stream]
+    if gate:
+        with open(os.path.join(a.out, 'gate.json'), 'w') as fh:
+            json.dump(gate, fh, indent=1)
     procs = []
     try:
         for n, opts in variants:
@@ -441,7 +551,7 @@ def main():
                 stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, 'ekf_%s.log' % n),
                                                        'w')))
         time.sleep(3.0)
-        play(odom, imu_v, gps_v, variants, a.speed, a.vx_var, a.out)
+        play(odom, imu_v, gps_v, variants, a.speed, a.vx_var, a.out, vio_v)
     finally:
         for p in procs:
             p.terminate()

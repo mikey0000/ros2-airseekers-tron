@@ -18,6 +18,15 @@ from typing import List, Sequence, Tuple
 UNUSED_VARIANCE = 1.0e6
 
 
+def rpy_matrix(r: float, p: float, y: float) -> List[List[float]]:
+    """Rotation matrix of roll-pitch-yaw (ZYX, as URDF ``rpy``)."""
+    cr, sr, cp, sp, cy, sy = (math.cos(r), math.sin(r), math.cos(p), math.sin(p),
+                              math.cos(y), math.sin(y))
+    return [[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr]]
+
+
 def rotate(r: Sequence[Sequence[float]], v: Sequence[float]) -> Tuple[float, float, float]:
     return tuple(sum(r[i][k] * v[k] for k in range(3)) for i in range(3))  # type: ignore
 

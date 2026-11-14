@@ -12,7 +12,7 @@
 # Stages:
 #   1. colcon build + colcon test (dev_build.sh), which includes the incident replay tests
 #      (src/mower_mission/test/replay, docs/DEVELOPMENT.md "Incident -> regression")
-#   2. scripts/ble/test_*.py, scripts/sim_gate/test_*.py
+#   2. scripts/ble/test_*.py, scripts/sim_gate/test_*.py, scripts/vio/test_*.py
 #   3. the incident replay tests on their own (a named summary; they also ran in 1)
 #   4. --gate (needs a writable log/: chown it if colcon in docker left it root-owned):
 #      scripts/sim_gate.sh -s 2 -x 3 (ideal drive, real_run5) under
@@ -97,7 +97,7 @@ PY
   fi
 fi
 
-if in_image "python3 -m pytest -q -p no:cacheprovider scripts/ble scripts/sim_gate"; then
+if in_image "python3 -m pytest -q -p no:cacheprovider scripts/ble scripts/sim_gate scripts/vio"; then
   stage scripts PASS; else stage scripts FAIL; fi
 
 if in_image "cd src/mower_mission && python3 -m pytest -q -p no:cacheprovider -rxX test/replay"; then

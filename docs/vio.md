@@ -28,8 +28,10 @@ wit_imu_driver ───────────/imu/data (100 Hz, gravity inclu
 |---|---|
 | OpenVINS config for the WIT IMU | `config/vio_wit/{estimator_config,kalibr_imu_chain,kalibr_imucam_chain}.yaml` |
 | OpenVINS config for the Metoak ICM-40608 (`/stereo_imu/data`) | `config/vio_metoak/` (section 7; old `config/vio/` superseded) |
-| OpenVINS patch (image QoS) | `config/vio/patches/0001-ov_msckf-sensor-data-qos-for-images.patch` |
+| OpenVINS patches (image QoS, deep IMU queue, serial-runner CMake option, Jazzy `.hpp` headers) | `config/vio/patches/000{1,2,3,4}-*.patch`, staged by `scripts/vio/stage_openvins.sh` |
 | arm64 build | `scripts/build_openvins_mower.sh` |
+| amd64 build (dev box, offline evaluation) | `scripts/vio/build_openvins_local.sh` |
+| Recording + offline evaluation (section 8) | `scripts/vio/{record_vio_bag.sh,vio_preflight.py,eval_vio_bag.sh,eval_vio_bag.py,vio_offline.py}`, `config/vio/serial/ros2_serial_msckf.cpp` |
 | Producers launch | `launch/vio.launch.py` (args `capture`, `config_dir`, `cov_scale`) |
 | Bridge | `src/stereo_vio_bridge/stereo_vio_bridge/{vio_odom_bridge,odom_convert}.py` |
 | Gate | `src/mower_localization/mower_localization/{vio_gate,vio_gate_logic}.py` |
@@ -121,7 +123,8 @@ initialised, so this is a floor. Expect 20-50 % of one A76 core at 5-10 Hz stere
 
 ## 4. Building OpenVINS for the mower (arm64)
 
-Never inside the running stack (load-190 incident). With the owner present:
+Never inside the running stack (load-190 incident). With the owner present; the exact,
+re-checked sequence is in section 8.6:
 
 ```bash
 ./scripts/deploy_to_mower.sh down                      # stack STOPPED (mission CHARGING/IDLE_DOCKED)
@@ -171,8 +174,9 @@ against RTK on re-acquisition (jump size) with and without VIO.
 
 ## 6. Not done / needs the owner
 
-* arm64 build (requires stopping the stack): `scripts/build_openvins_mower.sh build`.
-* Daylight static bag + the 2-min manual drive bag (5.1, 5.2).
+* arm64 build (requires stopping the stack): `scripts/build_openvins_mower.sh build` (8.6).
+* Daylight static bag + the 2-min manual drive bag (5.1, 5.2): superseded by the 2026-11-14
+  recording session (section 8), which records both drive and mow in one go.
 * ~~Stereo pairing/rate fix in `stereo_cam` (3.2)~~ done 2026-10-07 (section 7.1).
 * ~~Bind the Metoak ICM-40608 (3.4)~~ done 2026-10-07 (section 7.2); persisting the two host
   settings across reboots needs approval (7.4).
@@ -277,3 +281,186 @@ participants keep the buffer size they were created with).
 `imu_xyz_in_base [0.451, -0.0514, 0.2352]` (lever arm removed: turning in place at 0.5 rad/s
 would otherwise read as 0.23 m/s lateral slip). Chain check: the measured IMU gravity maps to
 base (-0.47, -0.02, 9.78) m/s^2 (level in roll, 2.8 deg nose-down on the dock).
+
+## 8. Recording session (2026-11-14)
+
+Step 2 of "keep mowing through RTK loss". The dead-reckoning study
+(docs/analysis/2026-11-13_dead_reckoning_drift.md) found that wheels + gyro reach a p90 error of
+0.30 m after about 14 m on flat ground but only 2.75 m on the 11 deg slope, and cannot see wheel
+slip at all. VIO is meant to fix exactly those. Everything for the evaluation is ready offline;
+one recording session gives the whole evaluation. **VIO stays off on the mower** (`vio:=false`):
+the recorder only adds a `ros2 bag record` next to the running stack.
+
+### 8.1 Before the session (owner)
+
+Daylight (the 2026-10-06 night bag was pure sensor noise), RTK FIXED at the start, stack up.
+
+```bash
+# dev box, this checkout (ws/vio1114): copy only the recorder (nothing else on the mower changes)
+rsync -a scripts/vio/ root@192.168.1.105:/userdata/ros2_stack/scripts/vio/
+
+# mower host (ssh root@192.168.1.105)
+/userdata/ros2_stack/scripts/setup_stereo_host.sh status   # 8 MiB buffers + "IIO mode: ..."?
+# only if it says otherwise (runtime settings, lost at every reboot):
+/userdata/ros2_stack/scripts/setup_stereo_host.sh && docker restart mower_jazzy
+/userdata/ros2_stack/scripts/vio/record_vio_bag.sh check   # preflight only, records nothing
+```
+
+`check` (and every recording) refuses to start unless: 8 MiB socket buffers and the Metoak IMU
+in IIO mode; load below 10; exact stereo pairs >= 9 Hz with <= 5 % unpaired; `/stereo_imu/data`
+>= 190 Hz; `/odom` and `/fix` alive; RTK FIXED now; and the planned minutes fit on /userdata
+while keeping bag_recorder's 3 GB floor + 1 GB. Each failure prints what to do.
+
+### 8.2 What to record
+
+About **380 MB per minute** (two 300 KB mono8 eyes at 10 Hz = 6.1 MB/s, everything else
+0.25 MB/s). Part A + B below = about 26 min = about 10 GB; `check` prints how many minutes fit.
+
+**Part A, manual drive with the remote, 8 min** (`record_vio_bag.sh drive`; it stops by itself
+after 8 min, Ctrl-C stops it earlier):
+
+1. Parked 20 s in open sky (IMU bias, ZUPT).
+2. Flat ground: straight 5 m forward, 5 m back in reverse; one slow 360 deg pivot each way;
+   three 90 deg pivots.
+3. On the slope: up and down the fall line twice (about 10 m each way).
+4. **Across the slope** (the drop side, which the drift study lacked): drive along the slope
+   twice in each direction, about 10 m each, so the low side is left once and right once. Stop
+   for 10 s mid-slope while across it.
+5. Two 90 deg pivots on the slope (the slip case: on 2026-11-12 a pivot sequence on the slope
+   slid 1.4 m with the wheels reading 0).
+6. If there is a tree or a wall: 30-60 s along / under it (real RTK float), then back to open
+   sky until RTK is FIXED again.
+7. Parked 20 s.
+
+**Part B, a normal mow, 18 min** (`record_vio_bag.sh mow --minutes 18`, then start the mow in
+the GUI): pick the area with the slope (Area 1 or the Area 4 strip) so the bag has slope, edge
+laps, pivots and reverse legs with RTK truth. Let it mow; the recorder stops after 18 min (the
+mow itself can go on).
+
+```bash
+/userdata/ros2_stack/scripts/vio/record_vio_bag.sh drive               # part A
+/userdata/ros2_stack/scripts/vio/record_vio_bag.sh mow --minutes 18    # part B, then start the mow
+```
+
+Keep the terminal open (or run it in `tmux`/`screen`): the recorder stops with the script.
+Bags go to `/userdata/ros2/vio_bags/<YYYYmmdd-HHMMSS>_<drive|mow>/` (sqlite3, 60 s splits),
+not to the bag_recorder ring, which would prune them. The script prints where the bag is, the
+`ros2 bag info` head, any dropped-message lines from the recorder log, and the copy command.
+
+Storage choice: sqlite3, no compression, 60 s splits, 16 MiB write cache, `nice 10` and
+best-effort I/O class 7. mcap is not in the mower image, and ekf_replay reads .db3 directly.
+zstd gains little on sensor-noise grass images (about 1.3x) and would cost a sustained share of
+a core while the stack mows (load-190 incident). The recorder takes the lowest priority so that
+under contention it drops messages, not the stack. The 60 s splits mean a power cut loses at most one split.
+Stack-side cost, not yet measured on the mower: rosbag2's cost is mostly per message (the
+ring's curated list is estimated at 12-15 % of a core, bag_recorder.py); this recorder adds about
+400 messages/s (both IMUs, odometry, tf) plus 20 images/s (over SHM, not copied through UDP) and
+6 MB/s of sequential eMMC writes. Watch `top` during part A; Ctrl-C if the load climbs.
+
+### 8.3 Copy it off (owner)
+
+```bash
+# dev box, from this checkout (about 10 GB: 15-30 min over Wi-Fi)
+mkdir -p ../bags/vio
+rsync -a --info=progress2 root@192.168.1.105:/userdata/ros2/vio_bags/ ../bags/vio/
+# then on the mower, once copied:  rm -r /userdata/ros2/vio_bags/<name> /userdata/ros2/vio_bags/<name>.log
+```
+
+### 8.4 Offline evaluation (dev box)
+
+```bash
+scripts/vio/build_openvins_local.sh                 # once: amd64 OpenVINS into .vio_build/ (~4 min at -j6)
+scripts/vio/eval_vio_bag.sh ../bags/vio/<name>      # -> ../bags/vio/<name>.eval/{report,drift}.md
+```
+
+Steps (all in `mower:jazzy-dev-amd64`, `--network none`):
+
+1. **OpenVINS, serially**: `ros2_serial_msckf` (config/vio/serial/, built only for the dev box,
+   `-DOV_ROS2_SERIAL=ON`) reads the bag with rosbag2_cpp in recorded order and calls
+   ROS2Visualizer's IMU and stereo callbacks directly, with OpenVINS' threading off.
+   Upstream OpenVINS has a serial runner only for ROS 1. Playing the bag (`ros2 bag play` into
+   `run_subscribe_msckf`) would drop or reorder frames whenever the dev box stalls, so two runs
+   would differ and the result would depend on the play rate. Serially, every stereo pair is
+   processed, the output is the same on every run, and it runs about 20-30x real time.
+   Output: odomimu.csv (OpenVINS' /ov_msckf/odomimu content), updates.csv (one row per
+   processed pair: wall time, initialised, features, camera-IMU time offset).
+2. **Bridge + gate**: `vio_odom_bridge`'s conversion (`odom_convert`, Metoak rotation and
+   lever arm) and `vio_gate`'s logic (`vio_gate_logic`), the same code the nodes run, on the
+   recorded /fix_status and /odom.
+3. **ekf_map replay** (`scripts/replay/ekf_replay.py`, step 1's tool): the same simulated RTK
+   dropouts as the drift study (100 s every 120 s, 6 phases), ekf_map's real inputs
+   (`--live-inputs`: /odom and /imu/data_aligned are in this bag), variants `v<k>` wheel only
+   and `o<k>` + `ekf_dual_vio.yaml`'s gated VIO. The gate runs per variant with that variant's
+   dropouts as its RTK loss, so it opens 1 s into each dropout as it would live.
+4. **drift.md** (`drift_analyse.py`): position error by distance, and distance until p90 reaches
+   0.10 / 0.20 / 0.30 m for wheel only against wheel + VIO, split flat / slope / side slope /
+   pivot / reverse / slip.
+5. **report.md**: VIO health: init time after the first image and after the first motion,
+   processed pair rate (must be 10 Hz), odomimu rate, update wall time (CPU share on the dev box;
+   expect 3-4x on one A76 core), MSCKF / SLAM feature counts, the camera-IMU time offset estimate,
+   VIO vx and vy against RTK and against the wheels per terrain class (incl. side slope and the
+   RTK vy the wheels miss), and gate statistics (on the recorded RTK, and inside the simulated
+   dropouts: passing, warming up, diverged latches).
+
+`ORACLE=1 scripts/vio/eval_vio_bag.sh BAG` replaces step 1 by RTK body velocity plus 3 cm/s noise
+(no images needed): a plumbing test on any field bag and an upper bound on what a VIO that
+is right whenever RTK was could give the EKF. It is **not** a VIO result.
+
+### 8.5 Found while preparing (2026-11-14)
+
+* **`track_frequency: 10` dropped every other stereo pair.** ROS2Visualizer drops a pair that is
+  closer than 1/track_frequency to the previous one; stereo_cam's 10 Hz is an average of 84 / 126 ms
+  intervals, so half the pairs were dropped (4.8 Hz). Shown with `ros2_serial_msckf` on a
+  synthetic bag with that timing: 93 of 186 pairs dropped at 10, none at 20.
+  `config/vio_metoak` now has 20 (`config/vio_wit`, the legacy WIT config, still has 10).
+* **Current Jazzy packages removed the deprecated headers** `image_transport/image_transport.h`,
+  `cv_bridge/cv_bridge.h` and `tf2_geometry_msgs/tf2_geometry_msgs.h`; ov_msckf no longer built
+  in the dev image (the 2026-10-06 build predates that). Patch 0004 switches to the `.hpp`
+  headers, which also exist in older Jazzy releases. The mower image will hit the same error
+  the next time it is built with current packages.
+* **odomimu rate.** OpenVINS publishes odomimu from each IMU callback only when
+  `fast_state_propagate` finds two IMU samples between the last update and that time (plus the
+  estimated camera-IMU offset). On the synthetic bag that was about one row per processed pair,
+  not 200 Hz. The report prints the real rate. The EKF weight assumption ("VIO has at most a third
+  of the vx weight") holds only at similar rates: robot_localization fuses every message, so
+  200 Hz of VIO at variance 0.04 against 50 Hz of wheels at 0.02 would give VIO two thirds.
+  `vio_hz=N` in ekf_replay (`VIO_HZ` in eval_vio_bag.sh) tests thinner streams.
+* **`mower.launch.py` does not pass `vio_imu`** to vio.launch.py, so `vio:=true` today runs the
+  WIT config (`config/vio_wit`, /imu/data at 100 Hz), not the Metoak one this evaluation uses.
+  Needs a `vio_imu` pass-through (default unchanged) before enabling.
+
+### 8.6 Building ov_msckf on the mower, later (owner; not part of the recording)
+
+`scripts/build_openvins_mower.sh`, re-checked 2026-11-14 without running it: image `mower:jazzy`,
+container mounts and the 2.5 GB / 2 CPU / `-j1` caps are current; Ceres, Eigen, OpenCV, cv_bridge
+and image_transport are in `docker/Dockerfile.jazzy`; it stages through `scripts/vio/stage_openvins.sh`
+(all four patches; the serial runner is not compiled there). `deploy_to_mower.sh sync` excludes
+`third_party/open_vins/` and `.vio_build/`, and `build` skips the `ov_*` packages, so a later sync
+or stack build leaves the installed ov_msckf alone.
+
+```bash
+# dev box, this checkout, owner present, mower docked (mission CHARGING / IDLE_DOCKED)
+git submodule update --init third_party/open_vins
+./scripts/deploy_to_mower.sh down                      # stack stopped
+SSHPASS=... ./scripts/build_openvins_mower.sh check     # refuses while mower_jazzy runs / < 3 GB MemAvailable
+SSHPASS=... ./scripts/build_openvins_mower.sh build     # 30-60 min, then prints the ov_* install sizes
+SSHPASS=... ./scripts/build_openvins_mower.sh verify
+./scripts/deploy_to_mower.sh up                         # vio stays off (vio:=false default)
+```
+
+### 8.7 Smoke test of the pipeline (2026-11-14, no daylight image bag exists yet)
+
+These runs test the plumbing only. They are **not** a VIO quality test.
+
+* `ros2_serial_msckf` on the 2026-10-06 docked night bag (`bags/vio_static_dock`, WIT config): reads
+  the bag, pairs the eyes by stamp (109 pairs, 83 unpaired: the old 2 Hz node), processes every
+  pair (17.5 ms mean on the dev box), never initialises (night noise), 28x real time.
+* On a generated 20 s bag (random texture, a still IMU, stereo_cam's 84 / 126 ms timing):
+  initialises after 1.0-1.2 s, and showed the `track_frequency` drop (8.5).
+* `vio_preflight.py` against that bag played in a private DDS domain: pairs 9.5 Hz,
+  `/stereo_imu/data` 200 Hz pass; missing /odom, /fix and RTK fail with their hints.
+* `ORACLE=1 eval_vio_bag.sh` on a 2026-11-13 ring bag (8 min, mostly flat, docked part
+  included): all five steps ran; gate 99.9 % "RTK fixed" on the recorded status, 98.6-98.9 %
+  passing inside the simulated dropouts (the rest is the 1 s hold-off); 22 dropout windows per
+  variant set; distance to p90 0.10 m 0.75 m wheel only against 3.0 m with the oracle VIO (too few
+  windows for the other thresholds). Upper bound only, as said in 8.4.
