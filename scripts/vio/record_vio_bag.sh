@@ -38,15 +38,15 @@ TOPICS=(
   /odom /mcu/measured_speed /cmd_vel
   /fix /fix_status /gps/status /odometry/gps /odometry/filtered /odometry/filtered_map
   /tilt/status /heading_aligner/status /localization/status
-  /behavior_tree_node/high_level_status /hardware_bridge/status
+  /behavior_tree_node/high_level_status /hardware_bridge/status /mission/activity
   /tf /tf_static
 )
 
 mode="${1:-}"; shift || true
 case "$mode" in
-  mow) minutes=20 ;;
+  mow) minutes=15 ;;
   drive) minutes=8 ;;
-  check) minutes=20 ;;
+  check) minutes=8 ;;
   *) sed -n 2,13p "$0"; exit 2 ;;
 esac
 while [ $# -gt 0 ]; do
@@ -97,7 +97,8 @@ alive() { [ -n "$pid" ] && docker exec "$C" kill -0 "$pid" 2>/dev/null; }
 alive || { echo "recorder did not start:"; tail -20 "$bag.log"; exit 1; }
 case "$mode" in
   mow)   echo "   now start the mow from the GUI; keep this terminal open." ;;
-  drive) echo "   now drive with the remote (docs/vio.md 8.2); keep this terminal open." ;;
+  drive) echo "   now switch the GUI to MANUAL mode (blade off) and drive (docs/vio.md 8.2): the cameras"
+         echo "   stay at their 1 Hz idle rate until the mower is in manual mode. Keep this terminal open." ;;
 esac
 
 stop=0

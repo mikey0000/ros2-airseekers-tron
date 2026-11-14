@@ -311,13 +311,21 @@ in IIO mode; load below 10; exact stereo pairs >= 9 Hz with <= 5 % unpaired; `/s
 >= 190 Hz; `/odom` and `/fix` alive; RTK FIXED now; and the planned minutes fit on /userdata
 while keeping bag_recorder's 3 GB floor + 1 GB. Each failure prints what to do.
 
+**Idle cap (found 2026-11-14 on the first `check`).** While `/mission/activity` is `docked_idle`
+or `idle`, the camera nodes run their idle duty cycle on purpose (`mower_cameras/activity_gate.py`):
+1 stereo pair/s and the stereo IMU at 100 Hz. A `check` on the dock therefore sees ~1 Hz pairs.
+The preflight now reads the activity and, while idle, only tests that frames flow and pair
+(>= 0.8 Hz, IMU >= 90 Hz) and says so. Full rate (10 Hz pairs, 200 Hz IMU) starts as soon as
+the activity is `manual` (GUI manual mode = MANUAL_MOWING) or `mowing`. Plain teleop without the
+GUI's manual mode may stay `idle`, so drive part A in the GUI's **manual mode**, blade off.
+
 ### 8.2 What to record
 
 About **380 MB per minute** (two 300 KB mono8 eyes at 10 Hz = 6.1 MB/s, everything else
-0.25 MB/s). Part A + B below = about 26 min = about 10 GB; `check` prints how many minutes fit.
+0.25 MB/s). Part A + B below = about 23 min = about 9 GB; `check` prints how many minutes fit.
 
-**Part A, manual drive with the remote, 8 min** (`record_vio_bag.sh drive`; it stops by itself
-after 8 min, Ctrl-C stops it earlier):
+**Part A, manual drive, 8 min** (`record_vio_bag.sh drive`, then switch the GUI to **manual mode**
+with the blade off and drive; it stops by itself after 8 min, Ctrl-C stops it earlier):
 
 1. Parked 20 s in open sky (IMU bias, ZUPT).
 2. Flat ground: straight 5 m forward, 5 m back in reverse; one slow 360 deg pivot each way;
@@ -332,14 +340,14 @@ after 8 min, Ctrl-C stops it earlier):
    sky until RTK is FIXED again.
 7. Parked 20 s.
 
-**Part B, a normal mow, 18 min** (`record_vio_bag.sh mow --minutes 18`, then start the mow in
+**Part B, a normal mow, 15 min** (`record_vio_bag.sh mow`, default 15 min, then start the mow in
 the GUI): pick the area with the slope (Area 1 or the Area 4 strip) so the bag has slope, edge
-laps, pivots and reverse legs with RTK truth. Let it mow; the recorder stops after 18 min (the
+laps, pivots and reverse legs with RTK truth. Let it mow; the recorder stops after 15 min (the
 mow itself can go on).
 
 ```bash
 /userdata/ros2_stack/scripts/vio/record_vio_bag.sh drive               # part A
-/userdata/ros2_stack/scripts/vio/record_vio_bag.sh mow --minutes 18    # part B, then start the mow
+/userdata/ros2_stack/scripts/vio/record_vio_bag.sh mow                  # part B (15 min), then start the mow
 ```
 
 Keep the terminal open (or run it in `tmux`/`screen`): the recorder stops with the script.

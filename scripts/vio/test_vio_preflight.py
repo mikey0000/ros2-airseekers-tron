@@ -102,3 +102,34 @@ def test_evaluate_disk_suggests_shorter_recording():
     c = _by_name(vp.evaluate(_obs(), minutes=30, free_gb=10.0))
     assert not c['disk'].ok
     assert '--minutes 15' in c['disk'].fix          # (10 - 4) GB / 384 MB/min = 15.6
+
+
+def _idle_obs(activity):
+    # the 2026-11-14 docked check: 1.2 Hz pairs, stereo IMU 100 Hz
+    pairs = [1000.0 + 0.85 * k for k in range(7)]
+    return _obs(left=pairs, right=list(pairs), stereo_imu=600, activity=activity)
+
+
+def test_evaluate_idle_cap_passes_the_stereo_checks_with_a_note():
+    c = _by_name(vp.evaluate(_idle_obs('docked_idle')))
+    assert c['stereo pair'].ok and c['stereo IMU'].ok
+    assert 'idle cap' in c['stereo pair'].detail and 'manual mode' in c['stereo pair'].detail
+
+
+def test_evaluate_same_rates_fail_when_not_idle():
+    for activity in ('manual', 'mowing', None):
+        c = _by_name(vp.evaluate(_idle_obs(activity)))
+        assert not c['stereo pair'].ok and not c['stereo IMU'].ok, activity
+
+
+def test_evaluate_idle_cap_still_fails_without_frames_or_with_split_pairs():
+    left = [1000.0 + 0.85 * k for k in range(7)]
+    c = _by_name(vp.evaluate(_obs(left=[], right=[], stereo_imu=600, activity='idle')))
+    assert not c['stereo pair'].ok
+    c = _by_name(vp.evaluate(_obs(left=left, right=left[::2], stereo_imu=600, activity='idle')))
+    assert not c['stereo pair'].ok
+
+
+def test_idle_capped_values():
+    assert vp.idle_capped('docked_idle') and vp.idle_capped('idle')
+    assert not vp.idle_capped('manual') and not vp.idle_capped(None)

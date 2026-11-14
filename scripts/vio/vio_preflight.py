@@ -39,6 +39,7 @@ from mower_localization.vio_gate_logic import rtk_is_fixed  # noqa: E402
 
 LEFT, RIGHT = '/vio/left/image_raw', '/vio/right/image_raw'
 STEREO_IMU, WIT_IMU = '/stereo_imu/data', '/imu/data'
+ACTIVITY = '/mission/activity'   # latched; idle values cap the camera rates
 
 PAIR_HZ_MIN = 9.0           # stereo_cam delivers 10.0 Hz exact pairs with 8 MiB buffers
 UNPAIRED_MAX = 0.05         # share of frames without a partner (2.9 Hz pairs before the fix)
@@ -121,25 +122,44 @@ class Check:
     fix: str = ''
 
 
+IDLE_ACTIVITIES = frozenset(('docked_idle', 'idle'))
+IDLE_PAIR_HZ_MIN = 0.8
+IDLE_STEREO_IMU_HZ_MIN = 90.0
+
 SETUP_HINT = ('on the mower host: sudo /userdata/ros2_stack/scripts/setup_stereo_host.sh, '
               'then restart the stack (docker restart mower_jazzy)')
+
+
+def idle_capped(activity: Optional[str]) -> bool:
+    """True while /mission/activity lets the cameras run at their idle rate (docked or parked:
+    1 stereo pair/s, stereo IMU 100 Hz; mower_cameras/activity_gate.py). No message = full rate."""
+    return activity in IDLE_ACTIVITIES
 
 
 def evaluate(obs: Dict, minutes: Optional[float] = None,
              free_gb: Optional[float] = None) -> List[Check]:
     """Checks from observations ``obs``: window_s, left / right stamp lists, counts per topic
-    (stereo_imu, wit_imu, odom, fix) and fix_status lines."""
+    (stereo_imu, wit_imu, odom, fix), fix_status lines and the latest /mission/activity.
+
+    While the activity is idle the camera nodes run their idle cap on purpose, so the stereo
+    checks then only test that frames flow and pair (the full rate starts when the mower drives
+    in manual mode or mows)."""
     w = obs['window_s']
     ps = pair_stats(obs['left'], obs['right'], w)
-    out = [Check('stereo pair', ps['pair_hz'] >= PAIR_HZ_MIN
+    idle = idle_capped(obs.get('activity'))
+    pair_min, imu_min = (IDLE_PAIR_HZ_MIN, IDLE_STEREO_IMU_HZ_MIN) if idle else (
+        PAIR_HZ_MIN, STEREO_IMU_HZ_MIN)
+    note = (' [idle cap: activity %s; full rate once it drives in manual mode or mows]'
+            % obs.get('activity')) if idle else ''
+    out = [Check('stereo pair', ps['pair_hz'] >= pair_min
                  and ps['unpaired_share'] <= UNPAIRED_MAX,
-                 '%.1f Hz exact pairs, %.0f %% unpaired, max gap %.2f s (need >= %.0f Hz, '
-                 '<= %.0f %%)' % (ps['pair_hz'], 100 * ps['unpaired_share'], ps['max_pair_gap_s'],
-                                  PAIR_HZ_MIN, 100 * UNPAIRED_MAX),
+                 '%.1f Hz exact pairs, %.0f %% unpaired, max gap %.2f s (need >= %.1f Hz, '
+                 '<= %.0f %%)%s' % (ps['pair_hz'], 100 * ps['unpaired_share'],
+                                     ps['max_pair_gap_s'], pair_min, 100 * UNPAIRED_MAX, note),
                  fix='no frames: is the stack up with stereo:=true? split pairs: ' + SETUP_HINT)]
     hz = rate_hz(obs['stereo_imu'], w)
-    out.append(Check('stereo IMU', hz >= STEREO_IMU_HZ_MIN,
-                     '%s %.0f Hz (need >= %.0f)' % (STEREO_IMU, hz, STEREO_IMU_HZ_MIN),
+    out.append(Check('stereo IMU', hz >= imu_min,
+                     '%s %.0f Hz (need >= %.0f)%s' % (STEREO_IMU, hz, imu_min, note),
                      fix=SETUP_HINT))
     hz = rate_hz(obs['wit_imu'], w)
     out.append(Check('WIT IMU', hz >= WIT_IMU_HZ_MIN,
@@ -184,7 +204,7 @@ def listen(seconds: float) -> Dict:
     """Subscribe raw to the checked topics for ``seconds``; return the observations."""
     import rclpy
     from nav_msgs.msg import Odometry
-    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+    from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
     from sensor_msgs.msg import Image, Imu, NavSatFix
     from std_msgs.msg import String
     rclpy.init()
@@ -192,7 +212,7 @@ def listen(seconds: float) -> Dict:
     be = QoSProfile(depth=200, reliability=ReliabilityPolicy.BEST_EFFORT,
                     history=HistoryPolicy.KEEP_LAST)
     obs = {'left': [], 'right': [], 'stereo_imu': 0, 'wit_imu': 0, 'odom': 0, 'fix': 0,
-           'fix_status': []}
+           'fix_status': [], 'activity': None}
 
     def stamps(key):
         def cb(raw):
@@ -212,13 +232,17 @@ def listen(seconds: float) -> Dict:
     node.create_subscription(Imu, WIT_IMU, count('wit_imu'), be, raw=True)
     node.create_subscription(Odometry, '/odom', count('odom'), be, raw=True)
     node.create_subscription(NavSatFix, '/fix', count('fix'), be, raw=True)
+    latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.TRANSIENT_LOCAL)
+    node.create_subscription(String, ACTIVITY, lambda m: obs.__setitem__('activity', m.data),
+                             latched)
     node.create_subscription(String, '/fix_status',
                              lambda m: obs['fix_status'].append(m.data), 50)
     # discovery + stereo_cam's on-demand start, then the counted window
     end = time.monotonic() + 2.0
     while time.monotonic() < end:
         rclpy.spin_once(node, timeout_sec=0.1)
-    for k in ('left', 'right', 'fix_status'):
+    for k in ('left', 'right', 'fix_status'):  # activity is latched: keep it
         obs[k] = []
     for k in ('stereo_imu', 'wit_imu', 'odom', 'fix'):
         obs[k] = 0
@@ -238,7 +262,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument('--free-gb', type=float, default=None, help='free space on /userdata')
     a = ap.parse_args(argv)
     obs = listen(a.seconds)
-    print('VIO preflight (%.1f s listen):' % obs['window_s'])
+    print('VIO preflight (%.1f s listen, activity %s):' % (obs['window_s'], obs['activity']))
     return report(evaluate(obs, a.minutes, a.free_gb))
 
 
