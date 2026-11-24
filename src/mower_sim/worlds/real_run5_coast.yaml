@@ -1,6 +1,7 @@
 # 2026-11-25 coast mode (docs/analysis/2026-11-25_coast_mode.md): the real_run5 world (flat, no
-# terrain) with a 15 s RTK SINGLE dropout in the middle of an interior row (the run5 gate mows
-# sub-path 3's rows 91-157 s after the first blade on; a row runs about 101-109 s).
+# terrain) with a 15 s RTK SINGLE dropout in the middle of an interior row: the sim's 'blade'
+# anchor is about 66 s before the mow's first blade on, and sub-path 3's row from (-1.00, 3.74)
+# to (-4.59, -0.53) runs about 121-133 s after it (coast-l-s1 2026-11-25), so t0 191 s.
 #   RTK FIXED -> SINGLE 15 s (gps_gate drops it; ekf_map sigma 0.5 m: degraded) -> FIXED.
 # Expected with coast_enabled: no hold, the mower coasts through on dead reckoning at the
 # degraded speed cap with the blade on (criterion k "coasted through"); with coast_enabled
@@ -20,4 +21,4 @@ rtk:
   anchor: blade
   ekf_sigma_m: 0.5
   events:
-    - {t0: 100.0, dur: 15.0, kind: single, ekf_sigma_m: 0.5}
+    - {t0: 191.0, dur: 15.0, kind: single, ekf_sigma_m: 0.5}

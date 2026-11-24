@@ -686,14 +686,14 @@ class HoldsMixin:
         return ''
 
     def _loc_coast_tick(self, state, ctx):
-        """Every tick while degraded in MOWING / TRANSIT: True while the coast goes on
-        (starts, logs and ends it)."""
+        """Every tick while degraded in MOWING / TRANSIT: starts, logs and ends the coast.
+        Returns '' while it goes on, else why it may not."""
         why = self._loc_coast_check(state, ctx) if self.p.coast_enabled else 'coast_enabled off'
         c = self._loc_coast
         if why:
             if c is not None:
                 self._loc_coast_end(why)
-            return False
+            return why
         if c is None:
             self._loc_coast = {'since': self._now, 'pose': self.inputs.pose}
             self._log('warn', 'localization degraded (%s): coasting on dead reckoning at %.2f '
@@ -701,7 +701,7 @@ class HoldsMixin:
                       % (self.inputs.loc_reason or 'no reason', float(self.p.caution_speed_mps),
                          self._loc_coast_left(), self._loc_est()))
             self._go(self.phase, 'localization degraded: coasting on dead reckoning')
-        return True
+        return ''
 
     def _loc_coast_end(self, why):
         c, self._loc_coast = self._loc_coast, None
@@ -761,8 +761,10 @@ class HoldsMixin:
                 if lost is None or self._now - lost <= float(self.p.loc_hold_dock_exempt_max_s):
                     return False             # dock transit / docking exempt (MowgliNext)
             elif self.p.coast_enabled:
-                if self._loc_coast_tick(state, ctx):
+                no_coast = self._loc_coast_tick(state, ctx)
+                if not no_coast:
                     return False
+                reason = '%s; no coast: %s' % (reason or 'no reason', no_coast)
             elif self._loc_swath_continue(state):
                 return False
             self._loc_hold_begin(ctx, state, reason)
