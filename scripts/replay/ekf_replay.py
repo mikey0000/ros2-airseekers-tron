@@ -32,10 +32,16 @@ Several variants with staggered phases give overlapping windows::
 
     --variant base0:wh_len=90,wh_every=120,wh_phase=30 --variant base1:...,wh_phase=50
 
+Float after a dropout (2026-11-25 coast mode): ``fl_len=L`` turns the first L s of RTK
+fixes after each withheld window into RTK FLOAT offset by (``fl_dx``, ``fl_dy``) map m, fused
+with gps_gate's float covariance at a sigma floor of ``fl_floor`` m (default: the float floor of
+``rtk_quality.CovariancePolicy``, 0.4 m). ``scripts/replay/float_pull.py`` measures how far
+ekf_map follows the offset.
+
 Output: ``OUT_DIR/<variant>.csv`` (t, x, y, yaw), ``OUT_DIR/inputs.csv`` (t, kind, x, y,
 var / class; kinds field, gps, odom, mcu (/mcu/measured_speed vx, wz), tilt (roll, pitch
 deg), hdg (offset rad; offset rate rad/s, last COG time, last COG measured offset rad)),
-``OUT_DIR/windows.csv`` (variant, start, end) and ``OUT_DIR/fit.json``. ``--inputs-only``
+``OUT_DIR/windows.csv`` (variant, start, end), ``OUT_DIR/variants.json`` (the options) and ``OUT_DIR/fit.json``. ``--inputs-only``
 writes fit.json and inputs.csv without running a filter. Positions are map metres only.
 """
 
@@ -186,6 +192,7 @@ def gps_stream(fixes, field, fit):
     """[(t, x, y, var, class)] of the fixes gps_gate passes, in the map frame."""
     out = []
     for t, e, n, c, rx in fixes:
+        c = rtk_quality.effective_class(c, rx)
         var = rtk_quality.fused_variance(c, rx)
         p = interp(field, t)
         if var is None or p is None:
@@ -202,7 +209,9 @@ def gps_stream(fixes, field, fit):
 def parse_variant(text):
     """'name:key=val,key=val' -> (name, {vy_var, fuse_vy, wh_len, wh_every, wh_phase})."""
     name, _, rest = text.partition(':')
-    opts = {'vy_var': 1e6, 'fuse_vy': 0, 'wh_len': 0.0, 'wh_every': 0.0, 'wh_phase': 0.0}
+    opts = {'vy_var': 1e6, 'fuse_vy': 0, 'wh_len': 0.0, 'wh_every': 0.0, 'wh_phase': 0.0,
+            'fl_len': 0.0, 'fl_dx': 0.0, 'fl_dy': 0.0,
+            'fl_floor': rtk_quality.CovariancePolicy().float_sigma_floor}
     for kv in filter(None, rest.split(',')):
         k, _, v = kv.partition('=')
         opts[k.strip()] = float(v)
@@ -218,6 +227,22 @@ def withheld_windows(opts, t0, t1):
     while s < t1:
         out.append((s, min(s + opts['wh_len'], t1)))
         s += every
+    return out
+
+
+def float_after(gps, windows, opts):
+    """``gps`` with the first ``fl_len`` s after each withheld window turned into RTK float
+    offset by (fl_dx, fl_dy) at a sigma floor of fl_floor (see the module docstring)."""
+    if opts['fl_len'] <= 0.0:
+        return gps
+    pol = rtk_quality.CovariancePolicy(float_sigma_floor=opts['fl_floor'])
+    ends = [(e, e + opts['fl_len']) for _, e in windows]
+    out = []
+    for t, x, y, var, c in gps:
+        if x is not None and in_windows(ends, t):
+            var = rtk_quality.fused_variance(rtk_quality.RTK_FLOAT, var, pol)
+            x, y, c = x + opts['fl_dx'], y + opts['fl_dy'], rtk_quality.RTK_FLOAT
+        out.append((t, x, y, var, c))
     return out
 
 
@@ -391,7 +416,8 @@ def main():
     ap.add_argument('--t0', type=float, required=True)
     ap.add_argument('--t1', type=float, required=True)
     ap.add_argument('--variant', action='append', default=[],
-                    help='name:vy_var=V,fuse_vy=0|1,wh_len=S,wh_every=S,wh_phase=S (repeat)')
+                    help='name:vy_var=V,fuse_vy=0|1,wh_len=S,wh_every=S,wh_phase=S,'
+                         'fl_len=S,fl_dx=M,fl_dy=M,fl_floor=M (repeat)')
     ap.add_argument('--speed', type=float, default=4.0)
     ap.add_argument('--vx-var', type=float, default=0.02)
     ap.add_argument('--inputs-only', action='store_true',
@@ -423,6 +449,8 @@ def main():
     t_first = min(r[0] for r in odom)
     t_last = max(r[0] for r in odom)
     imu_v, gps_v = {}, {}
+    with open(os.path.join(a.out, 'variants.json'), 'w') as fh:
+        json.dump(dict(variants), fh, indent=1)
     with open(os.path.join(a.out, 'windows.csv'), 'w', newline='') as fh:
         w = csv.writer(fh)
         w.writerow(['variant', 'start', 'end'])
@@ -430,7 +458,7 @@ def main():
             wins = withheld_windows(opts, t_first, t_last)
             w.writerows([(n, s, e) for s, e in wins])
             imu_v[n] = dead_reckoned_yaw(imu, aux['hdg'], wins)
-            gps_v[n] = [g for g in gps if not in_windows(wins, g[0])]
+            gps_v[n] = float_after([g for g in gps if not in_windows(wins, g[0])], wins, opts)
     procs = []
     try:
         for n, opts in variants:

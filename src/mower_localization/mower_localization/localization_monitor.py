@@ -14,13 +14,21 @@ Subscribed (all sampled by one 5 Hz thread through sub_pump, no executor wakes)
                                                    (ok needs xy sigma <= loc_sigma_ok_m)
 ``/odometry/vio_gated``      nav_msgs/Odometry     vio_gate output: VIO is being fused
 ``/heading_aligner/status``  std_msgs/String JSON  heading alignment (reported only)
+``/tilt/status``             std_msgs/String JSON  roll / pitch: the drift model's tilt terms
+``/mcu/measured_speed``      geometry_msgs/TwistStamped  wheel yaw rate: slip against the gyro
+``/odometry/gps``            nav_msgs/Odometry     RTK position in the map frame: checked
+                                                   against dead reckoning (coast mode)
 
 Published
 ---------
 ``/localization/status``     std_msgs/String JSON, latched, 1 Hz + on state change:
     {state: ok|degraded|lost, reason, rtk: fixed|float|dgps|single|none|stale,
      since_fixed_s, dist_since_fixed_m, est_drift_m, drift_budget_m, lost_drift_m,
-     ekf_xy_sigma_m, sigma_ok_m, vio_active, heading_aligned, heading_source, heading_sigma_deg, ...}
+     ekf_xy_sigma_m, sigma_ok_m, vio_active, tilt_mean_deg, pivots, coast_budget_m,
+     coast_left_m, rtk_dr_m, rtk_dr_gate_m, dr_lost, heading_aligned, heading_source,
+     heading_sigma_deg, ...}
+
+Parameters: ``config/localization_monitor.yaml`` (drift model, coast budget, slip, float gate).
 """
 
 import json
@@ -30,12 +38,18 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
                        QoSReliabilityPolicy)
+from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
 from mower_localization import localization_status_logic as lsl
 from mower_common.clock import node_clock
 from mower_common.sub_pump import PeriodicRunner, SubscriptionPump, parse_odometry
+from mower_common.angles import yaw_from_quaternion
+
+
+def _yaw(q):
+    return yaw_from_quaternion(q.x, q.y, q.z, q.w)
 
 
 class LocalizationMonitor(Node):
@@ -51,6 +65,9 @@ class LocalizationMonitor(Node):
         d('map_odom_topic', '/odometry/filtered_map')
         d('vio_topic', '/odometry/vio_gated')
         d('heading_status_topic', '/heading_aligner/status')
+        d('tilt_topic', '/tilt/status')
+        d('wheel_topic', '/mcu/measured_speed')
+        d('gps_odom_topic', '/odometry/gps')
         d('input_rate', 5.0)
         d('status_rate', 1.0)
         defaults = lsl.StatusParams()
@@ -79,6 +96,10 @@ class LocalizationMonitor(Node):
         self._pump.subscribe(Odometry, g('vio_topic'), self._on_vio, one,
                              parser=parse_odometry, **s)
         self._pump.subscribe(String, g('heading_status_topic'), self._on_heading, latched, **s)
+        self._pump.subscribe(String, g('tilt_topic'), self._on_tilt, latched, **s)
+        self._pump.subscribe(TwistStamped, g('wheel_topic'), self._on_wheel, one, **s)
+        self._pump.subscribe(Odometry, g('gps_odom_topic'), self._on_gps_odom, one,
+                             parser=parse_odometry, **s)
         self._periodic = PeriodicRunner(self, [
             (1.0 / max(1.0, float(g('input_rate'))), self._tick),
         ], 'localization_monitor_periodic')
@@ -86,22 +107,40 @@ class LocalizationMonitor(Node):
         self._periodic.start()
         p = self.est.p
         self.get_logger().info(
-            'localization_monitor up: budget %.2f m, lost %.2f m, drift %.1f%% wheel / %.1f%% '
-            'VIO, ok needs ekf sigma <= %.2f m -> %s' % (
-                p.drift_budget_m, p.lost_drift_m, 100 * p.drift_rate_wheel,
-                100 * p.drift_rate_vio, p.loc_sigma_ok_m, g('status_topic')))
+            'localization_monitor up: budget %.2f m, lost %.2f m, drift %.0f cm + %.0f%%/m flat '
+            '.. %.0f cm + %.0f%%/m at %.0f deg, coast %.1f m flat / %.1f m slope / %.0f s, ok '
+            'needs ekf sigma <= %.2f m -> %s' % (
+                p.drift_budget_m, p.lost_drift_m, 100 * p.drift_base_flat_m,
+                100 * p.drift_rate_flat, 100 * p.drift_base_slope_m, 100 * p.drift_rate_slope,
+                p.drift_tilt_slope_deg, p.coast_max_flat_m, p.coast_max_slope_m, p.coast_max_s,
+                p.loc_sigma_ok_m, g('status_topic')))
 
     # sampled callbacks (run inside _tick under the lock)
     def _on_fix_status(self, msg, t):
         self.est.on_fix_status(t, msg.data)
 
     def _on_odom(self, msg, t):
-        pos = msg.pose.pose.position
-        self.est.on_odom_pose(t, pos.x, pos.y)
+        pos, tw = msg.pose.pose.position, msg.twist.twist
+        self.est.on_odom_pose(t, pos.x, pos.y, _yaw(msg.pose.pose.orientation),
+                              tw.linear.x, tw.angular.z)
 
     def _on_map_odom(self, msg, t):
-        cov = msg.pose.covariance
-        self.est.on_map_odom(t, cov[0], cov[7])
+        pos, cov = msg.pose.pose.position, msg.pose.covariance
+        self.est.on_map_odom(t, cov[0], cov[7], (pos.x, pos.y, _yaw(msg.pose.pose.orientation)))
+
+    def _on_gps_odom(self, msg, t):
+        pos = msg.pose.pose.position
+        self.est.on_gps_odom(t, pos.x, pos.y)
+
+    def _on_wheel(self, msg, t):
+        self.est.on_wheel_twist(t, msg.twist.angular.z)
+
+    def _on_tilt(self, msg, t):
+        try:
+            st = json.loads(msg.data)
+            self.est.on_tilt(t, float(st['roll_deg']), float(st['pitch_deg']))
+        except (ValueError, KeyError, TypeError):
+            pass
 
     def _on_vio(self, _msg, t):
         self.est.on_vio(t)

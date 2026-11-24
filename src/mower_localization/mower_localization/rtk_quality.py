@@ -15,6 +15,7 @@ filter is given: never smaller than the receiver says, scaled up and floored per
 The UM960 sigma in float is optimistic (0.05-0.15 m reported while the solution wanders
 0.2-0.5 m), so float gets x4 and a 0.4 m sigma floor; fixed keeps the receiver sigma
 with a 3 cm floor; DGPS/single are rejected by default (``single_policy``).
+
 """
 
 from dataclasses import dataclass
@@ -109,6 +110,7 @@ class CovariancePolicy:
     single_sigma_floor: float = 3.0     # m, only with single_policy loose
     single_scale: float = 4.0
     unknown_variance: float = 25.0      # m^2 when the receiver reported no covariance
+    fixed_max_sigma: float = 0.05       # m; a "fixed" fix with a larger receiver sigma is float (<= 0: off)
 
     def floor_scale(self, rtk_class):
         if rtk_class == RTK_FIXED:
@@ -116,6 +118,18 @@ class CovariancePolicy:
         if rtk_class == RTK_FLOAT:
             return self.float_sigma_floor, self.float_scale
         return self.single_sigma_floor, self.single_scale
+
+
+def effective_class(rtk_class, receiver_variance, policy=None):
+    """The class to fuse a fix with: FIXED with a receiver sigma above ``fixed_max_sigma`` is
+    FLOAT. Field 2026-11-21: /fix of the first float epoch arrived 1 ms before its
+    /fix_status, was classified with the previous FIXED and fused at its own 8 cm sigma; the
+    ekf_map pose jumped 3 m. The UM960 reports about 6 mm in fixed and 8 cm in float."""
+    p = policy or CovariancePolicy()
+    if rtk_class == RTK_FIXED and p.fixed_max_sigma > 0.0 and receiver_variance is not None \
+            and receiver_variance > p.fixed_max_sigma ** 2:
+        return RTK_FLOAT
+    return rtk_class
 
 
 def fused_variance(rtk_class, receiver_variance, policy=None):

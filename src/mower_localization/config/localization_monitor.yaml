@@ -1,0 +1,30 @@
+# localization_monitor (/localization/status): drift model, coast budget, slip and float gate.
+# docs/localization.md "RTK-loss policy", docs/analysis/2026-11-25_coast_mode.md.
+# Defaults live in localization_status_logic.StatusParams; this file repeats the ones a field
+# change is likely to touch. Restore the monitor before 2026-11-25 with coast_max_s: 0,
+# drift_base_flat_m = drift_base_slope_m = 0.03, drift_rate_flat = drift_rate_slope = 0.03 and
+# drift_pivot_m: 0.0.
+localization_monitor:
+  ros__parameters:
+    # drift model, p90 since the last RTK FIXED (2026-11-13 drift study, ekf_map wheel vy):
+    # 5 cm + 2 %/m flat, rising linearly to 10 cm + 10 %/m at 11 deg tilt, + 1 cm per pivot
+    drift_base_flat_m: 0.05
+    drift_base_slope_m: 0.10
+    drift_rate_flat: 0.02
+    drift_rate_slope: 0.10
+    drift_tilt_flat_deg: 4.0
+    drift_tilt_slope_deg: 11.0
+    drift_pivot_m: 0.01
+    drift_rate_scale_vio: 0.5      # pluggable aid: per-metre rate x this while gated VIO is fused
+    # coast budget: distance without RTK, 5 m flat .. 1.5 m from 8 deg; 60 s since the fix
+    coast_max_flat_m: 5.0
+    coast_max_slope_m: 1.5
+    coast_tilt_slope_deg: 8.0
+    coast_max_s: 60.0              # 0 = no coast budget (lost_after_s applies as before)
+    # wheel vs gyro yaw parting this far within the window = slip: lost until the next fix
+    slip_window_s: 2.0
+    slip_yaw_rad: 0.6
+    # RTK float / an unconfirmed fixed further than float_gate_m + est_drift from dead
+    # reckoning (float_gate_n samples in a row): lost until the next confirmed fix
+    float_gate_m: 0.15
+    float_gate_n: 2

@@ -13,7 +13,7 @@ setup(
         ('share/' + package_name + '/config',
          ['config/ekf.yaml', 'config/ekf_vio.yaml', 'config/navsat.yaml',
           'config/ekf_dual.yaml', 'config/ekf_dual_vio.yaml',
-          'config/ekf_map_gnss_smoothing.yaml']),
+          'config/ekf_map_gnss_smoothing.yaml', 'config/localization_monitor.yaml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
