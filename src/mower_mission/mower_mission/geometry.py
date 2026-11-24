@@ -240,6 +240,31 @@ def nearest_index(poses, point, start=0, max_arc=None):
     return best_i
 
 
+# progress_index: how much closer a later stretch of the path must be to win
+PROGRESS_SWITCH_M = 0.10
+
+
+def progress_index(poses, point, start=0, max_arc=None, switch_m=PROGRESS_SWITCH_M):
+    """Progress of ``point`` along ``poses`` from ``start``: :func:`nearest_index`, except
+    that a later stretch of the path that runs over the one the robot is on (a pocket
+    spur's way back over its way in, a fill pass along an earlier arc) wins only when it is
+    closer by more than ``switch_m``. With equal distances the nearest pose picked the later
+    stretch by float noise (sim 2026-11-12 cross: progress on a spur's way in jumped to its
+    way back, 2.4 m of path ahead). The stretch the robot is on runs from ``start`` until
+    the path first gets ``switch_m`` farther from ``point`` than its closest pose so far."""
+    best = nearest_index(poses, point, start, max_arc)
+    if start >= len(poses):
+        return best
+    cur_i, cur_d = start, dist(poses[start], point)
+    for i in range(start + 1, best + 1):
+        d = dist(poses[i], point)
+        if d < cur_d:
+            cur_i, cur_d = i, d
+        elif d > cur_d + switch_m:
+            break
+    return best if dist(poses[best], point) < cur_d - switch_m else cur_i
+
+
 def cumulative_lengths(poses):
     """``out[i]`` = path length from pose 0 to pose ``i``."""
     out, acc = [0.0], 0.0

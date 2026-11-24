@@ -315,12 +315,14 @@ class MowingMixin:
 
     def _track_progress(self):
         """Advance ``progress_local`` to the pose nearest the robot, searching
-        only ``progress_window_m`` ahead (never backwards, never onto a later lap)."""
+        only ``progress_window_m`` ahead (never backwards, never onto a later lap, never onto
+        a later stretch running over this one unless it is clearly closer:
+        geometry.progress_index)."""
         m, pose = self.mission, self.inputs.pose
         if pose is None or not m.subpaths:
             return m.progress_local
-        m.progress_local = geo.nearest_index(m.subpaths[m.sub_i], pose, m.progress_local,
-                                             self.p.progress_window_m)
+        m.progress_local = geo.progress_index(m.subpaths[m.sub_i], pose, m.progress_local,
+                                              self.p.progress_window_m)
         return m.progress_local
 
     def _tick_blade(self):

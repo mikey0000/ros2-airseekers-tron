@@ -844,6 +844,32 @@ def test_progress_tracking_never_jumps_to_adjacent_lap():
     assert ResumeCursor.loads(h.saved).areas[0].resume_index == k
 
 
+def test_progress_on_a_pocket_spur_way_in_stays_off_its_way_back():
+    # sim 2026-11-12 cross (real_run5_cross, run 2): a fill pass up to a gap-fill pocket
+    # spur's mouth, a -144 deg pivot, the spur 0.81 m in at -40 deg, an about-turn, the same
+    # line back out from 0.02 m short of the tip. Its way back is the way in again: progress
+    # on the way in jumped to the way back (the resume pose and every retry start ride on it)
+    h = Harness()
+    start, mouth, tip, back_from = (2.318, 1.174), (2.0, 2.5), (2.62, 1.98), (2.605, 1.993)
+    h.fsm.inputs.pose = start + (math.radians(104.0),)
+    start_until_planning(h)
+    sp = line(*start, *mouth, n=29) + line(*mouth, *tip, n=17)[1:] + \
+        line(*back_from, *mouth, n=17)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp, line(0, 4, 4, 4)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    m = h.fsm.mission
+    poses = m.subpaths[0]
+    k_mouth, k_tip = near_index(poses, *mouth), near_index(poses, *tip)
+    back = min(range(k_tip, len(poses)),     # a pose of the way back 0.3 m in from the mouth
+               key=lambda k: abs(math.dist(poses[k][:2], mouth) - 0.3))
+    for k in (k_mouth // 2, k_mouth, back):  # up to the mouth, then 0.3 m in
+        h.fsm.inputs.pose = (poses[k][0], poses[k][1], 0.0)
+        h.tick()
+    assert k_mouth < m.progress_local < k_tip
+    assert math.dist(poses[m.progress_local][:2], poses[back][:2]) < 0.05
+
+
 def test_mowing_complete_reports_final_counts():
     h = Harness()
     start_until_planning(h)
