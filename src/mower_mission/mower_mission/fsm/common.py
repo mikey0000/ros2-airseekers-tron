@@ -590,6 +590,7 @@ class Inputs:
     loc_stamp: Optional[float] = None
     loc_rtk: str = ''                       # receiver class: fixed|float|dgps|single|none|stale
     loc_est_drift: Optional[float] = None   # est_drift_m (None before the first RTK FIXED)
+    loc_coast_left: Optional[float] = None  # coast_left_m: dead-reckoning distance left (coast mode)
     # 2026-10-23 option C: /obstacle_tracker/nogo_zones (nogo.ZoneSet) + receipt time
     nogo_zones: Any = None
     nogo_stamp: Optional[float] = None
@@ -1495,6 +1496,13 @@ class Params:
     # sigma gate 0.3 m off truth and the boundary recovery resumed on it.
     loc_resume_require_fixed: bool = True
     loc_fixed_settle_s: float = 5.0
+    # coast mode (2026-11-25, analysis/2026-11-25_coast_mode.md): degraded during a mow follow
+    # or a transit keeps going on dead reckoning (speed cap, blade unchanged) while the
+    # monitor's coast_left_m > 0 and the path ahead keeps the body est_drift +
+    # coast_edge_margin_m off the boundary and keepouts; then the hold. false = the 2026-11-03
+    # degraded rule (finish the straight swath, loc_degraded_*).
+    coast_enabled: bool = True
+    coast_edge_margin_m: float = 0.10
     # ---- 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py) ----
     nogo_enabled: bool = True
     nogo_zones_max_age_s: float = 10.0       # /obstacle_tracker/nogo_zones receipt age
