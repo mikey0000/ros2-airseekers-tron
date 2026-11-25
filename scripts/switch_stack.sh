@@ -7,6 +7,8 @@
 #   sudo /userdata/ros2_stack/scripts/switch_stack.sh ros2  [--yes]   # back to this stack
 #
 # Without --yes it only prints the plan (dry run). docs/handover.md explains when to use which.
+# A step that fails rolls back: the reverse switch runs (every step tried, best effort) and the
+# script exits with the failed step's status. "ROLLBACK INCOMPLETE" means check `status`.
 #
 # stock:
 #   1. refuses unless the mower is docked or idle (/behavior_tree_node/high_level_status);
@@ -41,7 +43,12 @@ VENDOR_ROBOT_UNITS=(mower-logic mower-controller mower-planning mower-perception
 VENDOR_INFRA_OFF=(foxglove)
 
 mode=${1:-}; confirm=${2:-}
-run() { if [[ $confirm == --yes ]]; then echo "+ $*"; "$@"; else echo "would run: $*"; fi; }
+rollback_failed=0
+run() {
+    [[ $confirm == --yes ]] || { echo "would run: $*"; return 0; }
+    echo "+ $*"
+    "$@" || { local rc=$?; rollback_failed=1; return "$rc"; }
+}
 
 mission_state() {
     docker exec mower_jazzy bash -c 'source /opt/ros/jazzy/setup.bash; source /work/install/setup.bash;
@@ -74,21 +81,16 @@ status() {
     bash scripts/install_host_services.sh status 2>/dev/null | sed 's/^/  /' || true
 }
 
-[[ $mode == status ]] && { status; exit 0; }
-[[ $mode == stock || $mode == ros2 ]] || { sed -n 2,9p "$0"; exit 2; }
-[[ $EUID -eq 0 ]] || { echo "run as root (sudo)" >&2; exit 1; }
-[[ $confirm == --yes ]] || echo "DRY RUN (add --yes to apply)"
-
-if [[ $mode == stock ]]; then
-    require_parked
+to_stock() {
     for c in "${CONTAINERS[@]}"; do
         run docker update --restart=no "$c"
         run docker stop "$c"
     done
     run bash scripts/install_host_services.sh uninstall
     run bash scripts/mower_services.sh enable --all
-    echo "Stock software enabled; $REMOTE (Tailscale) left running. Reboot advised: sudo reboot"
-else
+}
+
+to_ros2() {
     run bash scripts/mower_services.sh disable
     for u in "${VENDOR_INFRA_OFF[@]}"; do run systemctl disable --now "$u.service"; done
     run bash scripts/install_host_services.sh
@@ -96,5 +98,33 @@ else
         run docker update --restart=unless-stopped "$c"
         run docker start "$c"
     done
+}
+
+# EXIT trap while switching: a failed step (set -e) switches back to the mode we came from.
+roll_back() {
+    local rc=$? back=to_ros2
+    [[ $mode == ros2 ]] && back=to_stock
+    echo "FAILED (exit $rc) switching to $mode: rolling back ($back)" >&2
+    set +e
+    rollback_failed=0
+    $back
+    ((rollback_failed)) && echo "ROLLBACK INCOMPLETE: check '$0 status' and fix by hand" >&2
+    exit "$rc"
+}
+
+[[ $mode == status ]] && { status; exit 0; }
+[[ $mode == stock || $mode == ros2 ]] || { sed -n 2,9p "$0"; exit 2; }
+[[ $EUID -eq 0 ]] || { echo "run as root (sudo)" >&2; exit 1; }
+[[ $confirm == --yes ]] || echo "DRY RUN (add --yes to apply)"
+
+[[ $mode == stock ]] && require_parked
+trap roll_back EXIT
+if [[ $mode == stock ]]; then
+    to_stock
+    trap - EXIT
+    echo "Stock software enabled; $REMOTE (Tailscale) left running. Reboot advised: sudo reboot"
+else
+    to_ros2
+    trap - EXIT
     echo "ROS 2 stack enabled. Reboot advised (stereo IMU driver mode): sudo reboot"
 fi
