@@ -2199,7 +2199,7 @@ Sim: cross60 (h) line p99 went from 0.334 to 0.091 m; real_run5 PASS (master FAI
 cross60 (i) still fails at 0.123 (a transit final-approach Spin aimed from a rolling pose) and
 0.105 (the lap-0 convex arc). Details: `analysis/2026-11-25_approach_xte.md`.
 
-## Coast mode: keep mowing through a short RTK loss on dead reckoning (2026-11-25, branch ws/coast1125, unit + bag replay + sim; not field tested)
+## Coast mode: keep mowing through a short RTK loss on dead reckoning (2026-11-25, branch ws/coast1125, unit + bag replay + sim; on by default, not field tested)
 
 An RTK loss (single, dropout, float under the sigma gate, or the ekf_map sigma gate alone)
 during a mow follow or a transit no longer stops the mower at once. It coasts on dead

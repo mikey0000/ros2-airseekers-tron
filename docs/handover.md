@@ -178,4 +178,5 @@ From a dev box with this repository (`git submodule update --init`):
    containers on), then reboot.
 6. GUI: datum, NTRIP, record the areas, check docking (docs/deployment.md, docs/STATUS.md).
 
-Optional pieces stay off by default: VIO (`vio:=true`, docs/vio.md) and coast mode, if merged.
+Optional pieces stay off by default: VIO (`vio:=true`, docs/vio.md). Coast mode is on by default
+(`coast_enabled: false` in mission.yaml turns it off).
