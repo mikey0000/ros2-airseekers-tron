@@ -603,8 +603,9 @@ class HoldsMixin:
     # Degraded (RTK float / single / dropout, or the ekf_map sigma gate) during a mow follow or
     # a transit: keep going on dead reckoning, blade as before, at the degraded speed cap,
     # while the monitor's coast budget lasts (coast_left_m: 5 m flat .. 1.5 m on a slope,
-    # 60 s, none after slip or an RTK position that disagrees) and the path ahead keeps the
-    # body est_drift + coast_edge_margin_m off the boundary and the keepouts. Then the hold.
+    # 60 s, none after slip or an RTK position that disagrees) and along the path ahead the
+    # body stays est_drift + coast_edge_margin_m inside the boundary guard's limits and off the
+    # keepouts. Then the hold.
     def _loc_coast_left(self):
         """Fresh coast_left_m, or None."""
         i = self.inputs
@@ -646,13 +647,21 @@ class HoldsMixin:
         return pts
 
     def _coast_clearance(self, pt):
-        """Distance from ``pt`` to the edge of the allowed region (the largest edge distance
-        of a region polygon holding it: a lower bound for the union) and to the keepouts."""
+        """How far base_link at ``pt`` may drift before the body reaches a limit: the distance
+        to the edge of the allowed region (the largest edge distance of a region polygon
+        holding it, a lower bound for the union) plus the body guard's side allowance there
+        (soft 0.35 m, hard 0.10 m: what the plan itself may overhang), and the distance to the
+        keepouts (no allowance), each less half the body width."""
         x, y = float(pt[0]), float(pt[1])
+        half = float(self.p.robot_width_m) / 2.0
         inside = [bbody._edge_dist(x, y, r) for r in self._region() if bbody._pip(x, y, r)]
-        clear = max(inside) if inside else 0.0
+        mode = self._hb_body_mode((x, y, 0.0))
+        allow = 0.0 if mode is None else float(
+            self.p.hard_boundary_body_hard_m if mode == 'hard'
+            else self.p.hard_boundary_body_soft_side_m)
+        clear = (max(inside) + allow if inside else 0.0) - half
         for k in self._hb_keepouts():
-            clear = 0.0 if bbody._pip(x, y, k) else min(clear, bbody._edge_dist(x, y, k))
+            clear = -half if bbody._pip(x, y, k) else min(clear, bbody._edge_dist(x, y, k) - half)
         return clear
 
     def _coast_clearance_cached(self, pt):
@@ -678,10 +687,10 @@ class HoldsMixin:
         pose = self.inputs.pose
         if pose is not None:
             pts.append((pose[0], pose[1]))
-        need = est + float(self.p.robot_width_m) / 2.0 + float(self.p.coast_edge_margin_m)
+        need = est + float(self.p.coast_edge_margin_m)
         clear = min((self._coast_clearance_cached(q) for q in pts), default=0.0)
         if clear < need:
-            return 'edge clearance %.2f m < drift %.2f m + half width + %.2f m' % (
+            return 'edge clearance %.2f m < drift %.2f m + %.2f m' % (
                 clear, est, float(self.p.coast_edge_margin_m))
         return ''
 

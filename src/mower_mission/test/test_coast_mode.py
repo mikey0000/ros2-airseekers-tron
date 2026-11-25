@@ -80,13 +80,18 @@ def test_float_that_agrees_carries_on():
     assert not held(h) and h.blade and h.fsm.mission.step == 'follow'
 
 
-def test_near_the_edge_holds_at_once():
-    """The strip leg ends 0.1 m from the east edge: the 5 m look-ahead reaches it."""
+def test_near_the_edge_follows_the_soft_allowance():
+    """The strip leg ends 0.1 m from the east edge (soft: the body side may reach 0.35 m out),
+    and the 5 m look-ahead reaches it: 0.1 + 0.35 - 0.235 = 0.215 m of room. A 0.09 m drift
+    + 0.10 m margin fits; 0.20 m does not."""
     h = strip_mow()
-    m = h.mark()
-    coast_loc(h, left=5.0)
+    coast_loc(h, left=5.0, est=0.09)
     h.tick()
-    assert held(h) and not h.blade and not logged(h, m, 'coasting on')
+    assert not held(h) and h.fsm._loc_coast is not None
+    m = h.mark()
+    coast_loc(h, left=5.0, est=0.2)
+    h.tick()
+    assert held(h) and not h.blade and logged(h, m, 'edge clearance 0.21 m')
 
 
 def test_clearance_follows_the_drift_and_the_budget_horizon():
@@ -174,7 +179,8 @@ def test_drifting_toward_the_edge_holds_before_the_body_is_out():
         coast_loc(h, left=1.0)
         h.fsm.inputs.wheel_xy = (3.0, y)
         h.tick(dt=0.1)
-    assert held(h) and y > 0.2 and h.fsm._hb is None and logged(h, m, 'edge clearance')
+    # base_link 0.05 m inside: the body side 0.185 m out, under the 0.35 m soft limit
+    assert held(h) and y > 0.0 and h.fsm._hb is None and logged(h, m, 'edge clearance')
 
 
 def test_pose_jump_while_coasting_is_not_trusted():
