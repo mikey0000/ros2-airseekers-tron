@@ -65,6 +65,22 @@ def test_nearest_index_respects_start():
     assert geo.nearest_index(poses, (0, 0), start=1) == 3
 
 
+def test_nearest_index_tie_keeps_the_earlier_pass_at_a_crossing():
+    # out along y 0 (poses at x .05, .15, ...), round and back down across it at x 1.0:
+    # at the crossing the later pass is nearer (0.0 against 0.05), the earlier pass is kept
+    out = [(0.05 + 0.1 * k, 0.0) for k in range(20)]
+    back = [(1.0, 1.0 - 0.1 * k) for k in range(21)]
+    poses = out + [(2.0, 0.5), (1.5, 1.0)] + back
+    cross = len(out) + 2 + 10
+    assert poses[cross] == (1.0, 0.0)
+    assert geo.nearest_index(poses, (1.0, 0.0), 0, 6.0) == cross       # no tie: jumps
+    i = geo.nearest_index(poses, (1.0, 0.0), 0, 6.0, tie=0.15)
+    assert i in (9, 10)                                                  # x 0.95 / 1.05
+    # a later pass farther off than the tie, or the earlier pass left behind: nearest
+    assert geo.nearest_index(poses, (1.0, -0.4), 0, 6.0, tie=0.15) == cross + 4
+    assert geo.nearest_index(poses, (1.0, 0.0), 12, 6.0, tie=0.15) == cross
+
+
 def test_heading_of_fills_missing_yaw():
     poses = [(0, 0, 0.0), (0, 1, 0.0)]
     assert abs(geo.heading_of(poses, 0) - math.pi / 2) < 1e-9

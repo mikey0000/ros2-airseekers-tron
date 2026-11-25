@@ -220,24 +220,32 @@ def clean_area_ring(points, tolerance=0.05, jog_m=0.10):
     return pts
 
 
-def nearest_index(poses, point, start=0, max_arc=None):
+def nearest_index(poses, point, start=0, max_arc=None, tie=None):
     """Index (>= ``start``) of the pose closest to ``point``; ``start`` if empty.
 
     With ``max_arc`` only poses within that path length after ``start`` are
     considered, so progress along a path with adjacent laps (headland rings
     0.2 m apart) cannot jump onto a later lap that happens to be closer.
+    With ``tie`` the first local minimum of the distance within ``tie`` of the
+    closest is taken: where the path crosses or runs back beside itself the
+    point is on the earlier pass.
     """
-    best_i, best_d = start, float('inf')
+    ds = []
     arc = 0.0
     for i in range(start, len(poses)):
         if i > start:
             arc += dist(poses[i - 1], poses[i])
             if max_arc is not None and arc > max_arc:
                 break
-        d = dist(poses[i], point)
-        if d < best_d:
-            best_i, best_d = i, d
-    return best_i
+        ds.append(dist(poses[i], point))
+    if not ds:
+        return start
+    best = min(ds)
+    if tie is not None:
+        for k, d in enumerate(ds):
+            if d <= best + tie and (k + 1 == len(ds) or d <= ds[k + 1]):
+                return start + k
+    return start + ds.index(best)
 
 
 def cumulative_lengths(poses):

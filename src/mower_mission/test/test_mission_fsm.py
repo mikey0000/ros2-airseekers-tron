@@ -85,9 +85,11 @@ class Harness:
             elif isinstance(e, f.BladeOff):
                 self.blade = False
             elif isinstance(e, f.StartAction) and e.name in MOVING_ACTIONS:
-                # continuous blade policy: an in-area mission transit / detour may keep it on;
-                # owner rule 2026-10-23: so may a mission back-up with the body inside
-                assert not self.blade or (e.name == f.ACT_NAV and self.fsm.mission is not None
+                # continuous blade policy: an in-area mission transit / detour may keep it on
+                # (its final approach hop included); owner rule 2026-10-23: so may a mission
+                # back-up with the body inside
+                assert not self.blade or (e.name in (f.ACT_NAV, f.ACT_DRIVE)
+                                          and self.fsm.mission is not None
                                           and self.fsm.mission.blade_transit) or (
                     e.name == f.ACT_BACKUP and self.fsm.mission is not None
                     and self.fsm.phase in ('MOWING', 'TRANSIT')

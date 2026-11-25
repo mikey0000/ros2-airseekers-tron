@@ -177,6 +177,12 @@ behavior_tree_node:
     # off the line. 0.0 = off (revert).
     route_final_approach_m: 0.05
     route_final_approach_speed_mps: 0.1
+    # 2026-11-25: a sub-path start within transit_gap_m but farther than this from the robot
+    # gets the same final approach hop (no transit); before, the leg-start pivot aimed 1.5 m
+    # down the leg and the start was cut (sim real_run5_cross60: 0.58 m gaps, 0.65 m
+    # cross-track). Nearer, a coverage pivot is aimed from where the still-rolling robot
+    # stops. 0.0 = off (revert).
+    leg_start_reach_m: 0.12
     route_blocked_retries: 1          # obstacle abort: blocked wait, re-send the route this often, then Nav2
     # 2026-10-21: a failed plan_route to a goal farther than this (outside the 50 m rolling
     # global costmap) re-asks the route after the back-off instead of the costmap fallback

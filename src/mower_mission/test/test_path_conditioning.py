@@ -1390,3 +1390,81 @@ def test_spur_about_turn_overhang_is_the_way_round_that_stays_inside(near_y):
     ways = sorted(br.sweep(7.0, near_y, 0.0, d) for d in (math.pi, -math.pi))
     assert ways[0] <= 0.15 and ways[1] > 0.4
 
+
+
+# ---- leg starts the robot has not reached (2026-11-25 docs/analysis/2026-11-25_approach_xte.md)
+
+
+def _row(x0, y0, x1, y1):
+    """line() with the poses' yaw along the row (a forward leg, not a reverse one)."""
+    yaw = math.atan2(y1 - y0, x1 - x0)
+    return [(q[0], q[1], yaw) for q in line(x0, y0, x1, y1)]
+
+
+def _two_rows_h(gap, **params):
+    """Row 0 (1, 1) -> (4, 1); row 1 back from (4, 1 + gap): within transit_gap_m."""
+    h = Harness(path_conditioning=True, **params)
+    start_until_planning(h)
+    h.fsm.inputs.pose = (1.0, 1.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([_row(1, 1, 4, 1), _row(4, 1 + gap, 1, 1 + gap)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.finish(f.ACT_FOLLOW)                            # row 0 driven, robot at (4, 1) yaw 0
+    return h
+
+
+def test_leg_start_beyond_reach_is_a_final_approach_hop_not_a_pivot_where_the_robot_is():
+    # sim real_run5_cross60: a 0.58 m gap (no transit) was pivoted at the row end and the
+    # tracker cut in 1.5 m down the leg, 0.65 m off at index 0
+    h = _two_rows_h(0.4)
+    m = h.fsm.mission
+    assert h.name == 'TRANSIT' and m.sub_i == 1 and m.final_approach
+    texts = [e.text for e in h.fx if isinstance(e, f.Log)]
+    assert any(t.startswith('robot 0.40 m from the sub-path start: final approach') for t in texts)
+    spin = h.goal(f.ACT_SPIN)
+    assert abs(math.degrees(spin['angle']) - 90.0) < 1.0     # face the start
+    h.fsm.inputs.pose = (4.0, 1.0, math.pi / 2)
+    h.finish(f.ACT_SPIN)
+    assert abs(h.goal(f.ACT_DRIVE)['distance_m'] - 0.4) < 1e-6
+    h.fsm.inputs.pose = (4.0, 1.4, math.pi / 2)
+    h.finish(f.ACT_DRIVE)
+    h.tick()
+    # on the start: the leg-start pivot there (+90 to face along row 1), then the row
+    assert h.name == 'MOWING' and m.step == 'corner_pivot'
+    assert abs(math.degrees(h.goal(f.ACT_SPIN)['angle']) - 90.0) < 1.0
+    h.finish(f.ACT_SPIN)
+    assert geo.dist(h.goal(f.ACT_FOLLOW)['poses'][0], (4.0, 1.4)) < 1e-6
+
+
+def test_leg_start_within_reach_pivots_in_place():
+    h = _two_rows_h(0.1)
+    assert h.name == 'MOWING' and not h.fsm.mission.final_approach
+    assert h.pending_action(f.ACT_SPIN).purpose == 'cov_pivot'
+
+
+def test_leg_start_reach_zero_is_the_old_pivot_in_place():
+    # revert path
+    h = _two_rows_h(0.4, leg_start_reach_m=0.0)
+    assert h.name == 'MOWING' and h.pending_action(f.ACT_SPIN).purpose == 'cov_pivot'
+
+
+def test_pivot_pose_rolls_on_to_abreast_of_the_start_within_reach():
+    pp = f.MissionFSM._pivot_pose
+    assert pp((0.92, 1.0, 0.0), (1.0, 1.05), 0.12) == pytest.approx((1.0, 1.0, 0.0))
+    assert pp((0.5, 1.0, 0.0), (1.0, 1.0), 0.12) == pytest.approx((0.62, 1.0, 0.0))
+    assert pp((1.1, 1.0, 0.0), (1.0, 1.0), 0.12) == pytest.approx((1.1, 1.0, 0.0))  # behind
+    assert pp((0.92, 1.0, 0.0), (1.0, 1.0), 0.0) == pytest.approx((0.92, 1.0, 0.0))  # off
+
+
+def test_leg_start_pivot_is_aimed_from_where_the_rolling_robot_stops():
+    # sim 2026-11-13 real_run5: decided 0.07-0.09 m short of a lap-0 vertex (the robot still
+    # rolling onto it), the pivot aimed from there was 17 deg short of the leg
+    leg_yaw = math.atan2(-1.0, 0.3)
+    h = Harness(path_conditioning=True)
+    start_until_planning(h)
+    h.fsm.inputs.pose = (0.92, 1.0, 0.0)              # 0.08 m short, heading for the start
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([_row(1.0, 1.0, 1.3, 0.0), _row(3, 3, 4, 3)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    a = h.goal(f.ACT_SPIN)['angle']
+    assert abs(math.degrees(geo.wrap_angle(a - leg_yaw))) < 1.0

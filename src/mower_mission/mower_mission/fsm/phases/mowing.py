@@ -7,6 +7,11 @@ from mower_mission.fsm.common import (ABORTED, ACT_FOLLOW, CancelActions, Publis
     condition_plan, geo, math, pcond, subpath_offsets)  # noqa: F401
 
 
+# a pose of the current pass this much farther than one on a later pass still counts as
+# nearer (well under the 0.2 m lap spacing, over the tracker's cross-track)
+PASS_TIE_M = 0.15
+
+
 class MowingMixin:
     """Sub-path dispatch, follow, blade and path conditioning."""
 
@@ -38,7 +43,8 @@ class MowingMixin:
 
     def _dispatch(self, force_transit=False):
         """Send the current sub-path from ``start_local``: blade-off transit
-        first when its start is farther than ``transit_gap_m``."""
+        first when its start is farther than ``transit_gap_m``, a final approach hop onto it
+        when farther than ``leg_start_reach_m`` (_leg_start_approach)."""
         m = self.mission
         sp = m.subpaths[m.sub_i]
         if m.sub_i in m.cond_errors:
@@ -52,6 +58,7 @@ class MowingMixin:
         if self._turn_leg_driven():
             return
         target = sp[m.start_local]
+        yaw = geo.heading_of(sp, m.start_local)
         if force_transit or geo.needs_transit(self.inputs.pose, target, self.p.transit_gap_m):
             # SAFETY (FollowStrip): blade off before any dispatch across the gap, unless
             # the continuous policy keeps it on for a transit inside the area.
@@ -59,11 +66,10 @@ class MowingMixin:
             m.step = 'transit'
             self._go('TRANSIT', 'area %d sub-path %d/%d' % (
                 m.area_idx, m.sub_i + 1, len(m.subpaths)))
-            yaw = geo.heading_of(sp, m.start_local)
             m.transit_target = self._transit_approach(target, yaw)
             m.route_fallback, m.route_aborts = False, 0
             self._send_transit()
-        else:
+        elif not self._leg_start_approach(target, yaw):
             self._begin_blade()
 
     def _excluded_local(self):
@@ -315,12 +321,14 @@ class MowingMixin:
 
     def _track_progress(self):
         """Advance ``progress_local`` to the pose nearest the robot, searching
-        only ``progress_window_m`` ahead (never backwards, never onto a later lap)."""
+        only ``progress_window_m`` ahead (never backwards, never onto a later lap or a
+        later pass across this one: sim 2026-11-12 real_run5_cross60, a sub-path crossing
+        itself moved progress 3 m on at the crossing, so a hold there resumed past it)."""
         m, pose = self.mission, self.inputs.pose
         if pose is None or not m.subpaths:
             return m.progress_local
         m.progress_local = geo.nearest_index(m.subpaths[m.sub_i], pose, m.progress_local,
-                                             self.p.progress_window_m)
+                                             self.p.progress_window_m, PASS_TIE_M)
         return m.progress_local
 
     def _tick_blade(self):
