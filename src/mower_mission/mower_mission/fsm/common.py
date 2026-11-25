@@ -785,6 +785,10 @@ class Params:
     # sub-path's own start pivot (_route_final_approach). 0 = off (revert).
     route_final_approach_m: float = 0.05
     route_final_approach_speed_mps: float = 0.1
+    # path_conditioning: a sub-path start within transit_gap_m but farther than this from the
+    # robot gets the same final approach hop (_leg_start_approach); nearer, the leg-start
+    # pivot is aimed from where the robot stops (_pivot_pose). 0 = off (revert).
+    leg_start_reach_m: float = 0.12
     # Sim 2026-10-09: the scripted person crossed Path 1, the route aborted (collision ahead)
     # and the /navigate_to_pose fallback after the wait cut across the lawn into a drawn
     # obstacle corner. An obstacle abort now waits (blocked wait) and re-sends the ROUTE

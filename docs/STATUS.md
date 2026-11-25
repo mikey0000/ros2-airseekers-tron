@@ -2179,3 +2179,20 @@ poses, retry starts and guards use that index. Fix: `geometry.progress_index` mo
 stretch only when it is more than 0.10 m closer. Sim: real_run5_cross e PASS (from 0.384 m),
 real_run5 PASS, real_run5_cross60 fails e/h/i as on master. Open: a 0.55 m coverage fillet cut
 at a row -> fill-pass hairpin. Details: `analysis/2026-11-25_cross_spur.md`.
+
+## Sub-path start approach: index-0 cross-track (2026-11-25, branch ws/approach1125, unit + sim; not field tested)
+
+The cross60 (h) tail was sub-paths that started 0.54-0.58 m from the robot. That is under
+`transit_gap_m`, so the leg-start pivot was made where the robot stood and the tracker cut in
+1.5 m down the leg. A gap over the new `leg_start_reach_m` 0.12 m now gets the final approach
+hop onto the start first. Also in this branch:
+
+- coverage pivots are aimed from where the rolling robot stops (a run5 lap-0 vertex pivot was
+  17 deg short);
+- progress no longer jumps to a later pass where a sub-path crosses itself (a hold there
+  would have skipped 3 m); merged with ws/spur1125, this uses its `geometry.progress_index`
+  (the branch's own `nearest_index(tie=)` was dropped).
+
+Sim: cross60 (h) line p99 went from 0.334 to 0.091 m; real_run5 PASS (master FAIL (i)). The
+cross60 (i) still fails at 0.123 (a transit final-approach Spin aimed from a rolling pose) and
+0.105 (the lap-0 convex arc). Details: `analysis/2026-11-25_approach_xte.md`.

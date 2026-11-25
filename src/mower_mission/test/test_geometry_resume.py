@@ -95,6 +95,18 @@ def test_progress_index_takes_a_later_stretch_clearly_closer():
     assert geo.progress_index(poses, (0.5, 0.0), 0) == 10
 
 
+def test_progress_index_keeps_the_earlier_pass_at_a_crossing():
+    # sim 2026-11-12 real_run5_cross60 sub-path 10 crossed itself and progress jumped 3 m on
+    # at the crossing; out along y 0, round and back down across it at x 1.0
+    out = [(0.05 + 0.1 * k, 0.0) for k in range(20)]
+    back = [(1.0, 1.0 - 0.1 * k) for k in range(21)]
+    poses = out + [(2.0, 0.5), (1.5, 1.0)] + back
+    cross = len(out) + 2 + 10
+    assert geo.nearest_index(poses, (1.0, 0.0), 0, 6.0) == cross       # the jump
+    assert geo.progress_index(poses, (1.0, 0.0), 0, 6.0) in (9, 10)    # x 0.95 / 1.05
+    assert geo.progress_index(poses, (1.0, 0.0), 12, 6.0) == cross     # earlier pass left
+
+
 def test_heading_of_fills_missing_yaw():
     poses = [(0, 0, 0.0), (0, 1, 0.0)]
     assert abs(geo.heading_of(poses, 0) - math.pi / 2) < 1e-9

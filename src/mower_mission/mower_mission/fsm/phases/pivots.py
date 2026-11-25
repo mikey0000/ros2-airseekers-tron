@@ -55,11 +55,12 @@ class PivotsMixin:
         sp, pivots = m.subpaths[m.sub_i], self._cov_pivots()
         corner = m.start_local in pivots
         end = min([c for c in pivots if c > m.start_local] + [self._seg_last()])
+        at = self._pivot_pose(pose, sp[m.start_local], float(p.leg_start_reach_m))
         if kturn:                             # face the reverse leg's poses
             heading = float(sp[min(m.start_local, len(sp) - 1)][2]) if len(sp[0]) >= 3 else None
         else:
             heading = self._join_heading(
-                self._join_leg(list(sp[m.start_local:end + 1]), m.sub_i, m.start_local), pose,
+                self._join_leg(list(sp[m.start_local:end + 1]), m.sub_i, m.start_local), at,
                 sharp=lim)
         if heading is None:
             return False
@@ -71,7 +72,7 @@ class PivotsMixin:
                 (abs(delta) > 0.5 * math.pi or abs(planned) > math.pi):
             delta += math.copysign(2.0 * math.pi, planned)    # the planned way round
         elif planned is None:
-            delta = self._pivot_way(pose, delta)
+            delta = self._pivot_way(at, delta)
         g = self._nogo_pivot_gate('cov', key, delta)     # option C: pre-pivot sweep check
         if g is True:
             return True
@@ -183,6 +184,18 @@ class PivotsMixin:
                       % (math.degrees(delta), math.degrees(other), w1, w0))
             return other
         return delta
+
+    @staticmethod
+    def _pivot_pose(pose, start, reach):
+        """Where a pivot onto a leg starting at ``start`` turns: ``pose`` moved along its yaw
+        to abreast of the start, at most ``reach`` m (none when the start is behind). The
+        pivot is decided as the leg before it ends (the along-path goal checker), with the
+        robot still rolling on onto the vertex; aimed from that pose, a short leg's far end
+        was 15-30 deg off (sim 2026-11-13 real_run5: 0.07 m short of a lap-0 vertex, -54
+        instead of -71 deg, the body swept 0.13 m over the plan at the next vertex 0.33 m on)."""
+        c, s = math.cos(pose[2]), math.sin(pose[2])
+        a = min(max(0.0, (start[0] - pose[0]) * c + (start[1] - pose[1]) * s), max(0.0, reach))
+        return (pose[0] + a * c, pose[1] + a * s, pose[2])
 
     @staticmethod
     def _join_heading(leg, pose, look=0.4, sharp=None):

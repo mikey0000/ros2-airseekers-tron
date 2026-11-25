@@ -771,7 +771,7 @@ class TransitMixin:
         self._log('warn', '%s: transit via the costmap planner' % why)
         self._start_fallback_nav(ref=route)
 
-    def _route_final_approach(self, d):
+    def _route_final_approach(self, d, what='transit ended'):
         """Path conditioning: a transit that ended (arrived) more than route_final_approach_m
         from the sub-path start drives onto it first. The junction robot -> start is part of
         the driven path: a straight hop as explicit steps, like a pivot (Nav2 Spin to face
@@ -789,17 +789,64 @@ class TransitMixin:
         m.final_approach = True
         m.final_approach_reverse = self._final_approach_reverses(pose, d)
         delta = geo.wrap_angle(self._final_approach_heading(pose) - float(pose[2]))
-        self._log('info', 'transit ended %.2f m from the sub-path start: final approach onto '
+        self._log('info', '%s %.2f m from the sub-path start: final approach onto '
                           'it (turn %.0f deg, then %s)' % (
-                              d, math.degrees(delta), 'reverse along its first leg'
+                              what, d, math.degrees(delta), 'reverse along its first leg'
                               if m.final_approach_reverse else 'straight'))
         if abs(delta) >= float(self.p.path_conditioning_pivot_min_rad):
+            delta = self._pivot_way(pose, delta)     # toward the interior, as a coverage pivot
             allowance = abs(delta) / max(0.05, float(self.p.route_cusp_spin_rps)) + 10.0
             self._start_action(ACT_SPIN, {'angle': delta, 'time_allowance_s': allowance},
                                allowance + 5.0, purpose='final_approach_spin')
             return True
         self._final_approach_drive()
         return True
+
+    def _leg_start_approach(self, target, yaw):
+        """A sub-path start within transit_gap_m (no transit) that the robot has not reached
+        (_leg_start_unreached): the final approach onto it (_route_final_approach), as after
+        a transit, instead of the leg-start pivot where the robot stands. That pivot aims up
+        to 1.5 m down the leg and the tracker cut in to it (sim 2026-11-12 real_run5_cross60:
+        three sub-paths started 0.58 m from the robot, 0.65 m cross-track falling to 0.15 m
+        over the first 1.2 m, the start left uncut). True = started."""
+        m = self.mission
+        if not self._leg_start_unreached(target):
+            return False
+        self._transit_blade(target, 'leg-start approach')
+        m.step = 'transit'
+        self._go('TRANSIT', 'area %d sub-path %d/%d: approach' % (
+            m.area_idx, m.sub_i + 1, len(m.subpaths)))
+        m.transit_target = (float(target[0]), float(target[1]), yaw)
+        m.final_approach = m.final_approach_reverse = False
+        if not self._route_final_approach(geo.dist(self.inputs.pose, target), 'robot'):
+            self._final_approach_done(SUCCEEDED)     # final approach off (revert path)
+        return True
+
+    def _leg_start_unreached(self, target):
+        """True: path conditioning, the robot is more than leg_start_reach_m from the start
+        ``target`` of the current sub-path, and not behind it on the line of its first leg
+        (the tracker drives straight on). Only a sub-path's own start (a resume inside one
+        keeps rejoining from where the robot is), a forward coverage leg (reverse and K-turn
+        legs are driven as planned), not after a turn leg (that ends short of its cusp by its
+        caps, by design) and not an edge-lap start (within edge_approach_near_m of the
+        boundary: reached from inside, _transit_approach / _join_leg)."""
+        m, pose = self.mission, self.inputs.pose
+        reach = float(self.p.leg_start_reach_m)
+        if not self.p.path_conditioning or reach <= 0.0 or pose is None or len(pose) < 3 or \
+                m.start_local != 0 or geo.dist(pose, target) <= reach or \
+                self._cov_turn_leg(m.sub_i) or self._cov_kturn_leg() or \
+                (m.sub_i > 0 and self._cov_turn_leg(m.sub_i - 1)):
+            return False
+        if self._region_areas:
+            q = bbody.nearest_boundary_point(float(target[0]), float(target[1]), self._region())
+            if q is not None and q[2] <= float(self.p.edge_approach_near_m):
+                return False
+        hd = self._leg_heading(m.subpaths[m.sub_i])
+        if hd is None:
+            return True
+        dx, dy = pose[0] - target[0], pose[1] - target[1]
+        return dx * math.cos(hd) + dy * math.sin(hd) > 0.0 or \
+            abs(dy * math.cos(hd) - dx * math.sin(hd)) > reach
 
     def _final_approach_reverses(self, pose, d):
         """True: the final approach hop of ``d`` m reverses onto the start. That is when the
