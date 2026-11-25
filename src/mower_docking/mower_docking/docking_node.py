@@ -25,6 +25,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy,
                        qos_profile_sensor_data)
+from rclpy.event_handler import SubscriptionEventCallbacks
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, Twist
@@ -597,12 +598,19 @@ class DockingServer(Node):
             with self._lock:
                 self._detector = det
                 self._marker = None
+            # No QoS event handlers on these two: they are destroyed again from a worker thread
+            # while the MultiThreadedExecutor builds its wait set, and rclpy (Jazzy) does not
+            # guard an event handler's add_to_wait_set against that ("InvalidHandle: cannot
+            # use Destroyable because destruction was requested", field 2026-11-25: the node
+            # died after every failed dock). The subscriptions themselves are guarded.
+            no_events = SubscriptionEventCallbacks(use_default_callbacks=False)
             self._info_sub = self.create_subscription(
                 CameraInfo, p('camera_info_topic').value, self._on_camera_info,
-                qos_profile_sensor_data, callback_group=self._sensor_group)
+                qos_profile_sensor_data, callback_group=self._sensor_group,
+                event_callbacks=no_events)
             self._image_sub = self.create_subscription(
                 Image, p('image_topic').value, self._on_image, qos_profile_sensor_data,
-                callback_group=self._image_group)
+                callback_group=self._image_group, event_callbacks=no_events)
         elif not on and self._image_sub is not None:
             self.destroy_subscription(self._image_sub)
             self.destroy_subscription(self._info_sub)
