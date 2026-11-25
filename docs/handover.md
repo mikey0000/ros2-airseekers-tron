@@ -101,6 +101,14 @@ someone else's home and garden, so:
 
 The vendor's own `tailscaled` stays disabled in every case: its init script joins the vendor's tailnet.
 
+Keeping the node up to date: `sudo scripts/tailscale_sidecar.sh install` recreates `mowgli-remote` from
+`tailscale/tailscale:stable` with the same state volume (same node, name and address) and installs
+a daily systemd timer (`tailscale-sidecar-update.timer`, script in `/usr/local/sbin`). It pulls the image
+and recreates the container only when the image changed. Tailscale's own `--auto-update` cannot work
+inside this container: it has no capabilities and a read-only `/usr/local/bin`. `tailscale_sidecar.sh uninstall`
+removes the timer and leaves the container running. It is independent of both stacks, so
+`switch_stack.sh` never touches it.
+
 ### 6. Physical
 
 - [ ] The RTK base station goes with the mower: its pairing is stored on both ends
