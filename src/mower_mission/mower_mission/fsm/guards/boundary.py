@@ -152,6 +152,10 @@ class BoundaryGuardMixin:
         return 'soft'
 
     def _hb_body_eval(self, pose, mode):
+        return bbody.evaluate(pose, self._region(), self._hb_body_limits(pose, mode))
+
+    def _hb_body_limits(self, pose, mode):
+        """Body point kind -> how far it may be outside the region at ``pose`` in ``mode``."""
         p = self.p
         lim = bbody.limits_for(mode, float(p.hard_boundary_body_soft_side_m),
                                float(p.hard_boundary_body_soft_nose_m),
@@ -171,7 +175,7 @@ class BoundaryGuardMixin:
             if near:
                 allow = max(near) + add
                 lim = {k: max(v, allow) for k, v in lim.items()}
-        return bbody.evaluate(pose, self._region(), lim)
+        return lim
 
     def _edge_slope(self):
         """True while |roll| (fresh /tilt/status) exceeds edge_slope_roll_deg: the soft

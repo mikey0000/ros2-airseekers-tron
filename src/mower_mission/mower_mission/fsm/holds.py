@@ -614,9 +614,10 @@ class HoldsMixin:
         return i.loc_coast_left
 
     def _coast_path_ahead(self, horizon):
-        """Points (every 0.25 m, fixed along the plan) of what the robot drives next, at most
-        ``horizon`` m: the sub-path being mowed, a route transit, else the line to the transit
-        target. [] when nothing is known."""
+        """Poses (x, y, heading of their segment; every 0.25 m, fixed along the plan, a vertex
+        with both headings) of what the robot drives next, at most ``horizon`` m: the sub-path
+        being mowed, a route transit, else the line to the transit target. [] when nothing is
+        known."""
         m, pose = self.mission, self.inputs.pose
         if m is None or pose is None:
             return []
@@ -635,38 +636,49 @@ class HoldsMixin:
             path = [tuple(q[:2]) for q in sp[max(0, min(i, len(sp) - 1)):]]
         else:
             return []
-        pts, acc = [path[0]], 0.0
+        pts, acc = [], 0.0
         for a, b in zip(path, path[1:]):
             seg = geo.dist(a, b)
-            n = max(1, int(math.ceil(seg / 0.25)))
-            for t in range(1, n + 1):
-                pts.append((a[0] + (b[0] - a[0]) * t / n, a[1] + (b[1] - a[1]) * t / n))
+            if seg < 1e-6:
+                continue
+            yaw, n = math.atan2(b[1] - a[1], b[0] - a[0]), int(math.ceil(seg / 0.25))
+            pts += [(a[0] + (b[0] - a[0]) * t / n, a[1] + (b[1] - a[1]) * t / n, yaw)
+                    for t in range(n + 1)]
             acc += seg
             if acc >= horizon:
                 break
         return pts
 
-    def _coast_clearance(self, pt):
-        """How far base_link at ``pt`` may drift before the body reaches a limit: the distance
-        to the edge of the allowed region (the largest edge distance of a region polygon
-        holding it, a lower bound for the union) plus the body guard's side allowance there
-        (soft 0.35 m, hard 0.10 m: what the plan itself may overhang), and the distance to the
-        keepouts (no allowance), each less half the body width."""
-        x, y = float(pt[0]), float(pt[1])
-        half = float(self.p.robot_width_m) / 2.0
-        inside = [bbody._edge_dist(x, y, r) for r in self._region() if bbody._pip(x, y, r)]
-        mode = self._hb_body_mode((x, y, 0.0))
-        allow = 0.0 if mode is None else float(
-            self.p.hard_boundary_body_hard_m if mode == 'hard'
-            else self.p.hard_boundary_body_soft_side_m)
-        clear = (max(inside) + allow if inside else 0.0) - half
-        for k in self._hb_keepouts():
-            clear = -half if bbody._pip(x, y, k) else min(clear, bbody._edge_dist(x, y, k) - half)
-        return clear
+    def _coast_clearance(self, pose):
+        """How far base_link at ``pose`` (x, y, yaw) may drift before the body reaches a limit:
+        for every body point (nose and front corners 0.6 m ahead included: review 2026-11-25),
+        its depth inside the allowed region (the largest edge distance of a region polygon
+        holding it, a lower bound for the union; negative outside) plus the boundary guard's
+        limit for it there, and its distance to the keepouts (no allowance); the least. Where
+        the guard checks base_link only (mode None), base_link less half the body width."""
+        x0, y0, yaw = (float(v) for v in pose[:3])
+        mode = self._hb_body_mode((x0, y0, yaw))
+        if mode is None:
+            points, lim = [(0.0, 0.0, None)], {None: 0.0}
+            pad = float(self.p.robot_width_m) / 2.0
+        else:
+            points, lim = bbody.body_points().values(), self._hb_body_limits((x0, y0, yaw), mode)
+            pad = 0.0
+        region, keepouts = self._region(), self._hb_keepouts()
+        c, s, clear = math.cos(yaw), math.sin(yaw), math.inf
+        for bx, by, kind in points:
+            x, y = x0 + c * bx - s * by, y0 + s * bx + c * by
+            inside = [bbody._edge_dist(x, y, r) for r in region if bbody._pip(x, y, r)]
+            depth = max(inside) if inside else -bbody.point_outside(x, y, region)
+            clear = min(clear, depth + lim[kind])
+            for k in keepouts:
+                d = bbody._edge_dist(x, y, k)
+                clear = min(clear, -d if bbody._pip(x, y, k) else d)
+        return clear - pad
 
     def _coast_clearance_cached(self, pt):
         """_coast_clearance, memoised while the coast runs (the plan points repeat)."""
-        key = (round(pt[0], 3), round(pt[1], 3))
+        key = (round(pt[0], 3), round(pt[1], 3), round(pt[2], 2))
         memo = self._loc_coast_clear
         if key not in memo:
             memo[key] = self._coast_clearance(pt)
@@ -686,7 +698,7 @@ class HoldsMixin:
         pts = self._coast_path_ahead(left)
         pose = self.inputs.pose
         if pose is not None:
-            pts.append((pose[0], pose[1]))
+            pts.append(tuple(pose[:3]))
         need = est + float(self.p.coast_edge_margin_m)
         clear = min((self._coast_clearance_cached(q) for q in pts), default=0.0)
         if clear < need:

@@ -98,12 +98,17 @@ pose as untrusted.
 - `_coast_path_ahead(horizon)`: the sub-path from the tracked progress (follow) or the step's
   start (spin-up, pivot), a route transit from its nearest pose, else the line to the transit
   target, sampled every 0.25 m, up to `coast_left_m`.
-- `_coast_clearance(pt)`: how far base_link at the point may drift before the body reaches a
-  limit: the largest edge distance of a region polygon holding it (a lower bound for the union
-  of areas, paths and dock corridor the boundary guard enforces) plus the guard's side
-  allowance for the edge mode there (`hard_boundary_body_soft_side_m` 0.35 /
-  `hard_boundary_body_hard_m` 0.10), and the distance to the keepouts (no allowance), each
-  less half the body width; memoised per coast. The first version required the body to stay
+- `_coast_clearance(pose)`: how far base_link at a path pose (with the heading of its
+  segment; a vertex is checked with both headings) may drift before the body reaches a limit:
+  for every body point (nose and front corners 0.6 m ahead, rear corners, tail), its depth
+  inside the allowed region (the largest edge distance of a region polygon holding it, a lower
+  bound for the union of areas, paths and dock corridor the boundary guard enforces; negative
+  outside) plus the guard's limit for that point there (`_hb_body_limits`: soft side 0.35 /
+  front 0.55 / nose 0.40 / tail 0.30, hard 0.10, with the slope and plan-corner rules), and
+  its distance to the keepouts (no allowance); the least. Memoised per coast. Until the
+  2026-11-25 review it used a disc of half the body width round base_link with the side
+  allowance, which overstated the room by about 0.3 m wherever the path heads at the outline
+  (row and lap ends): the nose is 0.6 m ahead. The first version required the body to stay
   0.10 m inside the outline itself; on the run5 lawn, whose rows end about 0.15 m from the
   outline, no interior row could coast (`coast-edge` / `coastoff-badparams` runs below), while
   the plan itself puts the body over the outline there.

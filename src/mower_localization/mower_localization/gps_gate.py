@@ -191,8 +191,9 @@ def _apply_quality(msg: NavSatFix, rtk_class: Optional[str],
 
 
 class JumpGate:
-    """Holds back a fix that jumps more than ``jump_m`` from the last fix passed, until the new
-    position has held (within ``jump_m``) for ``confirm_s``; after a gap of ``gap_s`` without
+    """Holds back a fix that jumps more than ``jump_m`` from the last fix passed, until the fixes
+    after it have run on without a further jump (consecutive fixes within ``jump_m``) for
+    ``confirm_s``, so a moving mower's new track is taken too; after a gap of ``gap_s`` without
     fixes anything passes (a dropout's end). ``jump_m`` <= 0: off. Pure.
 
     Field 2026-11-21: the first RTK float epoch was 3.02 m from the fixed track, with an 8 cm
@@ -203,7 +204,8 @@ class JumpGate:
         self.jump_m, self.confirm_s, self.gap_s = jump_m, confirm_s, gap_s
         self._last = None          # (lat, lon) of the last fix passed
         self._rx_t = None          # receipt time of the last fix seen
-        self._cand = None          # (t, lat, lon): where a held-back jump started
+        self._seen = None          # (lat, lon) of the last fix seen
+        self._held_t = None        # when the held-back track started (its last jump)
 
     @staticmethod
     def _dist(a, b):
@@ -213,15 +215,15 @@ class JumpGate:
     def admit(self, t, lat, lon):
         """Feed one fix; True = publish it."""
         pos, gap = (lat, lon), self._rx_t is None or t - self._rx_t > self.gap_s
-        self._rx_t = t
+        seen, self._rx_t, self._seen = self._seen, t, pos
         if self.jump_m <= 0.0 or gap or self._last is None or \
                 self._dist(self._last, pos) <= self.jump_m:
-            self._last, self._cand = pos, None
+            self._last, self._held_t = pos, None
             return True
-        if self._cand is None or self._dist(self._cand[1:], pos) > self.jump_m:
-            self._cand = (t, lat, lon)
-        if t - self._cand[0] >= self.confirm_s:
-            self._last, self._cand = pos, None
+        if self._held_t is None or self._dist(seen, pos) > self.jump_m:
+            self._held_t = t
+        if t - self._held_t >= self.confirm_s:
+            self._last, self._held_t = pos, None
             return True
         return False
 

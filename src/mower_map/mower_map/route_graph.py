@@ -452,13 +452,17 @@ class RouteGraph:
         """Every sample of a->b inside (the region, else) the area / path union.
         Returns None (bad), AREA (inside ``reg``) or LINK. ``escape``: a start pose on /
         in an obstacle polygon (Nav2 left the robot there, sim 2026-10-09) may link out
-        through it (LINK, blade off)."""
+        through it (LINK, blade off).
+        Samples within tolerance_m of ``a`` count as inside: ``a`` was admitted up to that
+        far outside (sim 2026-11-26: an edge-lap end 0.026 m outside its area had no link,
+        so the transit took the costmap planner and left the area by 0.14 m)."""
         n = max(1, int(math.ceil(math.hypot(b[0] - a[0], b[1] - a[1]) / self.p.sample_m)))
         f = np.linspace(0.0, 1.0, n + 1)
         px = a[0] + f * (b[0] - a[0])
         py = a[1] + f * (b[1] - a[1])
+        lead = np.hypot(px - a[0], py - a[1]) <= self.p.tolerance_m
         if escape:
-            ok = np.zeros(np.shape(px), dtype=bool)
+            ok = lead.copy()
             for poly in [r.polygon for r in self.regions] + [q.polygon for q in self.paths]:
                 ok |= points_in_polygon(px, py, poly)
             return LINK if ok.all() else None
@@ -466,9 +470,9 @@ class RouteGraph:
             inr = points_in_polygon(px, py, reg.polygon)
             for o in reg.obstacles:
                 inr &= ~points_in_polygon(px, py, o)
-            if inr.all():
+            if (inr | lead).all():
                 return AREA
-        return LINK if self._inside_union(px, py).all() else None
+        return LINK if (self._inside_union(px, py) | lead).all() else None
 
     def _anchor(self, reg, p, escape=False):
         """Nearest point (<= anchor_max_m) with full clearance in ``reg`` that ``p`` links to."""

@@ -315,6 +315,14 @@ def test_start_off_graph_returns_reason():
     assert isinstance(r, str) and 'start' in r
 
 
+@pytest.mark.parametrize('start', [(-0.03, 5.0, 0.0), (5.0, 10.03, 0.0)])
+def test_start_just_outside_the_area_gets_a_route(start):
+    """An edge-lap end within tolerance_m outside the area joins it (sim 2026-11-26: it was
+    refused, and the costmap-planner fallback left the area)."""
+    r = rg.RouteGraph([_square()]).plan(start, (5.0, 5.0, 0.0))
+    assert not isinstance(r, str), r
+
+
 def test_goal_off_graph_returns_reason():
     r = rg.RouteGraph([_square()]).plan((5.0, 5.0, 0.0), (50.0, 50.0, 0.0))
     assert isinstance(r, str) and 'goal' in r

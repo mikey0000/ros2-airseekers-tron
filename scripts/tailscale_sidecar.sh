@@ -17,20 +17,26 @@
 # without capabilities): docker installs are updated by image, which is what `update` does.
 # If the ROS 2 stack's GUI runs with Remote access enabled it may recreate the container with
 # its own pinned image; the next `update` run brings it back to this spec.
+#
+# A recreate never leaves the host without a node: the old container is stopped and kept
+# (mowgli-remote-old) until the new one reports BackendState Running, else it is put back.
+# The swap runs as a transient systemd unit, so it finishes even when the shell that started
+# it was a Tailscale SSH session carried by the container being replaced (its log:
+# journalctl -u tailscale-sidecar-update-swap).
 set -euo pipefail
 
 NAME=mowgli-remote
 IMAGE=${TS_IMAGE:-tailscale/tailscale:stable}
 VOLUME=mowgli_remote_state
 HOSTNAME_TS=${TS_HOSTNAME:-mowgli}
+OLD=$NAME-old
 SELF=/usr/local/sbin/tailscale_sidecar.sh
 UNIT=tailscale-sidecar-update
 
 [[ $EUID -eq 0 ]] || { echo "run as root (sudo)" >&2; exit 1; }
 
-create() {
-    docker rm -f "$NAME" >/dev/null 2>&1 || true
-    docker run -d --name "$NAME" \
+run_container() {
+    docker run -d --name "$1" \
         --network host --restart unless-stopped --cap-drop ALL \
         -v "$VOLUME:/var/lib/tailscale" \
         -e TS_HOSTNAME="$HOSTNAME_TS" -e TS_STATE_DIR=/var/lib/tailscale \
@@ -38,7 +44,46 @@ create() {
         --label project=mowglinext --label app=remote-access \
         --label com.centurylinklabs.watchtower.enable=false \
         "$IMAGE" >/dev/null
+}
+
+running() {
+    local _
+    for _ in $(seq 30); do
+        docker exec "$1" tailscale status --json 2>/dev/null |
+            grep -Eq '"BackendState": *"Running"' && return 0
+        sleep 2
+    done
+    return 1
+}
+
+swap() {
+    if ! docker inspect "$NAME" >/dev/null 2>&1; then
+        run_container "$NAME"            # first install: may need a login (NeedsLogin), no rollback
+    else
+        docker rm -f "$OLD" >/dev/null 2>&1 || true
+        docker rename "$NAME" "$OLD"
+        docker stop "$OLD" >/dev/null
+        if ! { run_container "$NAME" && running "$NAME"; }; then
+            docker rm -f "$NAME" >/dev/null 2>&1 || true
+            docker rename "$OLD" "$NAME"
+            docker start "$NAME" >/dev/null
+            echo "new $NAME did not reach Running in 60 s: the old container is back" >&2
+            return 1
+        fi
+        docker rm "$OLD" >/dev/null
+    fi
     echo "$NAME (re)created from $IMAGE ($(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -c8-19))"
+}
+
+create() {
+    if [[ -n ${INVOCATION_ID:-} ]]; then  # already a systemd unit (the timer)
+        swap
+    else
+        local rc=0
+        systemd-run --quiet --wait --collect --unit=$UNIT-swap "$(realpath "$0")" _swap || rc=$?
+        journalctl -u $UNIT-swap -n 3 --no-pager -o cat
+        return $rc
+    fi
 }
 
 update() {
@@ -47,6 +92,7 @@ update() {
     want=$(docker image inspect -f '{{.Id}}' "$IMAGE")
     have=$(docker inspect -f '{{.Image}}' "$NAME" 2>/dev/null || true)
     if [[ $want == "$have" ]]; then
+        docker start "$NAME" >/dev/null      # no-op when running
         echo "$NAME up to date ($(docker exec "$NAME" tailscale version | head -1))"
     else
         create
@@ -55,7 +101,7 @@ update() {
 }
 
 install_timer() {
-    install -m 0755 "$0" "$SELF"
+    [[ $(realpath "$0") == "$SELF" ]] || install -m 0755 "$0" "$SELF"
     cat > /etc/systemd/system/$UNIT.service <<EOF
 [Unit]
 Description=Update the Tailscale container $NAME by image
@@ -85,6 +131,7 @@ EOF
 case ${1:-} in
     install)   install_timer; docker pull -q "$IMAGE" >/dev/null; create ;;
     update)    update ;;
+    _swap)     swap ;;
     status)    docker ps -a -f name="^$NAME\$" --format '{{.Names}} {{.Image}} {{.Status}}'
                docker exec "$NAME" tailscale version 2>/dev/null | head -1 || true
                systemctl list-timers --no-pager $UNIT.timer 2>/dev/null | sed -n 1,2p ;;
