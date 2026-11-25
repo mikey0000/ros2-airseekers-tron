@@ -98,9 +98,9 @@ behavior_tree_node:
     # localization_monitor's coast_left_m > 0 (5 m flat .. 1.5 m on a slope, 60 s, none after
     # slip or a disagreeing RTK position) and the path ahead keeps the body est_drift + this
     # margin off the boundary / keepouts; then the hold as before. false = the 2026-11-03
-    # degraded rule (finish the straight swath, loc_degraded_*). Off until field tested
-    # (owner 2026-11-25); sim with it on: docs/analysis/2026-11-25_coast_mode.md.
-    coast_enabled: false
+    # degraded rule (finish the straight swath, loc_degraded_*). On by default (owner
+    # 2026-11-25), not yet field tested; sims: docs/analysis/2026-11-25_coast_mode.md.
+    coast_enabled: true
     coast_edge_margin_m: 0.10
     # 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py,
     # docs/analysis/2026-10-23_obstacle_nogo_options.md section C)
