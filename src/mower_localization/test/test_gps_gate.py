@@ -318,8 +318,16 @@ class TestQualityCovariance:
         node = self._node()
         node._on_fix_status(self._status('solution=NARROW_INT'))
         node._on_fix(_fix(status=NavSatStatus.STATUS_GBAS_FIX,
-                          covariance=_diag_covariance(0.01)))
-        assert node.fix_pub.msgs[0].position_covariance[0] == pytest.approx(0.01)
+                          covariance=_diag_covariance(0.002)))
+        assert node.fix_pub.msgs[0].position_covariance[0] == pytest.approx(0.002)
+
+    def test_fixed_status_with_a_float_sized_sigma_is_float(self):
+        """2026-11-25: the /fix of a float onset arrives before its /fix_status."""
+        node = self._node()
+        node._on_fix_status(self._status('solution=NARROW_INT'))
+        node._on_fix(_fix(status=NavSatStatus.STATUS_GBAS_FIX,
+                          covariance=_diag_covariance(0.0062)))
+        assert node.fix_pub.msgs[0].position_covariance[0] == pytest.approx(0.16)
 
     def test_single_status_drops_next_fix(self):
         node = self._node()
@@ -374,3 +382,40 @@ class TestMain:
         from mower_localization.gps_gate import main
 
         assert callable(main)
+
+
+class TestJumpGate:
+    """2026-11-25: the 11-21 float-onset jump (3.02 m in one 10 Hz epoch) is held back."""
+    M = 1.0 / 111320.0          # degrees of latitude per metre (about)
+
+    def _gate(self, **kw):
+        from mower_localization.gps_gate import JumpGate
+        return JumpGate(**kw)
+
+    def test_driving_passes(self):
+        g = self._gate()
+        assert all(g.admit(0.1 * k, 48.0 + 0.03 * k * self.M, 9.0) for k in range(50))
+
+    def test_jump_held_then_back_on_track(self):
+        g = self._gate()
+        for k in range(10):
+            assert g.admit(0.1 * k, 48.0, 9.0)
+        for k in range(10, 16):                          # 0.6 s of a 3 m jump
+            assert not g.admit(0.1 * k, 48.0 - 3.0 * self.M, 9.0)
+        assert g.admit(1.6, 48.0, 9.0)                   # back on the track: passes
+
+    def test_jump_that_persists_is_taken_after_confirm(self):
+        g = self._gate()
+        g.admit(0.0, 48.0, 9.0)
+        held = [g.admit(0.1 * k, 48.0 - 3.0 * self.M, 9.0) for k in range(1, 25)]
+        assert not any(held[:19]) and all(held[20:])     # from 2 s after the jump
+
+    def test_after_a_gap_anything_passes(self):
+        g = self._gate()
+        g.admit(0.0, 48.0, 9.0)
+        assert g.admit(5.0, 48.0 - 3.0 * self.M, 9.0)   # dropout end
+
+    def test_off(self):
+        g = self._gate(jump_m=0.0)
+        g.admit(0.0, 48.0, 9.0)
+        assert g.admit(0.1, 48.0 - 3.0 * self.M, 9.0)

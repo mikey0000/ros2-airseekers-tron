@@ -22,8 +22,27 @@ Run in the dev image with the workspace sourced (robot_localization is installed
     python3 scripts/replay/ekf_replay.py BAG_DIR OUT_DIR --t0 EPOCH --t1 EPOCH \
         --variant base: --variant vy:vy_var=0.01,fuse_vy=1
 
+GPS dropouts (2026-11-13 dead-reckoning drift): a variant with ``wh_len=L`` withholds its GPS
+for L s in every ``wh_every`` s, the first window starting ``wh_phase`` s after the first
+odometry sample. While it is withheld, the variant's IMU yaw is what heading_aligner would publish
+without RTK: no COG updates, so the offset (``/heading_aligner/status`` ``offset_deg``) stays
+at its value at the window start. (The tracked ``offset_rate`` is not applied either: it is
+only integrated while RTK positions show motion, heading_logic ``rate_motion_window``.)
+Several variants with staggered phases give overlapping windows::
+
+    --variant base0:wh_len=90,wh_every=120,wh_phase=30 --variant base1:...,wh_phase=50
+
+Float after a dropout (2026-11-25 coast mode): ``fl_len=L`` turns the first L s of RTK
+fixes after each withheld window into RTK FLOAT offset by (``fl_dx``, ``fl_dy``) map m, fused
+with gps_gate's float covariance at a sigma floor of ``fl_floor`` m (default: the float floor of
+``rtk_quality.CovariancePolicy``, 0.4 m). ``scripts/replay/float_pull.py`` measures how far
+ekf_map follows the offset.
+
 Output: ``OUT_DIR/<variant>.csv`` (t, x, y, yaw), ``OUT_DIR/inputs.csv`` (t, kind, x, y,
-var / class) and ``OUT_DIR/fit.json``. Positions are map metres only.
+var / class; kinds field, gps, odom, mcu (/mcu/measured_speed vx, wz), tilt (roll, pitch
+deg), hdg (offset rad; offset rate rad/s, last COG time, last COG measured offset rad)),
+``OUT_DIR/windows.csv`` (variant, start, end), ``OUT_DIR/variants.json`` (the options) and ``OUT_DIR/fit.json``. ``--inputs-only``
+writes fit.json and inputs.csv without running a filter. Positions are map metres only.
 """
 
 import argparse
@@ -45,7 +64,8 @@ sys.path.insert(0, os.path.join(STACK, 'src', 'mower_localization'))
 from mower_localization import rtk_quality   # noqa: E402
 
 EKF_YAML = os.path.join(STACK, 'src', 'mower_localization', 'config', 'ekf_dual.yaml')
-TOPICS = ('/odometry/filtered', '/fix', '/fix_status', '/odometry/filtered_map')
+TOPICS = ('/odometry/filtered', '/fix', '/fix_status', '/odometry/filtered_map',
+          '/heading_aligner/status', '/tilt/status', '/mcu/measured_speed')
 EARTH_R = 6378137.0
 _TIMES = {}
 
@@ -96,10 +116,13 @@ def interp(series, t):
 
 
 # ---------------------------------------------------------------------------- inputs
-def build_inputs(msgs):
+def build_inputs(msgs, aux=None):
     """(odom [(t, vx, wz)], imu [(t, yaw, wz)], fixes [(t, e, n, class, rx_var)],
-    field_map [(t, x, y, yaw)])."""
+    field_map [(t, x, y, yaw)]). ``aux`` (a dict), when given, gets ``tilt`` [(t, roll_deg,
+    pitch_deg)], ``mcu`` [(t, wheel vx, wheel yaw rate)] (/mcu/measured_speed) and ``hdg``
+    [(t, offset_rad, offset_rate_rad_s, last_cog_t, last COG measured offset rad)]."""
     odom, imu, fixes, field = [], [], [], []
+    tilt, hdg, mcu = [], [], []
     cls, lat0, lon0 = None, None, None
     for t, name, m in msgs:
         if name == '/fix_status':
@@ -113,6 +136,21 @@ def build_inputs(msgs):
         elif name == '/odometry/filtered_map':
             p = m.pose.pose
             field.append((t, p.position.x, p.position.y, yaw_of(p.orientation)))
+        elif name == '/mcu/measured_speed':
+            mcu.append((t, m.twist.linear.x, m.twist.angular.z))
+        elif name == '/tilt/status':
+            d = json.loads(m.data)
+            if d.get('roll_deg') is not None and not d.get('stale'):
+                tilt.append((t, d['roll_deg'], d.get('pitch_deg') or 0.0))
+        elif name == '/heading_aligner/status':
+            d = json.loads(m.data)
+            if d.get('offset_deg') is not None:
+                age = d.get('last_cog_age_s')
+                cog = d.get('last_cog_offset_deg')
+                hdg.append((t, math.radians(d['offset_deg']),
+                            math.radians(d.get('offset_rate_deg_min') or 0.0) / 60.0,
+                            t - age if age is not None else -1.0,
+                            math.radians(cog) if cog is not None else float('nan')))
         elif name == '/fix':
             if not (math.isfinite(m.latitude) and math.isfinite(m.longitude)):
                 continue
@@ -123,6 +161,8 @@ def build_inputs(msgs):
             cov = m.position_covariance
             rx = max(cov[0], cov[4]) if m.position_covariance_type else None
             fixes.append((t, e, n, cls, rx))
+    if aux is not None:
+        aux['tilt'], aux['hdg'], aux['mcu'] = tilt, hdg, mcu
     return odom, imu, fixes, field
 
 
@@ -152,6 +192,7 @@ def gps_stream(fixes, field, fit):
     """[(t, x, y, var, class)] of the fixes gps_gate passes, in the map frame."""
     out = []
     for t, e, n, c, rx in fixes:
+        c = rtk_quality.effective_class(c, rx)
         var = rtk_quality.fused_variance(c, rx)
         p = interp(field, t)
         if var is None or p is None:
@@ -166,13 +207,90 @@ def gps_stream(fixes, field, fit):
 
 # ---------------------------------------------------------------------------- variants
 def parse_variant(text):
-    """'name:key=val,key=val' -> (name, {vy_var, fuse_vy})."""
+    """'name:key=val,key=val' -> (name, {vy_var, fuse_vy, wh_len, wh_every, wh_phase})."""
     name, _, rest = text.partition(':')
-    opts = {'vy_var': 1e6, 'fuse_vy': 0}
+    opts = {'vy_var': 1e6, 'fuse_vy': 0, 'wh_len': 0.0, 'wh_every': 0.0, 'wh_phase': 0.0,
+            'fl_len': 0.0, 'fl_dx': 0.0, 'fl_dy': 0.0,
+            'fl_floor': rtk_quality.CovariancePolicy().float_sigma_floor}
     for kv in filter(None, rest.split(',')):
         k, _, v = kv.partition('=')
         opts[k.strip()] = float(v)
     return name, opts
+
+
+def withheld_windows(opts, t0, t1):
+    """[(start, end)] of the variant's GPS dropouts between t0 and t1 (bag time, s)."""
+    if opts['wh_len'] <= 0.0:
+        return []
+    every = opts['wh_every'] if opts['wh_every'] > 0.0 else 1e18
+    out, s = [], t0 + opts['wh_phase']
+    while s < t1:
+        out.append((s, min(s + opts['wh_len'], t1)))
+        s += every
+    return out
+
+
+def float_after(gps, windows, opts):
+    """``gps`` with the first ``fl_len`` s after each withheld window turned into RTK float
+    offset by (fl_dx, fl_dy) at a sigma floor of fl_floor (see the module docstring)."""
+    if opts['fl_len'] <= 0.0:
+        return gps
+    pol = rtk_quality.CovariancePolicy(float_sigma_floor=opts['fl_floor'])
+    ends = [(e, e + opts['fl_len']) for _, e in windows]
+    out = []
+    for t, x, y, var, c in gps:
+        if x is not None and in_windows(ends, t):
+            var = rtk_quality.fused_variance(rtk_quality.RTK_FLOAT, var, pol)
+            x, y, c = x + opts['fl_dx'], y + opts['fl_dy'], rtk_quality.RTK_FLOAT
+        out.append((t, x, y, var, c))
+    return out
+
+
+def in_windows(windows, t):
+    """Whether t lies in one of the sorted, disjoint [(start, end)]."""
+    import bisect
+    k = bisect.bisect_right(windows, (t, math.inf)) - 1
+    return k >= 0 and t < windows[k][1]
+
+
+def offset_at(hdg, t):
+    """The heading_aligner status in force at t: (offset, rate, last_cog_t), or None."""
+    import bisect
+    ts = _TIMES.get(id(hdg))
+    if ts is None or len(ts) != len(hdg):
+        ts = _TIMES[id(hdg)] = [h[0] for h in hdg]
+    k = bisect.bisect_right(ts, t) - 1
+    if k < 0:
+        return None
+    if k + 1 < len(hdg) and hdg[k + 1][0] - hdg[k][0] < 2.0:
+        # the offset moves between 1 Hz statuses (rate term): interpolate, unwrapped
+        a, b = hdg[k], hdg[k + 1]
+        f = (t - a[0]) / (b[0] - a[0])
+        d = math.atan2(math.sin(b[1] - a[1]), math.cos(b[1] - a[1]))
+        return (a[1] + f * d, a[2], a[3])
+    return hdg[k][1:]
+
+
+def dead_reckoned_yaw(imu, hdg, windows):
+    """imu [(t, yaw, wz)] with the yaw of each withheld window replaced by heading_aligner's
+    no-RTK yaw: the recorded yaw minus the recorded offset change since the window start."""
+    if not windows or not hdg:
+        return imu
+    out, w = [], 0
+    for t, yaw, wz in imu:
+        while w < len(windows) and t >= windows[w][1]:
+            w += 1
+        if w >= len(windows) or t < windows[w][0]:
+            out.append((t, yaw, wz))
+            continue
+        s = windows[w][0]
+        h0, h = offset_at(hdg, s), offset_at(hdg, t)
+        if h0 is None or h is None:
+            out.append((t, yaw, wz))
+            continue
+        d = math.atan2(math.sin(h0[0] - h[0]), math.cos(h0[0] - h[0]))
+        out.append((t, yaw + d, wz))
+    return out
 
 
 def write_params(out_dir, name, opts):
@@ -180,7 +298,8 @@ def write_params(out_dir, name, opts):
         base = yaml.safe_load(fh)['ekf_map']['ros__parameters']
     p = dict(base)
     p.update({'use_sim_time': True, 'publish_tf': False, 'print_diagnostics': False,
-              'odom0': '/rp/%s/odom' % name, 'imu0': '/rp/imu', 'odom1': '/rp/gps'})
+              'odom0': '/rp/%s/odom' % name, 'imu0': '/rp/%s/imu' % name,
+              'odom1': '/rp/%s/gps' % name})
     cfg = list(p['odom0_config'])
     cfg[7] = bool(opts.get('fuse_vy'))
     p['odom0_config'] = cfg
@@ -192,16 +311,22 @@ def write_params(out_dir, name, opts):
 
 # ---------------------------------------------------------------------------- playback
 def play(odom, imu, gps, variants, speed, vx_var, out_dir):
+    """Publish /clock and every variant's inputs at ``speed`` x real time; record outputs.
+
+    ``imu`` and ``gps`` are {variant: stream}: a variant's GPS skips its withheld windows and
+    its IMU yaw is dead-reckoned in them. The outputs are taken by an executor thread, so the
+    publishing loop never has to spin."""
+    import threading
     import rclpy
+    from rclpy.executors import SingleThreadedExecutor
     from nav_msgs.msg import Odometry
     from rosgraph_msgs.msg import Clock
     from sensor_msgs.msg import Imu
     rclpy.init()
     node = rclpy.create_node('ekf_replay_player')
     pub_clock = node.create_publisher(Clock, '/clock', 10)
-    pub_imu = node.create_publisher(Imu, '/rp/imu', 50)
-    pub_gps = node.create_publisher(Odometry, '/rp/gps', 50)
-    pub_odom = {n: node.create_publisher(Odometry, '/rp/%s/odom' % n, 50) for n, _ in variants}
+    pub = {n: {k: node.create_publisher(Imu if k == 'imu' else Odometry, '/rp/%s/%s' % (n, k), 50)
+               for k in ('odom', 'imu', 'gps')} for n, _ in variants}
     rec = {n: [] for n, _ in variants}
 
     def on_out(name):
@@ -211,25 +336,32 @@ def play(odom, imu, gps, variants, speed, vx_var, out_dir):
                               p.position.x, p.position.y, yaw_of(p.orientation)))
         return cb
     for n, _ in variants:
-        node.create_subscription(Odometry, '/rp_%s/odometry/filtered' % n, on_out(n), 100)
+        node.create_subscription(Odometry, '/rp_%s/odometry/filtered' % n, on_out(n), 1000)
+    ex = SingleThreadedExecutor()
+    ex.add_node(node)
+    spin = threading.Thread(target=ex.spin, daemon=True)
+    spin.start()
 
     def stamp(msg, t):
         msg.header.stamp.sec = int(t)
         msg.header.stamp.nanosec = int(round((t - int(t)) * 1e9)) % 1000000000
 
-    events = [(t, 'odom', r) for t, *r in odom] + [(t, 'imu', r) for t, *r in imu] + \
-        [(t, 'gps', r) for t, *r in gps if r[0] is not None]
+    events = [(t, 'odom', None, r) for t, *r in odom]
+    for n, _ in variants:
+        events += [(t, 'imu', n, r) for t, *r in imu[n]]
+        events += [(t, 'gps', n, r) for t, *r in gps[n] if r[0] is not None]
     events.sort(key=lambda e: e[0])
     deadline = time.time() + 60.0
     while time.time() < deadline:
-        if all(node.count_subscribers('/rp/%s/odom' % n) for n, _ in variants) and \
-                node.count_subscribers('/rp/gps') >= len(variants):
+        if all(node.count_subscribers('/rp/%s/odom' % n) and
+               node.count_subscribers('/rp/%s/gps' % n) for n, _ in variants):
             break
-        rclpy.spin_once(node, timeout_sec=0.1)
+        time.sleep(0.1)
     wall0, sim0 = time.time(), events[0][0]
-    for t, kind, r in events:
-        while (t - sim0) / speed > time.time() - wall0:
-            rclpy.spin_once(node, timeout_sec=0.002)
+    for t, kind, vn, r in events:
+        ahead = (t - sim0) / speed - (time.time() - wall0)
+        if ahead > 0.0:
+            time.sleep(ahead)
         c = Clock()
         c.clock.sec, c.clock.nanosec = int(t), int(round((t - int(t)) * 1e9)) % 1000000000
         pub_clock.publish(c)
@@ -243,7 +375,7 @@ def play(odom, imu, gps, variants, speed, vx_var, out_dir):
                 cov[0], cov[7], cov[14], cov[21], cov[28], cov[35] = \
                     vx_var, opts['vy_var'], 1e6, 1e6, 1e6, 0.05
                 m.twist.covariance = cov
-                pub_odom[n].publish(m)
+                pub[n]['odom'].publish(m)
         elif kind == 'imu':
             m = Imu()
             stamp(m, t)
@@ -253,7 +385,7 @@ def play(odom, imu, gps, variants, speed, vx_var, out_dir):
             m.angular_velocity.z = r[1]
             m.angular_velocity_covariance = [1e-4, 0, 0, 0, 1e-4, 0, 0, 0, 1e-4]
             m.linear_acceleration_covariance = [-1.0] + [0.0] * 8
-            pub_imu.publish(m)
+            pub[vn]['imu'].publish(m)
         else:
             x, y, var, _c = r
             m = Odometry()
@@ -264,13 +396,13 @@ def play(odom, imu, gps, variants, speed, vx_var, out_dir):
             cov = [0.0] * 36
             cov[0], cov[7], cov[14], cov[21], cov[28], cov[35] = var, var, 1e6, 1e6, 1e6, 1e6
             m.pose.covariance = cov
-            pub_gps.publish(m)
-    end = time.time() + 2.0
-    while time.time() < end:
-        rclpy.spin_once(node, timeout_sec=0.05)
+            pub[vn]['gps'].publish(m)
+    time.sleep(2.0)
+    ex.shutdown()
     node.destroy_node()
     rclpy.shutdown()
     for n, rows in rec.items():
+        rows.sort()
         with open(os.path.join(out_dir, '%s.csv' % n), 'w', newline='') as fh:
             w = csv.writer(fh)
             w.writerow(['t', 'x', 'y', 'yaw'])
@@ -283,14 +415,19 @@ def main():
     ap.add_argument('out')
     ap.add_argument('--t0', type=float, required=True)
     ap.add_argument('--t1', type=float, required=True)
-    ap.add_argument('--variant', action='append', required=True,
-                    help='name:vy_var=V,fuse_vy=0|1 (repeat)')
+    ap.add_argument('--variant', action='append', default=[],
+                    help='name:vy_var=V,fuse_vy=0|1,wh_len=S,wh_every=S,wh_phase=S,'
+                         'fl_len=S,fl_dx=M,fl_dy=M,fl_floor=M (repeat)')
     ap.add_argument('--speed', type=float, default=4.0)
     ap.add_argument('--vx-var', type=float, default=0.02)
+    ap.add_argument('--inputs-only', action='store_true',
+                    help='write fit.json and inputs.csv, run no filter')
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     msgs = read_bag(a.bag, a.t0, a.t1)
-    odom, imu, fixes, field = build_inputs(msgs)
+    aux = {}
+    odom, imu, fixes, field = build_inputs(msgs, aux)
+    del msgs
     fit = fit_enu_to_map(fixes, field)
     gps = gps_stream(fixes, field, fit)
     with open(os.path.join(a.out, 'fit.json'), 'w') as fh:
@@ -301,7 +438,27 @@ def main():
         w.writerows([(t, 'field', x, y, yaw, '') for t, x, y, yaw in field])
         w.writerows([(t, 'gps', x, y, var, c) for t, x, y, var, c in gps])
         w.writerows([(t, 'odom', '', '', vx, wz) for t, vx, wz in odom])
+        w.writerows([(t, 'tilt', r, p, '', '') for t, r, p in aux['tilt']])
+        w.writerows([(t, 'mcu', '', '', vx, wz) for t, vx, wz in aux['mcu']])
+        w.writerows([(t, 'hdg', '', '', o, '%.9g %.3f %.6f' % (rt, ct, co))
+                     for t, o, rt, ct, co in aux['hdg']])
+    if a.inputs_only:
+        print(json.dumps(fit))
+        return
     variants = [parse_variant(v) for v in a.variant]
+    t_first = min(r[0] for r in odom)
+    t_last = max(r[0] for r in odom)
+    imu_v, gps_v = {}, {}
+    with open(os.path.join(a.out, 'variants.json'), 'w') as fh:
+        json.dump(dict(variants), fh, indent=1)
+    with open(os.path.join(a.out, 'windows.csv'), 'w', newline='') as fh:
+        w = csv.writer(fh)
+        w.writerow(['variant', 'start', 'end'])
+        for n, opts in variants:
+            wins = withheld_windows(opts, t_first, t_last)
+            w.writerows([(n, s, e) for s, e in wins])
+            imu_v[n] = dead_reckoned_yaw(imu, aux['hdg'], wins)
+            gps_v[n] = float_after([g for g in gps if not in_windows(wins, g[0])], wins, opts)
     procs = []
     try:
         for n, opts in variants:
@@ -312,7 +469,7 @@ def main():
                 stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, 'ekf_%s.log' % n),
                                                        'w')))
         time.sleep(3.0)
-        play(odom, imu, gps, variants, a.speed, a.vx_var, a.out)
+        play(odom, imu_v, gps_v, variants, a.speed, a.vx_var, a.out)
     finally:
         for p in procs:
             p.terminate()

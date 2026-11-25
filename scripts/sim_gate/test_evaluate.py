@@ -79,6 +79,24 @@ def test_rtk_handling_hold_resume():
     assert quiet['ok'] and 'no hold needed' in quiet['note']
 
 
+def test_rtk_handling_coast():
+    """2026-11-25 coast mode: coasting replaces the hold; a hold after it must resume."""
+    win = [[100.0, 115.0, 'single']]
+    loc = [[90.0, 'ok'], [100.5, 'degraded'], [116.0, 'ok']]
+    bt = [(100.6, 'localization degraded (x): coasting on dead reckoning at 0.15 m/s, blade '
+                  'unchanged (budget 5.0 m, drift 0.05 m)')]
+    cut = [(100.0, True), (105.0, True)]
+    e, = E.rtk_handling(win, loc, bt, cut, [])
+    assert e['ok'] and e['coast_at'] == 100.6 and e['hold_at'] is None and 'through' in e['note']
+    held = bt + [(108.0, 'localization degraded (y): stopped, blade off, waiting for RTK fixed')]
+    e, = E.rtk_handling(win, loc, held, cut + [(108.5, False)], [])
+    assert not e['ok'] and not e['resumed']
+    e, = E.rtk_handling(win, loc, held + [(121.0, 'localization ok again after 13 s: resuming')],
+                        cut + [(108.5, False)], [])
+    assert e['ok'] and e['held_s'] == 13.0
+    assert not E.rtk_handling(win, loc, bt, cut, [105.0])[0]['ok']      # excursion
+
+
 def test_coverage_report_ground_truth_cut_and_recut_after_a_resume():
     lawn = [(0.0, 0.0), (4.0, 0.0), (4.0, 1.0), (0.0, 1.0)]
     gt, states = [], []

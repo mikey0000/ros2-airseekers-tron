@@ -79,7 +79,8 @@ class BoundaryGuardMixin:
         """Why a boundary trip now may come from the pose rather than the robot, else None
         (MOWING / TRANSIT, once a /localization/status was received): the fix wait after a localization stop is pending; the
         status reads degraded / lost; the receiver class changed within loc_fixed_settle_s;
-        or, RTK not settled-fixed, the map pose moved more than the wheels (a pose jump)."""
+        or, RTK not settled-fixed, the map pose moved more than the wheels (a pose jump).
+        While coasting (degraded, _loc_coast) only a jump or RTK coming back distrusts it."""
         p = self.p
         if not p.hard_boundary_loc_defer or not p.loc_hold or self.mission is None or \
                 self.phase not in ('MOWING', 'TRANSIT') or self.inputs.loc_stamp is None:
@@ -87,9 +88,14 @@ class BoundaryGuardMixin:
         if self._loc_fix_pending():
             return 'waiting for RTK fixed after a localization stop'
         state, reason = self._loc_view()
-        if state in ('degraded', 'lost'):
+        # coasting (2026-11-25): the pose is dead reckoning, continuous with the wheels; a trip
+        # on it is real unless the pose jumped or RTK has just come back (checked below)
+        coast = self._loc_coast is not None and state == 'degraded'
+        if state in ('degraded', 'lost') and not coast:
             return 'localization %s (%s)' % (state, reason or 'no reason')
         ago = self._loc_rtk_changed_ago()
+        if coast and self._loc_rtk_class() not in ('fixed', 'float'):
+            ago = None                        # a loss of RTK does not move the pose
         if ago is not None and ago < float(p.loc_fixed_settle_s):
             return 'RTK %s for only %.1f s' % (self._loc_rtk_class() or 'unknown', ago)
         if self._loc_fixed_settled():

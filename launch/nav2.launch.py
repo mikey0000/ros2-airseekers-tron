@@ -481,7 +481,8 @@ def generate_launch_description() -> LaunchDescription:
                 name="localization_monitor",
                 output="screen",
                 condition=IfCondition(LaunchConfiguration("localization_monitor")),
-                parameters=[{"map_odom_topic": LaunchConfiguration("map_odom_topic")}],
+                parameters=[PathJoinSubstitution([share, "config", "localization_monitor.yaml"]),
+                            {"map_odom_topic": LaunchConfiguration("map_odom_topic")}],
             ),
 
             # Nav2 itself (controller/planner/behavior/bt_navigator/velocity_smoother

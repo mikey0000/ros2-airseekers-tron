@@ -1300,6 +1300,8 @@ pose. After 600 s it goes to MOWING_INCOMPLETE, docks if RTK is fixed
 no-progress counters. Dock transits and docking are exempt unless lost for more than 60 s.
 Details: docs/localization.md "RTK-loss policy". The sim cannot inject an RTK loss yet, so
 this has only had unit tests and a plain no-regression gate.
+2026-11-25: degraded now coasts on dead reckoning within a measured budget before holding
+(section "Coast mode" below).
 
 2026-11-03, branch `ws/rtk-stale`: the new sim RTK-loss injection showed `/fix_status`
 never went stale in sim. Five nodes compared the pump's node-clock receipt times with
@@ -2196,3 +2198,22 @@ hop onto the start first. Also in this branch:
 Sim: cross60 (h) line p99 went from 0.334 to 0.091 m; real_run5 PASS (master FAIL (i)). The
 cross60 (i) still fails at 0.123 (a transit final-approach Spin aimed from a rolling pose) and
 0.105 (the lap-0 convex arc). Details: `analysis/2026-11-25_approach_xte.md`.
+
+## Coast mode: keep mowing through a short RTK loss on dead reckoning (2026-11-25, branch ws/coast1125, unit + bag replay + sim; not field tested)
+
+An RTK loss (single, dropout, float under the sigma gate, or the ekf_map sigma gate alone)
+during a mow follow or a transit no longer stops the mower at once. It coasts on dead
+reckoning at 0.15 m/s with the blade unchanged while localization_monitor's `coast_left_m`
+lasts (5 m flat .. 1.5 m from 8 deg, 60 s, none after wheel slip or an RTK position more than
+0.15 m + est_drift from dead reckoning) and the body stays est_drift + 0.10 m inside the
+boundary guard's limits along the path ahead; then the existing hold. `est_drift_m` is the
+drift study's tilt-aware model (5 cm + 2 %/m flat .. 10 cm + 10 %/m at 11 deg, + 1 cm per
+pivot; VIO as a pluggable rate scale). gps_gate: a "fixed" fix with a float-sized sigma is
+fused as float (the 11-21 float-onset /fix arrived before its /fix_status and moved ekf_map
+3 m) and a 0.5 m position jump is held back until it persists 2 s. `coast_enabled: false`
+restores the 2026-11-03 degraded rule. Sim: a 15 s mid-row single dropout is coasted through
+(hold 5 s instead of 20 s; the dead-reckoning error tips tracking criteria h / i); the strip
+dropout holds and rejects the 0.3 m float as on master. Replay: inflating the float
+covariance does not keep ekf_map off a 0.3 m float after a dropout, so that is left to the
+monitor's gate and the hold. Details: `analysis/2026-11-25_coast_mode.md`,
+docs/localization.md "Coast mode".

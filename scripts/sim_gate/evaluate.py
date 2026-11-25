@@ -226,6 +226,9 @@ def rtk_handling(windows, loc, bt, cutting, outside_over, hold_s=3.0, resume_tai
                    and re.search(r'^localization \w+ \(.*\): stopped, blade off', m)), None)
         tr = next((t for t, m in bt if th is not None and t > th and t <= horizon
                    and m.startswith('localization ok again')), None)
+        # coast mode (2026-11-25): the mission may coast on dead reckoning instead of holding
+        tc = next((t for t, m in bt if td is not None and td - 1.0 <= t <= td + hold_s
+                   and 'coasting on dead reckoning' in m), None)
         blade = None
         if th is not None:
             # from 0.3 s after the hold: /sim/status (10 Hz) still reports the cutter the
@@ -235,6 +238,8 @@ def rtk_handling(windows, loc, bt, cutting, outside_over, hold_s=3.0, resume_tai
             blade = not any(after) if after else None
         exc = [t for t in outside_over if ta <= t <= (tr if tr is not None else horizon) + 10.0]
         e = {'from': round(ta, 1), 'to': round(tb, 1), 'kind': mode,
+             'coast_at': None if tc is None else round(tc, 1),
+             'held_s': None if th is None else round((tr if tr is not None else horizon) - th, 1),
              'degraded_at': None if td is None else round(td, 1),
              'hold_at': None if th is None else round(th, 1),
              'resume_at': None if tr is None else round(tr, 1),
@@ -243,6 +248,11 @@ def rtk_handling(windows, loc, bt, cutting, outside_over, hold_s=3.0, resume_tai
             e['held'] = True
             e['ok'] = not exc and th is None
             e['note'] = 'status stayed ok (drift within budget): no hold needed'
+        elif tc is not None:
+            e['held'] = True                      # coasting replaced the hold
+            e['resumed'] = th is None or (tr is not None and tr >= tb)
+            e['ok'] = bool(e['resumed'] and blade is not False and not exc)
+            e['note'] = 'coasted' + (' then held' if th is not None else ' through')
         else:
             e['held'] = th is not None and th - td <= hold_s
             e['resumed'] = tr is not None and tr >= tb
@@ -1121,7 +1131,7 @@ def main(run, world):
          else '%d / %d (%s deg, %d windows, %d mission trips)' % (
              C['j']['stuck'], C['j']['samples_over'], C['j']['roll_max_deg'],
              C['j']['slip_events'], C['j']['mission_slip_trips'])),
-        ('k', 'RTK loss: held <= 3 s / blade off / resumed / inside', 'n/a' if not C['k']['applies']
+        ('k', 'RTK loss: held (or coasting) <= 3 s / blade off / resumed / inside', 'n/a' if not C['k']['applies']
          else ' '.join('%s@%.0f:%s/%s/%s/%d' % (
              e['kind'], e['from'], 'y' if e['held'] else 'n',
              {True: 'y', False: 'n', None: '-'}[e['blade_off']],
@@ -1182,9 +1192,9 @@ def main(run, world):
         for line in fd['lines'][:20]:
             print('   ' + line)
     for e in C['k'].get('windows', []):
-        print('   rtk %s %.1f..%.1f s: degraded %s, hold %s, resume %s, blade off %s, '
-              'excursions %d%s' % (e['kind'], e['from'], e['to'], e['degraded_at'], e['hold_at'],
-                                   e['resume_at'], e['blade_off'], e['excursions'],
+        print('   rtk %s %.1f..%.1f s: degraded %s, coast %s, hold %s, resume %s, blade off %s, '
+              'excursions %d%s' % (e['kind'], e['from'], e['to'], e['degraded_at'], e['coast_at'],
+                                   e['hold_at'], e['resume_at'], e['blade_off'], e['excursions'],
                                    ' (%s)' % e['note'] if 'note' in e else ''))
     for k in res['kills']:
         if 't_kill' not in k:

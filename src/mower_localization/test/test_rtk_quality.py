@@ -120,3 +120,22 @@ class TestFusedVariance:
         # the filter must never be told something tighter than the receiver claims
         assert fused_variance(cls, rx) >= rx
         assert math.isfinite(fused_variance(cls, rx))
+
+
+class TestEffectiveClass:
+    """Field 2026-11-21 07:13:41: the first float /fix (cov 0.0062) arrived 1 ms before its
+    /fix_status, so the gate still had RTK_FIXED; fixed fixes report about 3.5e-5."""
+
+    def test_float_onset_with_the_stale_fixed_class(self):
+        assert rq.effective_class('fixed', 0.0062015625) == 'float'
+        assert fused_variance(rq.effective_class('fixed', 0.0062015625), 0.0062015625) \
+            == pytest.approx(0.16)
+
+    def test_real_fixed_stays_fixed(self):
+        assert rq.effective_class('fixed', 3.53e-5) == 'fixed'
+        assert rq.effective_class('fixed', None) == 'fixed'
+        assert rq.effective_class('float', 3.53e-5) == 'float'
+
+    def test_off(self):
+        assert rq.effective_class('fixed', 0.0062, CovariancePolicy(fixed_max_sigma=0.0)) \
+            == 'fixed'

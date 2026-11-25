@@ -90,6 +90,15 @@ behavior_tree_node:
     # while 0.3 m off); false = the old 'ok for loc_resume_s' resume
     loc_resume_require_fixed: true
     loc_fixed_settle_s: 5.0           # RTK fixed this long = settled (also the boundary distrust window)
+    # coast mode 2026-11-25 (docs/analysis/2026-11-25_coast_mode.md): degraded during a mow
+    # follow or a transit keeps going on dead reckoning (speed cap, blade unchanged) while
+    # localization_monitor's coast_left_m > 0 (5 m flat .. 1.5 m on a slope, 60 s, none after
+    # slip or a disagreeing RTK position) and the path ahead keeps the body est_drift + this
+    # margin off the boundary / keepouts; then the hold as before. false = the 2026-11-03
+    # degraded rule (finish the straight swath, loc_degraded_*). Off until field tested
+    # (owner 2026-11-25); sim with it on: docs/analysis/2026-11-25_coast_mode.md.
+    coast_enabled: false
+    coast_edge_margin_m: 0.10
     # 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py,
     # docs/analysis/2026-10-23_obstacle_nogo_options.md section C)
     nogo_enabled: true

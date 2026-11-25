@@ -704,6 +704,8 @@ class MissionNode(Node):
             i.loc_rtk = str(st.get('rtk', '') or '')
             est = st.get('est_drift_m')
             i.loc_est_drift = float(est) if isinstance(est, (int, float)) else None
+            left = st.get('coast_left_m')
+            i.loc_coast_left = float(left) if isinstance(left, (int, float)) else None
             i.loc_stamp = self._clk.now()
 
     def _on_supervisor(self, msg):

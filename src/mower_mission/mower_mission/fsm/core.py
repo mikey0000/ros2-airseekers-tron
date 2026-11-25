@@ -122,6 +122,8 @@ class MissionFSM(PreviewMixin,
         self._path_eval = None              # last in-path judgement (_obstacle_on_path)
         self._loc = None                    # localization hold context (_loc_hold_tick)
         self._loc_swath = None              # degraded: finishing this swath {'sub', 'end'}
+        self._loc_coast = None              # coasting on dead reckoning {'since', 'pose'}
+        self._loc_coast_clear = {}          # (x, y) -> edge clearance, while coasting
         self._loc_capped = False            # degraded speed cap sent to the controllers
         self._loc_lost_since = None         # start of the current 'lost' run
         self._loc_trail = []                # [(x, y)] ring: last loc_trail_len_m of driven track

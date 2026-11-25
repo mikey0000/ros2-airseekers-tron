@@ -15,6 +15,12 @@ import pytest  # noqa: E402
 from mower_localization.localization_status_logic import (  # noqa: E402
     LocalizationStatus, StatusParams)
 
+# The model before 2026-11-25 (3 cm + 3 %/m, 1.5 %/m with VIO, no coast budget): the tests
+# below were written for it, and it must stay restorable by parameters. The 2026-11-25 drift
+# model and coast budget are in test_coast_drift.py.
+LEGACY = dict(drift_base_flat_m=0.03, drift_base_slope_m=0.03, drift_rate_flat=0.03,
+              drift_rate_slope=0.03, drift_pivot_m=0.0, coast_max_s=0.0)
+
 FIXED = 'um960=connected solution=NARROW_INT sats=20/30'
 FLOAT = 'um960=connected solution=NARROW_FLOAT sats=20/30'
 STEP, DT = 0.05, 0.1
@@ -22,7 +28,7 @@ STEP, DT = 0.05, 0.1
 
 class _Sim:
     def __init__(self, **params):
-        self.s = LocalizationStatus(StatusParams(**params))
+        self.s = LocalizationStatus(StatusParams(**dict(LEGACY, **params)))
         self.t = 100.0
         self.x = 0.0
         self.s.on_odom_pose(self.t, self.x, 0.0)
@@ -110,7 +116,7 @@ class TestDrift:
         sim = _Sim()
         sim.fixed()
         sim.drive(FLOAT, 30.0)
-        assert sim.s.drift_dr > 0.5          # uncapped value keeps growing
+        assert sim.s.dead_reckoning_estimate() > 0.5          # uncapped value keeps growing
         assert sim.est() == pytest.approx(0.5)
         assert sim.verdict()[0] == 'degraded'
 
@@ -177,7 +183,7 @@ class TestDrift:
         sim.drive(FLOAT, 10.0)
         sim.tick(FIXED)
         sim.tick(FLOAT)
-        assert sim.s.drift_dr == pytest.approx(0.33, abs=1e-6)
+        assert sim.s.dead_reckoning_estimate() == pytest.approx(0.33, abs=1e-6)
 
     def test_map_odom_stale_is_lost(self):
         sim = _Sim()
