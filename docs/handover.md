@@ -126,8 +126,10 @@ sudo reboot
 ```
 
 The `ros2` mode does the following:
-- It stops and disables the vendor robot units and `rosmaster`/`foxglove`. LTE, network
-  switching, vmstat and the camera firewall stay as they are.
+- It stops and disables the vendor robot units and `foxglove`. `rosmaster`, LTE, network
+  switching, vmstat and the camera firewall stay as they are: from v1.3.33 the vendor network
+  manager (`base_net_node`, routes, DNS, Wi-Fi profiles, LTE repair) runs under `rosmaster`, and
+  without it LTE has no default route (`v1.3.33/DIFF_v1.3.27.md` in the parent folder).
 - It reinstalls our host pieces (`install_host_services.sh`).
 - It starts `mower_jazzy` and `mower_gui` with `restart=unless-stopped`.
 
@@ -135,8 +137,9 @@ Then:
 1. Check the GUI on port 4006: status, RTK fixed, docked.
 2. If `/userdata/ros2` was wiped: set the datum and NTRIP in the GUI, record the areas again, and
    check the dock pose (docs/deployment.md, docs/rtk_pairing.md).
-3. A vendor OTA re-enables the vendor units (`/workspace/install.sh`). Run
-   `switch_stack.sh ros2 --yes` again after one.
+3. A vendor OTA re-enables the vendor units (`/workspace/install.sh`) and wipes the
+   `mower-webshell` mask (it deletes and re-copies every `mower*` unit). Run
+   `switch_stack.sh ros2 --yes` and `sudo systemctl mask mower-webshell` again after one.
 
 Over remote support: `ssh airseekers@<tailnet node name>` works with the stock software too, so
 this can be done remotely, with the owner's agreement and the mower docked.

@@ -21,19 +21,23 @@
 #   the vendor tailscaled (stays disabled: it joins the vendor's tailnet), mower-webshell (stays
 #   masked), mower-bluetooth (factory: disabled), /userdata data. A reboot afterwards is advised.
 #
-# ros2: the reverse. Stops + disables the vendor robot units and rosmaster/foxglove (keeps
+# ros2: the reverse. Stops + disables the vendor robot units and foxglove (keeps rosmaster,
 #   LTE, network switching, vmstat, cam-firewall), install_host_services.sh, then restart
 #   policy back to unless-stopped and starts mower_jazzy + mower_gui. Nothing here commands motion.
+#   rosmaster stays: from v1.3.33 mower-network-auto runs the vendor's base_net_node with
+#   `roslaunch --wait`, which never starts a master itself; without it nothing sets usb0's
+#   default route (udhcp-resolve.sh no longer does) and LTE fallback is gone.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONTAINERS=(mower_jazzy mower_gui)
 REMOTE=mowgli-remote
-# Vendor units our stack keeps stopped (mower_services.sh STACK) plus the two infra units it
-# does not need. LTE, network-auto, vmstat and cam-firewall stay as they are in both modes.
+# Vendor units our stack keeps stopped (mower_services.sh STACK) plus the infra unit it does not
+# need (foxglove: the vendor install disables it too). rosmaster, LTE, network-auto, vmstat and
+# cam-firewall stay as they are in both modes (rosmaster hosts base_net_node, see above).
 VENDOR_ROBOT_UNITS=(mower-logic mower-controller mower-planning mower-perception mower-vslam
                     mower-localization mower-cam-keeper mower-webcam mower-rtsp mower-base)
-VENDOR_INFRA_OFF=(rosmaster foxglove)
+VENDOR_INFRA_OFF=(foxglove)
 
 mode=${1:-}; confirm=${2:-}
 run() { if [[ $confirm == --yes ]]; then echo "+ $*"; "$@"; else echo "would run: $*"; fi; }
