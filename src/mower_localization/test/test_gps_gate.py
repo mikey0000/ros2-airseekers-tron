@@ -410,6 +410,26 @@ class TestJumpGate:
         held = [g.admit(0.1 * k, 48.0 - 3.0 * self.M, 9.0) for k in range(1, 25)]
         assert not any(held[:19]) and all(held[20:])     # from 2 s after the jump
 
+    def test_offset_while_driving_is_taken_after_confirm(self):
+        """0.4 m/s with a lasting 0.7 m offset: the held track moves more than jump_m in
+        confirm_s and is still taken (it was held for good: review 2026-11-25)."""
+        g = self._gate()
+        y = lambda k: 48.0 + 0.04 * k * self.M          # noqa: E731
+        assert all(g.admit(0.1 * k, y(k), 9.0) for k in range(10))
+        held = [g.admit(0.1 * k, y(k) + 0.7 * self.M, 9.0) for k in range(10, 60)]
+        assert not any(held[:19]) and all(held[20:])
+
+    def test_spurious_jump_while_driving_rejoins(self):
+        """A 3 m jump for 2 s at 0.4 m/s: the track it returns to is 0.8 m past the last fix
+        passed, so it is held confirm_s from the return, then taken."""
+        g = self._gate()
+        y = lambda k: 48.0 + 0.04 * k * self.M          # noqa: E731
+        for k in range(10):
+            g.admit(0.1 * k, y(k), 9.0)
+        assert not any(g.admit(0.1 * k, y(k) - 3.0 * self.M, 9.0) for k in range(10, 30))
+        back = [g.admit(0.1 * k, y(k), 9.0) for k in range(30, 80)]
+        assert not any(back[:19]) and all(back[20:])
+
     def test_after_a_gap_anything_passes(self):
         g = self._gate()
         g.admit(0.0, 48.0, 9.0)
