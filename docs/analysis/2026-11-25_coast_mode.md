@@ -114,10 +114,12 @@ pose as untrusted.
   pose jump against the wheels, a return of float / fixed within `loc_fixed_settle_s`, the fix
   wait and `lost` still do.
 
-Parameters (`mission.yaml`): `coast_enabled` true, `coast_edge_margin_m` 0.10. All `loc_*`
+Parameters (`mission.yaml`): `coast_enabled` false (merged off, see below), `coast_edge_margin_m` 0.10. All `loc_*`
 parameters are unchanged.
 
-**Default `coast_enabled: true`**: the budget ends at a p90 error of about 0.15 m on flat
+**Default `coast_enabled: false`** (owner 2026-11-25: merged off until a field test; the
+sims below run it on through a `mission_params_file:=` copy with `coast_enabled: true`).
+The case for turning it on: the budget ends at a p90 error of about 0.15 m on flat
 ground and 0.25 m on the slope, below the 0.35 m soft side limit; the clearance check keeps
 the body est_drift + 0.10 m inside the guard's limits; slip and disagreeing RTK end them; and every failure falls back to the
 hold that is on master. The owner asked for this behaviour, and the sigma-gate stops (12 on

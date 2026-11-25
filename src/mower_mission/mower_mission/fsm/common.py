@@ -1501,7 +1501,7 @@ class Params:
     # monitor's coast_left_m > 0 and the path ahead keeps the body est_drift +
     # coast_edge_margin_m off the boundary and keepouts; then the hold. false = the 2026-11-03
     # degraded rule (finish the straight swath, loc_degraded_*).
-    coast_enabled: bool = True
+    coast_enabled: bool = False
     coast_edge_margin_m: float = 0.10
     # ---- 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py) ----
     nogo_enabled: bool = True

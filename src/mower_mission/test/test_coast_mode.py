@@ -30,7 +30,7 @@ def run(h, secs, dt=0.2, **kw):
 
 
 def test_flat_dropout_coasts_through_without_stopping():
-    h = big_mow()
+    h = big_mow(coast_enabled=True)
     m = h.mark()
     run(h, 15.0, left=3.0)                      # 15 s single, budget left
     assert h.fsm.mission.step == 'follow' and h.fsm._loc is None and h.blade
@@ -45,7 +45,7 @@ def test_flat_dropout_coasts_through_without_stopping():
 
 
 def test_budget_spent_on_a_slope_holds_and_waits_for_fixed():
-    h = big_mow()
+    h = big_mow(coast_enabled=True)
     run(h, 2.0, est=0.2, left=0.5)              # 1.5 m slope budget nearly used
     assert not held(h)
     m = h.mark()
@@ -60,7 +60,7 @@ def test_budget_spent_on_a_slope_holds_and_waits_for_fixed():
 
 
 def test_float_that_disagrees_holds_until_fixed_settles():
-    h = big_mow()
+    h = big_mow(coast_enabled=True)
     run(h, 5.0)
     m = h.mark()
     run(h, 0.4, state='lost', rtk='float', est=0.1, left=0.0,
@@ -74,7 +74,7 @@ def test_float_that_disagrees_holds_until_fixed_settles():
 
 
 def test_float_that_agrees_carries_on():
-    h = big_mow()
+    h = big_mow(coast_enabled=True)
     run(h, 5.0)
     run(h, 10.0, state='ok', rtk='float', est=0.1, left=2.0, reason='rtk float')
     assert not held(h) and h.blade and h.fsm.mission.step == 'follow'
@@ -84,7 +84,7 @@ def test_near_the_edge_follows_the_soft_allowance():
     """The strip leg ends 0.1 m from the east edge (soft: the body side may reach 0.35 m out),
     and the 5 m look-ahead reaches it: 0.1 + 0.35 - 0.235 = 0.215 m of room. A 0.09 m drift
     + 0.10 m margin fits; 0.20 m does not."""
-    h = strip_mow()
+    h = strip_mow(coast_enabled=True)
     coast_loc(h, left=5.0, est=0.09)
     h.tick()
     assert not held(h) and h.fsm._loc_coast is not None
@@ -97,7 +97,7 @@ def test_near_the_edge_follows_the_soft_allowance():
 def test_clearance_follows_the_drift_and_the_budget_horizon():
     """Same leg, a 1 m budget: the edge is beyond the horizon, so it coasts; a large drift
     estimate ends it."""
-    h = strip_mow()
+    h = strip_mow(coast_enabled=True)
     coast_loc(h, left=1.0)
     h.tick()
     assert not held(h) and h.fsm._loc_coast is not None
@@ -108,7 +108,7 @@ def test_clearance_follows_the_drift_and_the_budget_horizon():
 
 
 def test_transit_coasts():
-    h = Harness()
+    h = Harness(coast_enabled=True)
     transit(h)
     m = h.mark()
     run(h, 5.0, left=4.0)
@@ -125,13 +125,13 @@ def test_coast_off_restores_the_swath_rule():
 
 def test_no_budget_field_holds():
     """An older monitor without coast_left_m: no coast."""
-    h = big_mow()
+    h = big_mow(coast_enabled=True)
     run(h, 0.4, left=None)
     assert held(h)
 
 
 def test_pivot_coasts():
-    h = big_mow()
+    h = big_mow(coast_enabled=True)
     h.fsm.mission.step = 'corner_pivot'
     run(h, 2.0, left=3.0)
     assert h.fsm._loc is None and h.fsm._loc_coast is not None
@@ -140,7 +140,7 @@ def test_pivot_coasts():
 # ---- the boundary guard while coasting ----------------------------------------------------------
 def coast_strip(**params):
     """Coasting on the strip leg at (3, 2), wheels with the pose."""
-    h = mowing_h(LEG, (1.0, 2.0, 0.0), **params)
+    h = mowing_h(LEG, (1.0, 2.0, 0.0), **{"coast_enabled": True, **params})
     x = 1.0
     while x < 3.0 - 1e-9:
         x += 0.05
