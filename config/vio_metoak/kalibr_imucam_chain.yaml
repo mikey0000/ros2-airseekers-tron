@@ -6,7 +6,7 @@
 # (src/mower_localization/vision_localization/config/metoak/sn*_euroc_stereo_imu.yaml, identical
 # across units = mechanical constant): R_CtoI = diag(-1, 1, -1), p_CinI = (0.05143, -0.00453,
 # -0.01503) m; cam1 = body_T_cam0 * T_cam0_cam1 from this unit's factory stereo calibration
-# (sn IC17SZ01011, ros2_port_handoff/08_calibration_identity/stereo_params.yaml). OpenVINS reads
+# (ros2_port_handoff/08_calibration_identity/stereo_params.yaml). OpenVINS reads
 # T_imu_cam as T_CtoI, which is exactly the vendor's body_T_cam form (no inversion).
 # Checked at rest 2026-10-07: accel (-0.02, -9.78, +0.32) m/s^2 -> IMU y = camera y (down),
 # consistent with this rotation. The same transform is in config/urdf/mower.urdf.xacro

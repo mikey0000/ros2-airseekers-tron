@@ -10,7 +10,7 @@ nongrass_projector:
     map_frame: map
     base_frame: base_link
     # Front stereo right colour eye (seg.yaml extra_topics). Extrinsic = stereo_params.yaml of
-    # sn IC17SZ01011 (X_cam = R X_ref + T: rvec[3] then T[3] in metres), the same values
+    # sn <module serial> (X_cam = R X_ref + T: rvec[3] then T[3] in metres), the same values
     # det_range uses. Re-check both after a stereo module swap.
     camera_frames: [vio_camera]
     camera_info_topics: [/vio/right/camera_info]

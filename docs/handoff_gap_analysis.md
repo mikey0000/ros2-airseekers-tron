@@ -301,7 +301,7 @@ checks whether the vendor services (`mower-base`, `mower-logic`,
 
 ## 08_calibration_identity — calibration YAMLs, URDFs, camera identity
 
-**Contains:** stereo intrinsics/extrinsics for SN `IC17SZ01011` (`cam0.yaml`,
+**Contains:** stereo intrinsics/extrinsics for SN `<module serial>` (`cam0.yaml`,
 `cam1.yaml`, `stereo_params.yaml` — PINHOLE_FULL model, 640×480, baseline
 60.05 mm), the Metoak stereo EEPROM calibration dump
 (`metoak_stereo_eeprom_calibration.data`), `base_cameras_config/`
