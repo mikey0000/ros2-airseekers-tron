@@ -95,7 +95,7 @@ class MissionFSM(PreviewMixin,
         self._pivot_tries = {}              # unfinished-pivot re-sends per pivot (key -> n)
         self._dock_contact_since = None
         self._manual_undocking = False           # standalone UNDOCK (CMD_UNDOCK) in flight
-        self._resume_after = None           # None | 'rain' | 'charge' | 'battery_temp'
+        self._resume_after = None           # None | 'rain' | 'charge' | 'full_charge' | 'battery_temp'
         self._rain_since = None
         self._rain_clear_since = None
         self._boundary_since = None
@@ -268,8 +268,11 @@ class MissionFSM(PreviewMixin,
             return 'CHARGING' if self.inputs.is_charging else 'IDLE_DOCKED'
         return 'IDLE'
 
-    def _resume_charge_percent(self):
-        return min(float(self.p.battery_full_percent), float(self.p.battery_max_charge_percent))
+    def _resume_charge_percent(self, after=None):
+        """Charge level a charge-and-resume waits for (``after`` defaults to _resume_after)."""
+        full = 100.0 if (after or self._resume_after) == 'full_charge' \
+            else float(self.p.battery_full_percent)
+        return min(full, float(self.p.battery_max_charge_percent))
 
     def _charge_limit_tick(self):
         """Keep the MCU charge enable in line with battery_max_charge_percent while
