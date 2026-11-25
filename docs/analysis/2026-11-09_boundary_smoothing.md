@@ -244,3 +244,25 @@ seeds but not shown to be equal. Corners (e) and STUCK (d) are fine.
 **Before the owner applies a proposal:** fix or guard the final approach (e.g. approach a
 lap-0 start along the lap heading, or check the arrival body overhang the way the pivot gate
 does), then re-gate real_run5_smooth. That is mission transit code, outside this branch.
+
+### Re-gate after the rebase (2026-11-25)
+
+The b trip above is fixed on master by `2026-11-09_final_approach.md` (ws/approach1109). The
+branch was rebased on master and re-gated with `-l -x 3 -s 1` (output
+`ros2_stack-wt/simout_smooth1125`):
+
+| Run | a (max out, samples > 0.10) | b | c | d STUCK | e | h p99 line | i side / nose / sweep | cut % (gt) | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| real_run5 | 0.058 m, 0 | 0 | pass | 0 | 0 of 19 (0.128) | 0.057 | 0.060 / 0.045 / 0.092 | 97.9 | PASS |
+| real_run5_smooth | 0.071 m, 0 | **0** | pass | 0 | 1 of 20 (0.225) | 0.068 | 0.059 / 0.031 / **0.102** | 96.5 | FAIL (e, i) |
+
+- b is gone. a is within limits and nothing goes STUCK.
+- e is lap 0's -93 deg vertex at (-0.80, 5.34). The final-approach note's master runs on
+  this world failed e at the same corner and i, too, and the mowing code here is master's.
+  So these are mission corner handling on the smoothed geometry, not the smoothing code.
+- real_run5 passes with the same numbers as master's PASS on 2026-11-25, so the branch does
+  not regress the normal map.
+
+Before the owner applies a proposal, the e corner on the smoothed Area 1 needs a fix or an
+accepted waiver, and then a re-gate.
+

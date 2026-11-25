@@ -2231,7 +2231,7 @@ Wi-Fi profiles, BSSID lock, routes and DNS: documented in `handover.md`, no conf
 diff drive); left: the bumper back-up safety check against keepouts. Details and the
 candidate table: `analysis/2026-11-25_stock_v1.3.33_glean.md`.
 
-## Boundary smoothing for recorded areas (2026-11-09, branch ws/smooth1109, unit + offline + sim; gate FAILS b, not field tested)
+## Boundary smoothing for recorded areas (2026-11-09, rebased 2026-11-25, branch ws/smooth1109, unit + offline + sim; smoothed world fails e / i as on master, not field tested)
 
 Details, sources and numbers: `analysis/2026-11-09_boundary_smoothing.md`.
 
@@ -2263,12 +2263,15 @@ Details, sources and numbers: `analysis/2026-11-09_boundary_smoothing.md`.
   - Outline excess turning down 6-74 %. Planner lap turning down 2-7 %. Closer backyard
     lawn straight-edge lap squiggle p50 3.2 -> 2.3 cm.
   - Coverage unchanged, drive 1-2 % shorter.
-  - The p90 / max kinks are larger than the tolerance and stay; edit those in the GUI.
-- **Sim.** `real_run5_smooth` (Area 1 smoothed) fails b in both seeds: one hard-boundary
-  trip at the new lap-0 start. The baseline real_run5 on the same code has b 0.
-  - Cause: the transit's final approach (`_route_final_approach`) drives straight onto a
-    lap-0 start on the line from 0.13-0.21 m inside at a steep angle, which puts the nose
-    0.44 m out.
-  - Smoothing only moved the planner's start there. It is a mission transit weakness that
-    a recorded map can hit too.
-  - Fix or guard that approach and re-gate before applying proposals on the mower.
+  - The p90 / max kinks are larger than - **Sim (2026-11-25, rebased on master, `-l -x 3 -s 1`).**
+  - `real_run5_smooth` (Area 1 smoothed): b 0, a 0.071 m, no STUCK, cut 96.5 %. FAIL on e
+    (lap 0's -93 deg corner at (-0.80, 5.34), 0.225 m) and i (sweep 0.102).
+  - `real_run5`: PASS (a 0.058, e 0.128, i 0.060 / 0.045 / 0.092, cut 97.9 %), the same as
+    master's PASS today.
+  - The 2026-11-09 b trip (the final approach onto the new lap-0 start) is fixed on master
+    by "Final approach onto an on-line start" (ws/approach1109).
+  - e and i on this world are not this branch's code: the mowing code is master's, and
+    approach1109's master runs of this world failed e at the same corner and i (side
+    0.102-0.108). The smoothed geometry exposes them; fix that corner and re-gate before
+    applying proposals on the mower. Recording-time smoothing is not covered by the sim.
+e-gate before applying proposals on the mower.
