@@ -3,7 +3,7 @@
 # Camera intrinsics + IMU<->camera extrinsics for the Airseekers Tron Metoak stereo front.
 #
 # Recovered from the vendor Metoak SDK calibration dump
-# (ros2_port_handoff/08_calibration_identity/{cam0,cam1,stereo_params}.yaml, sn IC17SZ01011)
+# (ros2_port_handoff/08_calibration_identity/{cam0,cam1,stereo_params}.yaml, sn <module serial>)
 # and the vendor VIO config extrisics (generate_vio_config.py BODY_T_CAM0).
 #
 # Convention: OpenVINS reads "T_imu_cam" as T_CtoI = [ R_CtoI | p_CinI ],

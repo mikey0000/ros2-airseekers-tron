@@ -1,6 +1,6 @@
 %YAML:1.0
 ---
-sn: IC17SZ01011
+sn: <module serial>
 model_type: PINHOLE_FULL
 camera_name: camera0
 image_width: 640

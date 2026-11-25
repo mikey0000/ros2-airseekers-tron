@@ -44,7 +44,7 @@ NONGRASS_CLASSES = (0, 2, 4, 5)
 GRASS_CLASSES = (1, 3)
 
 # Front stereo right colour eye (cam1.yaml) and stereo extrinsics (stereo_params.yaml), the
-# per-unit calibration of sn IC17SZ01011 (same values as det_range/geometry.py).
+# per-unit calibration of sn <module serial> (same values as det_range/geometry.py).
 CAM1_K = (448.671997, 448.688690, 318.047577, 238.347107)        # fx fy cx cy @ 640x480
 CAM1_D = (-0.409014881, 0.199768856, 0.0000428832, 0.000107274, -0.052232463)
 CAM1_SIZE = (640, 480)

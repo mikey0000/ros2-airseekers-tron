@@ -1,5 +1,5 @@
 # Metoak front stereo, LEFT topic (/vio/left/image_raw) = factory cam0, 640x480 from /dev/video22
-# via stereo_cam. Per-unit factory calibration, sn IC17SZ01011
+# via stereo_cam. Per-unit factory calibration, sn <module serial>
 # (ros2_port_handoff/08_calibration_identity/cam0.yaml). NOTE docs/vio.md 3.6: stereo_params
 # Tx = -60.05 mm puts cam1 LEFT of cam0, so the eye naming may be swapped; verify on a daylight
 # bag before relying on left/right. Unrectified (rectification = identity); plumb_bob = k1 k2 p1 p2 k3.
