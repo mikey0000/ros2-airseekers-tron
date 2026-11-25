@@ -21,6 +21,9 @@ behavior_tree_node:
     battery_critical_percent: 5.0     # below this off the dock: stop, blade off, alert (0 = off)
     battery_critical_grace_s: 120.0   # ... then host power-off unless docked / charging by then
     battery_critical_poweroff: true   # false = stop + alert only
+    battery_low_voltage_v: 20.0       # <= this at SOC >= min_percent for hold_s mid-mission: dock, resume at a full charge (0 = off; stock v1.3.33)
+    battery_low_voltage_min_percent: 30.0
+    battery_low_voltage_hold_s: 5.0
 
     # --- GNSS ------------------------------------------------------------
     preflight_min_fix_type_docked: 1  # GnssStatus.fix_type needed to START from the dock

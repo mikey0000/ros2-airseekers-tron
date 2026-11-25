@@ -229,6 +229,19 @@ Full analysis in `analysis/2026-10-30_rtk_station_identity.md`. The short versio
 - After power-up the base runs a 120 s survey-in, then transmits RTCM 1006, 1033 and MSM
   for GPS, GLONASS, Galileo and BeiDou about once a second.
 
+## Reference: rover board 0.9.57 (stock v1.3.33, 2026-11-25)
+
+The stock v1.3.33 software flashes the rover board from 0.9.50 to 0.9.57. Every command this
+doc and `um960_gps_driver` send (`$GNCON`, `$GLIST`, `$GNVER`, `$GHARD`, `$GNRTK,ON/OFF`,
+`$BRESET`, `RTKRESET`) is still in the 0.9.57 command table with the same bytes, the port stays
+115200, and the replies we parse keep their formats. 0.9.56/0.9.57 add `$GOFIR`/`$GOFIW` (a
+stored record the vendor host never writes), `GN100`, `GNQUAB` and L76K module support; our
+parser ignores those sentences. The new stock "NRTK throttle" is a host-side NTRIP policy
+(Wi-Fi only, no 4G) with no board command. No rover/station version check was found, so a
+0.9.57 rover with an older base should still pair; the stored pairing surviving the flash is
+not verified: run `rtk_pair.py query` once. Details:
+`analysis/2026-11-25_stock_v1.3.33_glean.md` section 1.
+
 ## Reference: NTRIP and Universal GNSS
 
 - The pairing is independent of the NTRIP path. Network RTK (`$GNRTK,ON` + host RTCM)

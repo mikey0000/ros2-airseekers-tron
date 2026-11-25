@@ -13,7 +13,7 @@ filter removes them and the planner happily routes transits and obstacle detours
 
 | Item | Finding |
 |---|---|
-| Model | `pplite-seg_20260630-1-6cls.rknn`, int8, input 640x480 NHWC, one NCHW output `[1,6,480,640]` (dequantised logits) |
+| Model | `pp37.rknn` (stock v1.3.33 retrain, same I/O; was `pplite-seg_20260630-1-6cls.rknn`, see `src/seg_ros/README.md`), int8, input 640x480 NHWC, one NCHW output `[1,6,480,640]` (dequantised logits) |
 | Classes | 0 other/background, 1 grass, 2 passway (paving), 3 soil, 4 obstacle, 5 shrub (flower beds / hedges). No explicit water / gravel class: they land in "other" (unverified) |
 | Old outputs | `/ai/seg/mask` (mono8 class index), `/ai/seg/traversability` (255 = grass/soil), `/ai/seg/image_overlay` (bgr8). No confidence |
 | Camera (before) | Both OA cameras (`/left_oa_camera`, `/right_oa_camera`, GC2093 1920x1080). They have NO extrinsics in `config/urdf/mower.urdf.xacro` (box poses only), so a mask from them cannot be put on the ground. Each frame also meant three 1080p masks resized and published by Python |

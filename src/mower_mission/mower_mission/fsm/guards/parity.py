@@ -12,7 +12,10 @@ Small behaviours the stock Tron firmware has (docs/audit_2026-10-05/vendor_missi
 * battery temperature: START refused outside the start band (start.py _preflight); above
   battery_temp_max_mow_c mid-mission the robot docks and resumes once cooled (stock
   ChargeEnvCheck "battery temperature high" -> auto-charge flow, pseudo-state
-  ``battery_temp_highing``).
+  ``battery_temp_highing``);
+* low voltage at a healthy SOC: <= battery_low_voltage_v while the SOC still reads >=
+  battery_low_voltage_min_percent, held battery_low_voltage_hold_s mid-mission -> dock and
+  resume only at a full charge (stock v1.3.33 ChargeEnvCheck).
 
 Every guard raises / clears a mower_alerts notice (:class:`Notice`).
 """
@@ -117,6 +120,33 @@ class ParityGuardsMixin:
                      'batteryTempHigh')
         self._interrupt_mission('battery temperature')
         self._dock('RETURNING_HOME', 'battery_temp', 'battery temperature %.0f C' % t)
+        return True
+
+    # ---- low voltage at a healthy SOC --------------------------------------
+    def _battery_low_voltage_tick(self):
+        """True when it took over the tick (docking on a sagging pack)."""
+        p, i = self.p, self.inputs
+        v, b, limit = i.battery_voltage_v, i.battery_percent, float(p.battery_low_voltage_v)
+        sagging = (limit > 0.0 and v is not None and b is not None and v <= limit
+                   and b >= float(p.battery_low_voltage_min_percent)
+                   and self.phase in MISSION_PHASES and self.mission is not None)
+        if not sagging:
+            if self.phase in MISSION_PHASES:        # mowing again: the pause is over
+                self._notice('battery_voltage', False)
+            self._batt_lowv_since = None
+            return False
+        since = self.__dict__.get('_batt_lowv_since')
+        if since is None:
+            self._batt_lowv_since = since = self._now
+        if self._now - since < float(p.battery_low_voltage_hold_s):
+            return False
+        self._batt_lowv_since = None
+        why = 'battery %.2f V <= %.1f V at %.0f%%' % (v, limit, b)
+        self._log('warn', '%s: docking, resuming at a full charge' % why)
+        self._notice('battery_voltage', True, 'Mowing paused: %s; resuming at a full charge.'
+                     % why, 'battery', 4, 'batteryLowVoltage')
+        self._interrupt_mission('battery low voltage')
+        self._dock('LOW_BATTERY_DOCKING', 'battery_voltage', why)
         return True
 
     def _battery_temp_wait_tick(self):

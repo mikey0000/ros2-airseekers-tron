@@ -498,6 +498,8 @@ class Inputs:
     camera_blocked: bool = False
     # /battery temperature (deg C, mcu_node BatteryInfo.temperature); None = not reported
     battery_temp_c: Optional[float] = None
+    # /battery voltage (V); None = not reported
+    battery_voltage_v: Optional[float] = None
     fix_type: Optional[int] = None
     hdop: Optional[float] = None        # /gps/status hdop (recorded-vertex quality)
     gps_quality: float = 0.0            # 0..1 (upstream publishes a fraction)
@@ -638,6 +640,14 @@ class Params:
     battery_critical_percent: float = 5.0
     battery_critical_grace_s: float = 120.0
     battery_critical_poweroff: bool = True
+    # Low voltage at a healthy SOC (stock v1.3.33 ChargeEnvCheck: "low voltage while SOC>=30%
+    # && V<=20V", held 5 s -> go docking, "resume requires full charge 100%"): a pack that
+    # sags this far while its SOC still reads >= min_percent is worn or miscalibrated, so a
+    # running mission docks and resumes only at min(100 %, battery_max_charge_percent).
+    # The 6S pack reads ~21.6 V at 52 %. 0 disables.
+    battery_low_voltage_v: float = 20.0
+    battery_low_voltage_min_percent: float = 30.0
+    battery_low_voltage_hold_s: float = 5.0
     preflight_min_fix_type_docked: int = 1
     rtk_fix_type: int = FIX_RTK_FIXED
     rtk_timeout_s: float = 120.0

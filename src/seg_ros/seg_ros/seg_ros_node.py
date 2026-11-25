@@ -2,7 +2,7 @@
 
 Subscribes to the configured camera streams (``left_topic``, ``right_topic``,
 ``extra_topics``; seg.yaml: the front stereo right colour eye) and runs the shipped 6-class
-`pplite-seg_20260630-1-6cls.rknn` on the RK3588S NPU (pinned to core 1).
+`pp37.rknn` (stock v1.3.33; same I/O and classes as `pplite-seg_20260630-1-6cls.rknn`) on the RK3588S NPU (pinned to core 1).
 
 Publishes per-camera:
 - a class-index mask (``sensor_msgs/Image``, mono8, indices 0..5),
@@ -12,7 +12,7 @@ Publishes per-camera:
 - a colour debug overlay (bgr8).
 
 Startup mirrors ``det_ros`` (``mower_rknn.startup``): ``model_path`` defaults to
-``/userdata/ros2/models/pplite-seg_20260630-1-6cls.rknn``, ``models_dir`` is the
+``/userdata/ros2/models/pp37.rknn``, ``models_dir`` is the
 fallback directory, and ``dry_run:=true`` keeps the node alive without NPU/model.
 """
 
@@ -46,7 +46,7 @@ class SegRosNode(Node):
 
         # ---- parameters ----
         self.declare_parameter('model_path',
-                               '/userdata/ros2/models/pplite-seg_20260630-1-6cls.rknn')
+                               '/userdata/ros2/models/pp37.rknn')
         self.declare_parameter('models_dir', '')
         self.declare_parameter('dry_run', False)
         self.declare_parameter('max_rate_hz', 5.0)  # per camera; 0 = every frame

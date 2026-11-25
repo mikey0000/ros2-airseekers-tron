@@ -655,6 +655,8 @@ class MissionNode(Node):
             self.fsm.inputs.battery_percent = _battery_percent(msg.percentage)
             t = float(msg.temperature)
             self.fsm.inputs.battery_temp_c = t if math.isfinite(t) else None
+            v = float(msg.voltage)
+            self.fsm.inputs.battery_voltage_v = v if math.isfinite(v) and v > 0.0 else None
 
     def _on_base(self, msg):
         with self._lock:

@@ -48,7 +48,7 @@ class PhaseDispatchMixin:
             return
 
         if ph in IDLE_NAMES:
-            if self._resume_after == 'charge':
+            if self._resume_after in ('charge', 'full_charge'):
                 b = i.battery_percent
                 full = self._resume_charge_percent()
                 if b is not None and b >= full:

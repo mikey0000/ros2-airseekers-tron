@@ -2217,3 +2217,16 @@ dropout holds and rejects the 0.3 m float as on master. Replay: inflating the fl
 covariance does not keep ekf_map off a 0.3 m float after a dropout, so that is left to the
 monitor's gate and the hold. Details: `analysis/2026-11-25_coast_mode.md`,
 docs/localization.md "Coast mode".
+
+## Stock v1.3.33 glean: compatibility and ports (2026-11-25, branch ws/glean1125, unit only; not field tested)
+
+Compatibility: the RTK rover board 0.9.57 (flashed by stock) keeps every command, reply
+format and the 115200 port our driver and `rtk_pair.py` use; NRTK throttle is a host-side
+NTRIP policy with no board command. The EC200A beta modem firmware changes nothing we use
+(we never talk to the modem). The vendor `base_net_node`, left running under rosmaster, owns
+Wi-Fi profiles, BSSID lock, routes and DNS: documented in `handover.md`, no conflict with
+`wifi_monitor` or the Tailscale sidecar. Ported: dock on low voltage (<= 20 V at SOC >= 30 %,
+5 s) and resume at a full charge; seg_ros default model `pp37.rknn` (deploy step in
+`src/seg_ros/README.md`). Not ported: speed raises, `local_stop_dist`, omni shift (Tron is
+diff drive); left: the bumper back-up safety check against keepouts. Details and the
+candidate table: `analysis/2026-11-25_stock_v1.3.33_glean.md`.
