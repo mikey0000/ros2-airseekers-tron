@@ -356,9 +356,11 @@ class DockingMixin:
             self._rain_clear_since = None
             self._resume_after = 'rain'
             self._go('RAIN_WAITING', 'waiting %.0f min after rain' % self.p.rain_delay_minutes)
-        elif purpose == 'battery':
-            self._go('CHARGING', 'charging to %.0f%%, then resuming' % self._resume_charge_percent())
-            self._resume_after = 'charge'
+        elif purpose in ('battery', 'battery_voltage'):
+            after = 'full_charge' if purpose == 'battery_voltage' else 'charge'
+            self._go('CHARGING', 'charging to %.0f%%, then resuming'
+                     % self._resume_charge_percent(after))
+            self._resume_after = after
         elif purpose == 'battery_temp':
             self._go_idle('battery temperature high: waiting to cool below %.0f C, then resuming'
                           % self.p.battery_temp_max_start_c)

@@ -21,6 +21,9 @@ behavior_tree_node:
     battery_critical_percent: 5.0     # below this off the dock: stop, blade off, alert (0 = off)
     battery_critical_grace_s: 120.0   # ... then host power-off unless docked / charging by then
     battery_critical_poweroff: true   # false = stop + alert only
+    battery_low_voltage_v: 20.0       # <= this at SOC >= min_percent for hold_s mid-mission: dock, resume at a full charge (0 = off; stock v1.3.33)
+    battery_low_voltage_min_percent: 30.0
+    battery_low_voltage_hold_s: 5.0
 
     # --- GNSS ------------------------------------------------------------
     preflight_min_fix_type_docked: 1  # GnssStatus.fix_type needed to START from the dock
@@ -90,6 +93,15 @@ behavior_tree_node:
     # while 0.3 m off); false = the old 'ok for loc_resume_s' resume
     loc_resume_require_fixed: true
     loc_fixed_settle_s: 5.0           # RTK fixed this long = settled (also the boundary distrust window)
+    # coast mode 2026-11-25 (docs/analysis/2026-11-25_coast_mode.md): degraded during a mow
+    # follow or a transit keeps going on dead reckoning (speed cap, blade unchanged) while
+    # localization_monitor's coast_left_m > 0 (5 m flat .. 1.5 m on a slope, 60 s, none after
+    # slip or a disagreeing RTK position) and the path ahead keeps the body est_drift + this
+    # margin off the boundary / keepouts; then the hold as before. false = the 2026-11-03
+    # degraded rule (finish the straight swath, loc_degraded_*). On by default (owner
+    # 2026-11-25), not yet field tested; sims: docs/analysis/2026-11-25_coast_mode.md.
+    coast_enabled: true
+    coast_edge_margin_m: 0.10
     # 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py,
     # docs/analysis/2026-10-23_obstacle_nogo_options.md section C)
     nogo_enabled: true
@@ -177,6 +189,12 @@ behavior_tree_node:
     # off the line. 0.0 = off (revert).
     route_final_approach_m: 0.05
     route_final_approach_speed_mps: 0.1
+    # 2026-11-25: a sub-path start within transit_gap_m but farther than this from the robot
+    # gets the same final approach hop (no transit); before, the leg-start pivot aimed 1.5 m
+    # down the leg and the start was cut (sim real_run5_cross60: 0.58 m gaps, 0.65 m
+    # cross-track). Nearer, a coverage pivot is aimed from where the still-rolling robot
+    # stops. 0.0 = off (revert).
+    leg_start_reach_m: 0.12
     route_blocked_retries: 1          # obstacle abort: blocked wait, re-send the route this often, then Nav2
     # 2026-10-21: a failed plan_route to a goal farther than this (outside the 50 m rolling
     # global costmap) re-asks the route after the back-off instead of the costmap fallback

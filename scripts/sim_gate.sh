@@ -236,7 +236,8 @@ if [ "$RTK" = 1 ]; then
   # the real localization_monitor (not part of sim.launch's localization:=sim): it turns the
   # sim's /fix_status + /odometry/filtered(_map) into /localization/status for loc_hold
   docker exec -d "$C" bash -c "$ROS; exec ros2 run mower_localization localization_monitor \
-    --ros-args -p use_sim_time:=true > $COUT/locmon.log 2>&1"
+    --ros-args --params-file \$(ros2 pkg prefix mower_localization)/share/mower_localization/config/localization_monitor.yaml \
+    -p use_sim_time:=true > $COUT/locmon.log 2>&1"
   sleep 3
 fi
 docker exec -d "$C" bash -c "$ROS; cd $COUT && exec ros2 bag record -s sqlite3 -o bag --use-sim-time \

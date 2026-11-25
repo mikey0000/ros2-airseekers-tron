@@ -38,7 +38,8 @@ class MowingMixin:
 
     def _dispatch(self, force_transit=False):
         """Send the current sub-path from ``start_local``: blade-off transit
-        first when its start is farther than ``transit_gap_m``."""
+        first when its start is farther than ``transit_gap_m``, a final approach hop onto it
+        when farther than ``leg_start_reach_m`` (_leg_start_approach)."""
         m = self.mission
         sp = m.subpaths[m.sub_i]
         if m.sub_i in m.cond_errors:
@@ -52,6 +53,7 @@ class MowingMixin:
         if self._turn_leg_driven():
             return
         target = sp[m.start_local]
+        yaw = geo.heading_of(sp, m.start_local)
         if force_transit or geo.needs_transit(self.inputs.pose, target, self.p.transit_gap_m):
             # SAFETY (FollowStrip): blade off before any dispatch across the gap, unless
             # the continuous policy keeps it on for a transit inside the area.
@@ -59,11 +61,10 @@ class MowingMixin:
             m.step = 'transit'
             self._go('TRANSIT', 'area %d sub-path %d/%d' % (
                 m.area_idx, m.sub_i + 1, len(m.subpaths)))
-            yaw = geo.heading_of(sp, m.start_local)
             m.transit_target = self._transit_approach(target, yaw)
             m.route_fallback, m.route_aborts = False, 0
             self._send_transit()
-        else:
+        elif not self._leg_start_approach(target, yaw):
             self._begin_blade()
 
     def _excluded_local(self):
@@ -315,12 +316,14 @@ class MowingMixin:
 
     def _track_progress(self):
         """Advance ``progress_local`` to the pose nearest the robot, searching
-        only ``progress_window_m`` ahead (never backwards, never onto a later lap)."""
+        only ``progress_window_m`` ahead (never backwards, never onto a later lap, never onto
+        a later stretch running over this one unless it is clearly closer:
+        geometry.progress_index)."""
         m, pose = self.mission, self.inputs.pose
         if pose is None or not m.subpaths:
             return m.progress_local
-        m.progress_local = geo.nearest_index(m.subpaths[m.sub_i], pose, m.progress_local,
-                                             self.p.progress_window_m)
+        m.progress_local = geo.progress_index(m.subpaths[m.sub_i], pose, m.progress_local,
+                                              self.p.progress_window_m)
         return m.progress_local
 
     def _tick_blade(self):

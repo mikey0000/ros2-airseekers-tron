@@ -4,7 +4,7 @@
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
 from mower_mission.fsm.common import (ACT_NAV, DOCK_PHASES, SRV_GET_AREA,
-    SRV_SET_CHANNEL, DriveCmd, accepted_area, SuppressStuckGuard, ZeroBurst, _STILL_V, _STILL_W, _along, _seg_dist, absolute_to_local, geo, json, math,
+    SRV_SET_CHANNEL, DriveCmd, bbody, accepted_area, SuppressStuckGuard, ZeroBurst, _STILL_V, _STILL_W, _along, _seg_dist, absolute_to_local, geo, json, math,
     subpath_offsets)
 from mower_mission.fsm.hold import Hold
 
@@ -599,6 +599,130 @@ class HoldsMixin:
             return False
         return True
 
+    # ---- coast mode (2026-11-25, analysis/2026-11-25_coast_mode.md) ----
+    # Degraded (RTK float / single / dropout, or the ekf_map sigma gate) during a mow follow or
+    # a transit: keep going on dead reckoning, blade as before, at the degraded speed cap,
+    # while the monitor's coast budget lasts (coast_left_m: 5 m flat .. 1.5 m on a slope,
+    # 60 s, none after slip or an RTK position that disagrees) and along the path ahead the
+    # body stays est_drift + coast_edge_margin_m inside the boundary guard's limits and off the
+    # keepouts. Then the hold.
+    def _loc_coast_left(self):
+        """Fresh coast_left_m, or None."""
+        i = self.inputs
+        if i.loc_stamp is None or self._now - i.loc_stamp > float(self.p.loc_status_stale_s):
+            return None
+        return i.loc_coast_left
+
+    def _coast_path_ahead(self, horizon):
+        """Points (every 0.25 m, fixed along the plan) of what the robot drives next, at most
+        ``horizon`` m: the sub-path being mowed, a route transit, else the line to the transit
+        target. [] when nothing is known."""
+        m, pose = self.mission, self.inputs.pose
+        if m is None or pose is None:
+            return []
+        if self.phase == 'TRANSIT' or m.step == 'transit':
+            rp = m.route_poses
+            if rp:
+                k = min(range(len(rp)), key=lambda j: geo.dist(pose, rp[j]))
+                path = [tuple(q[:2]) for q in rp[k:]]
+            elif m.transit_target is not None:
+                path = [(pose[0], pose[1]), tuple(m.transit_target[:2])]
+            else:
+                return []
+        elif m.subpaths and m.sub_i < len(m.subpaths):
+            sp = m.subpaths[m.sub_i]
+            i = m.progress_local if m.step == 'follow' else m.start_local
+            path = [tuple(q[:2]) for q in sp[max(0, min(i, len(sp) - 1)):]]
+        else:
+            return []
+        pts, acc = [path[0]], 0.0
+        for a, b in zip(path, path[1:]):
+            seg = geo.dist(a, b)
+            n = max(1, int(math.ceil(seg / 0.25)))
+            for t in range(1, n + 1):
+                pts.append((a[0] + (b[0] - a[0]) * t / n, a[1] + (b[1] - a[1]) * t / n))
+            acc += seg
+            if acc >= horizon:
+                break
+        return pts
+
+    def _coast_clearance(self, pt):
+        """How far base_link at ``pt`` may drift before the body reaches a limit: the distance
+        to the edge of the allowed region (the largest edge distance of a region polygon
+        holding it, a lower bound for the union) plus the body guard's side allowance there
+        (soft 0.35 m, hard 0.10 m: what the plan itself may overhang), and the distance to the
+        keepouts (no allowance), each less half the body width."""
+        x, y = float(pt[0]), float(pt[1])
+        half = float(self.p.robot_width_m) / 2.0
+        inside = [bbody._edge_dist(x, y, r) for r in self._region() if bbody._pip(x, y, r)]
+        mode = self._hb_body_mode((x, y, 0.0))
+        allow = 0.0 if mode is None else float(
+            self.p.hard_boundary_body_hard_m if mode == 'hard'
+            else self.p.hard_boundary_body_soft_side_m)
+        clear = (max(inside) + allow if inside else 0.0) - half
+        for k in self._hb_keepouts():
+            clear = -half if bbody._pip(x, y, k) else min(clear, bbody._edge_dist(x, y, k) - half)
+        return clear
+
+    def _coast_clearance_cached(self, pt):
+        """_coast_clearance, memoised while the coast runs (the plan points repeat)."""
+        key = (round(pt[0], 3), round(pt[1], 3))
+        memo = self._loc_coast_clear
+        if key not in memo:
+            memo[key] = self._coast_clearance(pt)
+        return memo[key]
+
+    def _loc_coast_check(self, state, ctx):
+        """'' when coasting may go on, else why not."""
+        if state != 'degraded':
+            return 'localization %s' % (state or 'unknown')
+        if self.phase not in ('MOWING', 'TRANSIT') or ctx not in ('follow', 'transit'):
+            return 'not mowing or in transit'
+        if self._loc_fix_pending():
+            return 'waiting for RTK fixed after a stop'
+        left, est = self._loc_coast_left(), self._loc_est()
+        if not left or est is None:
+            return 'coast budget used up (%s)' % (self.inputs.loc_reason or 'no budget')
+        pts = self._coast_path_ahead(left)
+        pose = self.inputs.pose
+        if pose is not None:
+            pts.append((pose[0], pose[1]))
+        need = est + float(self.p.coast_edge_margin_m)
+        clear = min((self._coast_clearance_cached(q) for q in pts), default=0.0)
+        if clear < need:
+            return 'edge clearance %.2f m < drift %.2f m + %.2f m' % (
+                clear, est, float(self.p.coast_edge_margin_m))
+        return ''
+
+    def _loc_coast_tick(self, state, ctx):
+        """Every tick while degraded in MOWING / TRANSIT: starts, logs and ends the coast.
+        Returns '' while it goes on, else why it may not."""
+        why = self._loc_coast_check(state, ctx) if self.p.coast_enabled else 'coast_enabled off'
+        c = self._loc_coast
+        if why:
+            if c is not None:
+                self._loc_coast_end(why)
+            return why
+        if c is None:
+            self._loc_coast = {'since': self._now, 'pose': self.inputs.pose}
+            self._log('warn', 'localization degraded (%s): coasting on dead reckoning at %.2f '
+                      'm/s, blade unchanged (budget %.1f m, drift %.2f m)'
+                      % (self.inputs.loc_reason or 'no reason', float(self.p.caution_speed_mps),
+                         self._loc_coast_left(), self._loc_est()))
+            self._go(self.phase, 'localization degraded: coasting on dead reckoning')
+        return ''
+
+    def _loc_coast_end(self, why):
+        c, self._loc_coast = self._loc_coast, None
+        self._loc_coast_clear = {}
+        if c is None:
+            return
+        pose, p0 = self.inputs.pose, c['pose']
+        moved = geo.dist(pose, p0) if pose is not None and p0 is not None else 0.0
+        self._log('warn' if why != 'localization ok' else 'info',
+                  'coast ended after %.0f s, %.1f m from its start: %s'
+                  % (self._now - c['since'], moved, why))
+
     def _loc_drop(self):
         """Forget the hold (another guard / command took over); stops a running retrace."""
         d, self._loc = self._loc, None
@@ -628,6 +752,7 @@ class HoldsMixin:
             pending = self._loc_fix_pending()
             if not self.p.loc_hold or (state in ('', 'ok') and not pending):
                 self._loc_swath = None
+                self._loc_coast_end('localization ok')
                 return False
             ctx = self._dyn_context()
             if ctx is None:
@@ -644,6 +769,11 @@ class HoldsMixin:
                 lost = self._loc_lost_since
                 if lost is None or self._now - lost <= float(self.p.loc_hold_dock_exempt_max_s):
                     return False             # dock transit / docking exempt (MowgliNext)
+            elif self.p.coast_enabled:
+                no_coast = self._loc_coast_tick(state, ctx)
+                if not no_coast:
+                    return False
+                reason = '%s; no coast: %s' % (reason or 'no reason', no_coast)
             elif self._loc_swath_continue(state):
                 return False
             self._loc_hold_begin(ctx, state, reason)

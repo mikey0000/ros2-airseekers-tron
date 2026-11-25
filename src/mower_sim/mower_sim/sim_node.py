@@ -393,6 +393,9 @@ class SimNode(Node):
             self.pub_heading = P(String, '/heading_aligner/status', LATCHED)
             if self.drift is not None:
                 self.pub_filtered_map = P(Odometry, '/odometry/filtered_map', 10)
+                # navsat_transform's output (map frame), for localization_monitor's RTK vs
+                # dead-reckoning check (2026-11-25 coast mode)
+                self.pub_gps_odom = P(Odometry, '/odometry/gps', 10)
         # --- inputs ---
         self.create_subscription(Twist, '/cmd_vel', self._on_cmd, 10)
         self.create_subscription(Bool, '/estop_request', self._on_estop_request, 10)
@@ -711,6 +714,17 @@ class SimNode(Node):
         m.twist.twist = odom.twist.twist
         self.pub_filtered_map.publish(m)
 
+    def _publish_gps_odom(self, stamp, pose):
+        """/odometry/gps as navsat_transform would publish it from a fused fix: base_link in
+        the map frame plus the injected RTK offset (gps_gate drops single fixes)."""
+        m = Odometry()
+        m.header.stamp = stamp
+        m.header.frame_id, m.child_frame_id = 'map', 'base_link'
+        m.pose.pose.position.x = pose.x + self._rtk_off[0]
+        m.pose.pose.position.y = pose.y + self._rtk_off[1]
+        m.pose.pose.orientation.w = 1.0
+        self.pub_gps_odom.publish(m)
+
     def _docked(self):
         return self.drive.on_dock()
 
@@ -803,6 +817,8 @@ class SimNode(Node):
                         'diff_age=120.0s age=0.10s (sim)'}.get(
                     mode, 'um960=connected quality=RTK_FIXED solution=NARROW_INT sats=24/30 '
                           'hdop=0.60 diff_age=1.0s age=0.10s (sim)')))
+            if self.loc_sim and self.drift is not None and mode in ('fixed', FLOAT):
+                self._publish_gps_odom(stamp, pose)
             vel = TwistStamped()
             vel.header = fix.header
             vel.twist.linear.x = self.drive.v

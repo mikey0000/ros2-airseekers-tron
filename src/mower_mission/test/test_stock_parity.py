@@ -61,6 +61,60 @@ def test_hot_battery_mid_mow_docks_and_resumes_when_cool():
     assert h.fsm.mission is not None and h.fsm.mission.resume
 
 
+# ---- 1b. low voltage at a healthy SOC (stock v1.3.33 ChargeEnvCheck) --------
+def test_low_voltage_at_healthy_soc_docks_and_resumes_only_at_full_charge():
+    h = Harness(battery_low_voltage_hold_s=2.0)
+    mowing(h)
+    h.fsm.inputs.battery_percent = 45.0
+    h.fsm.inputs.battery_voltage_v = 19.8
+    h.tick(n=10)
+    assert h.name == 'MOWING'                       # hold
+    m = h.mark()
+    h.tick(n=15)
+    assert h.name == 'LOW_BATTERY_DOCKING' and not h.blade
+    assert notices(h, m, 'battery_voltage')[-1].active
+    h.fsm.inputs.docked = True
+    h.fsm.inputs.is_charging = True
+    h.finish(f.ACT_DOCK)
+    assert h.name == 'CHARGING' and 'charging to 100%' in h.fsm.sub_state
+    h.fsm.inputs.battery_voltage_v = 24.0
+    h.fsm.inputs.battery_percent = 97.0             # above battery_full_percent 95
+    h.tick(n=10)
+    assert h.name == 'CHARGING' and h.fsm.mission is None
+    h.fsm.inputs.battery_percent = 100.0
+    h.tick()
+    assert h.fsm.mission is not None and h.fsm.mission.resume
+
+
+def test_low_voltage_resume_target_respects_charge_limit():
+    h = Harness(battery_low_voltage_hold_s=0.5, battery_max_charge_percent=80.0)
+    mowing(h)
+    h.fsm.inputs.battery_percent, h.fsm.inputs.battery_voltage_v = 45.0, 19.5
+    h.tick(n=10)
+    h.fsm.inputs.docked = True
+    h.finish(f.ACT_DOCK)
+    assert 'charging to 80%' in h.fsm.sub_state
+
+
+def test_voltage_sag_brief_low_soc_or_unknown_does_not_dock():
+    h = Harness(battery_low_voltage_hold_s=2.0)
+    mowing(h)
+    h.fsm.inputs.battery_percent = 45.0
+    for _ in range(5):                              # blade spin-up dips under the hold
+        h.fsm.inputs.battery_voltage_v = 19.5
+        h.tick(n=15)
+        h.fsm.inputs.battery_voltage_v = 21.5
+        h.tick()
+    assert h.name == 'MOWING'
+    h.fsm.inputs.battery_percent = 25.0             # below min_percent: the SOC guard's job
+    h.fsm.inputs.battery_voltage_v = 19.5
+    h.tick(n=50)
+    assert h.name == 'MOWING'
+    h.fsm.inputs.battery_percent, h.fsm.inputs.battery_voltage_v = 45.0, None
+    h.tick(n=50)
+    assert h.name == 'MOWING'
+
+
 # ---- 2. critical battery ------------------------------------------------
 def poweroff_calls(h, m):
     return [e for e in h.since(m, f.CallService) if e.name == f.SRV_POWEROFF]

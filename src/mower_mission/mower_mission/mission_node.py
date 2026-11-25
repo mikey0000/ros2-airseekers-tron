@@ -655,6 +655,8 @@ class MissionNode(Node):
             self.fsm.inputs.battery_percent = _battery_percent(msg.percentage)
             t = float(msg.temperature)
             self.fsm.inputs.battery_temp_c = t if math.isfinite(t) else None
+            v = float(msg.voltage)
+            self.fsm.inputs.battery_voltage_v = v if math.isfinite(v) and v > 0.0 else None
 
     def _on_base(self, msg):
         with self._lock:
@@ -704,6 +706,8 @@ class MissionNode(Node):
             i.loc_rtk = str(st.get('rtk', '') or '')
             est = st.get('est_drift_m')
             i.loc_est_drift = float(est) if isinstance(est, (int, float)) else None
+            left = st.get('coast_left_m')
+            i.loc_coast_left = float(left) if isinstance(left, (int, float)) else None
             i.loc_stamp = self._clk.now()
 
     def _on_supervisor(self, msg):

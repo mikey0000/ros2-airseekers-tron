@@ -54,7 +54,7 @@ def follow_retrace(h, state='lost', secs=60.0, dt=0.2):
 
 # ---- degraded ------------------------------------------------------------------------------
 def test_degraded_caps_speed_and_finishes_the_swath_then_holds():
-    h = big_mow()
+    h = big_mow(coast_enabled=False)
     m = h.mark()
     run(h, 'degraded', 1.0, est=0.4)
     assert h.fsm.mission.step == 'follow' and h.fsm._loc is None and h.blade
@@ -72,7 +72,7 @@ def test_degraded_caps_speed_and_finishes_the_swath_then_holds():
 
 
 def test_degraded_drift_over_edge_clearance_holds_at_once():
-    h = big_mow()
+    h = big_mow(coast_enabled=False)
     run(h, 'degraded', 0.5, est=4.8)    # 4.8 + 0.3 > 5 m clearance
     assert held(h)
 
@@ -84,7 +84,7 @@ def test_degraded_without_drift_estimate_holds():
 
 
 def test_degraded_growing_drift_stops_the_swath():
-    h = big_mow()
+    h = big_mow(coast_enabled=False)
     run(h, 'degraded', 0.5, est=0.4)
     assert not held(h)
     at(h, 1.0)
@@ -93,7 +93,7 @@ def test_degraded_growing_drift_stops_the_swath():
 
 
 def test_lost_while_finishing_the_swath_holds():
-    h = big_mow()
+    h = big_mow(coast_enabled=False)
     run(h, 'degraded', 0.5, est=0.4)
     run(h, 'lost', 0.5, est=1.2)
     assert held(h) and h.fsm.sub_state.startswith('localization lost')

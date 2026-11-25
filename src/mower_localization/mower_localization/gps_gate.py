@@ -48,6 +48,14 @@ working.
    ``/odometry/gps``, so ``ekf_map`` leans on wheel + IMU (+ VIO) during
    float instead of chasing decimetre noise. Without a fresh
    /fix_status the class falls back to the NavSatStatus (GBAS = float).
+   A fix classed FIXED with a receiver sigma above ``fixed_max_sigma`` is fused
+   as float: the /fix of a float onset can arrive before its /fix_status
+   (2026-11-25 coast mode).
+
+6. 2026-11-25 (``jump_gate_m``): a fix more than 0.5 m from the last one passed is
+   held back until the new position has persisted ``jump_confirm_s`` (2 s), or after a
+   gap of ``jump_gap_s`` without fixes (:class:`JumpGate`; field 2026-11-21: a 3 m
+   float-onset jump that ekf_map followed in 0.1 s).
    ``quality_covariance: false`` restores the pass-through behaviour.
 
 5. 2026-11-12 (``tilt_compensation``, default true): the fix is moved from the antenna to
@@ -182,6 +190,42 @@ def _apply_quality(msg: NavSatFix, rtk_class: Optional[str],
     return None
 
 
+class JumpGate:
+    """Holds back a fix that jumps more than ``jump_m`` from the last fix passed, until the new
+    position has held (within ``jump_m``) for ``confirm_s``; after a gap of ``gap_s`` without
+    fixes anything passes (a dropout's end). ``jump_m`` <= 0: off. Pure.
+
+    Field 2026-11-21: the first RTK float epoch was 3.02 m from the fixed track, with an 8 cm
+    sigma; ekf_map followed it in 0.1 s (false boundary trip, two false spin-drift aborts).
+    At 10 Hz the mower moves at most 5 cm between fixes."""
+
+    def __init__(self, jump_m=0.5, confirm_s=2.0, gap_s=1.0):
+        self.jump_m, self.confirm_s, self.gap_s = jump_m, confirm_s, gap_s
+        self._last = None          # (lat, lon) of the last fix passed
+        self._rx_t = None          # receipt time of the last fix seen
+        self._cand = None          # (t, lat, lon): where a held-back jump started
+
+    @staticmethod
+    def _dist(a, b):
+        k = 6378137.0 * math.pi / 180.0
+        return math.hypot((b[1] - a[1]) * k * math.cos(math.radians(a[0])), (b[0] - a[0]) * k)
+
+    def admit(self, t, lat, lon):
+        """Feed one fix; True = publish it."""
+        pos, gap = (lat, lon), self._rx_t is None or t - self._rx_t > self.gap_s
+        self._rx_t = t
+        if self.jump_m <= 0.0 or gap or self._last is None or \
+                self._dist(self._last, pos) <= self.jump_m:
+            self._last, self._cand = pos, None
+            return True
+        if self._cand is None or self._dist(self._cand[1:], pos) > self.jump_m:
+            self._cand = (t, lat, lon)
+        if t - self._cand[0] >= self.confirm_s:
+            self._last, self._cand = pos, None
+            return True
+        return False
+
+
 def _apply_tilt(msg: NavSatFix, rpy, height: float) -> None:
     """Move ``msg``'s latitude / longitude from the antenna to the ground point under it
     (in place), for the body attitude ``rpy`` (roll, pitch, ENU yaw; rad) and the antenna
@@ -236,6 +280,14 @@ class GpsGateNode(Node):
             for name, value in vars(defaults).items()})
         self._rtk_class: Optional[str] = None
         self._rtk_t: Optional[float] = None
+        # 2026-11-25: a position jump is held back until it persists (JumpGate)
+        self.declare_parameter("jump_gate_m", 0.5)
+        self.declare_parameter("jump_confirm_s", 2.0)
+        self.declare_parameter("jump_gap_s", 1.0)
+        self._jump = JumpGate(float(self.get_parameter("jump_gate_m").value),
+                              float(self.get_parameter("jump_confirm_s").value),
+                              float(self.get_parameter("jump_gap_s").value))
+        self.jumps_held = 0
 
         # 2026-11-12: antenna tilt compensation (docstring item 5).
         self.declare_parameter("tilt_compensation", True)
@@ -372,13 +424,20 @@ class GpsGateNode(Node):
                 throttle_duration_sec=WARN_PERIOD_S)
             return
         if self.quality:
-            cls = self.rtk_class(msg)
+            cls = rq.effective_class(self.rtk_class(msg), _max_horizontal_covariance(msg),
+                                     self.policy)
             reason = _apply_quality(msg, cls, self.policy)
             if reason is not None:
                 self.rejected += 1
                 self.get_logger().warn("dropping fix: %s" % reason,
                                        throttle_duration_sec=WARN_PERIOD_S)
                 return
+        if not self._jump.admit(time.monotonic(), msg.latitude, msg.longitude):
+            self.jumps_held += 1
+            self.get_logger().warn(
+                "holding back a fix %.1f+ m from the last one until it persists %.1f s"
+                % (self._jump.jump_m, self._jump.confirm_s), throttle_duration_sec=WARN_PERIOD_S)
+            return
         if self.tilt:
             self._compensate_tilt(msg)
         self.passed += 1

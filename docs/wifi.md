@@ -88,3 +88,8 @@ would fix coverage, because the phone walks next to the robot.
 - The AP range only needs to cover the phone walking beside the robot, so the
   TX power can be lowered (`iw dev wlan1 set txpower fixed 1000`) to reduce
   interference with wlan0.
+- From stock v1.3.33 the vendor `base_net_node` stays running under `rosmaster` with our
+  stack. It locks the BSSID on its Wi-Fi profile, turns firmware roaming off (`wl roam_off`),
+  deletes other Wi-Fi profiles and restarts NetworkManager on ping failures
+  (`handover.md`, "What the vendor base_net_node does"). Any plan here that changes NM profiles
+  or roaming has to go through it or be undone by it; the 2026-11-01 roaming numbers predate it.

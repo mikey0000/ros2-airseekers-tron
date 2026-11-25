@@ -1,10 +1,10 @@
-# seg_ros — PP-LiteSeg terrain segmentation (pplite-seg_20260630-1-6cls.rknn, 6 classes).
+# seg_ros — PP-LiteSeg terrain segmentation (pp37.rknn, 6 classes; stock v1.3.33 retrain of pplite-seg_20260630-1-6cls.rknn).
 # Class order fixed by the model (see src/mower_perception/seg_ros/src/ppseg.cc):
 #   0 other, 1 grass, 2 passway, 3 soil, 4 obstacle, 5 shrub
 seg_ros:
   ros__parameters:
     # Device path (scripts/install_models.sh); fallback <models_dir>/<basename>.
-    model_path: "/userdata/ros2/models/pplite-seg_20260630-1-6cls.rknn"
+    model_path: "/userdata/ros2/models/pp37.rknn"
     models_dir: ""
     dry_run: false            # true: no rknnlite / model -> stay alive, publish nothing
     # 2 Hz (2026-10-09): the non-grass memory needs a few frames per cell from different

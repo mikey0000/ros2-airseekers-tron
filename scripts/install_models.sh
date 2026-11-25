@@ -28,7 +28,7 @@ LIB_DEST="${LIB_DEST:-/userdata/ros2/lib}"
 RKNN_RT_VERSION="${RKNN_RT_VERSION:-2.3.0}"
 RT_URL="https://github.com/airockchip/rknn-toolkit2/raw/v${RKNN_RT_VERSION}/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so"
 # det_ros + seg_ros defaults first; the rest are kept for experiments.
-MODELS=(best_large_0208.rknn pplite-seg_20260630-1-6cls.rknn
+MODELS=(best_large_0208.rknn pp37.rknn pplite-seg_20260630-1-6cls.rknn
         best_small_0208.rknn pplite-seg_20260606.rknn model_1.rknn)
 
 LOCAL=""; RUNTIME=0; DRY=0

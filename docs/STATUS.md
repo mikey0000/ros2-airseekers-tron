@@ -20,6 +20,7 @@ mid-mow re-plan, obstacle detours on labelled detections, docking by day, and re
 | Open work, tidy-up, stock comparison, next two weeks | `analysis/2026-11-04_open_work_audit.md` |
 | Owner decisions A1-A6 and queue B1-B13 (with status) | `analysis/2026-10-21_independent_review.md` |
 | Stock firmware behaviour and lessons | `analysis/2026-10-21_stock_firmware_findings.md` |
+| Switching to stock / handover / reinstall (`scripts/switch_stack.sh`) | `handover.md` |
 | Sim gate, criteria, baselines | `simulation.md` |
 | Field mow evidence | `analysis/` (one doc per field problem), `wheel_smoothness_field_tests.md` (lapsed after 2026-10-23, B4) |
 
@@ -1299,6 +1300,8 @@ pose. After 600 s it goes to MOWING_INCOMPLETE, docks if RTK is fixed
 no-progress counters. Dock transits and docking are exempt unless lost for more than 60 s.
 Details: docs/localization.md "RTK-loss policy". The sim cannot inject an RTK loss yet, so
 this has only had unit tests and a plain no-regression gate.
+2026-11-25: degraded now coasts on dead reckoning within a measured budget before holding
+(section "Coast mode" below).
 
 2026-11-03, branch `ws/rtk-stale`: the new sim RTK-loss injection showed `/fix_status`
 never went stale in sim. Five nodes compared the pump's node-clock receipt times with
@@ -2166,3 +2169,64 @@ resume path waits for it; a boundary trip on an untrusted pose joins the hold in
 moving; ekf_map fuses wheel vy = 0 at 0.05 (m/s)^2 (bag replay: drift 0.53 -> 0.02 m,
 fixed-RTK tracking unchanged). New sim injection (`single`, fixed float offset) and world
 `owner_area4_strip_rtkdrop.yaml`. Details, tests and sim: `analysis/2026-11-13_rtk_dropout.md`.
+
+## Cross-plan "spur" e failure: mission progress jumped onto a later stretch (2026-11-25, branch ws/spur1125, unit + sim; not field tested)
+
+The 180 deg out-and-back at (-1.05, 3.95) on `real_run5_cross` is a gap-fill pocket spur that
+the planner places on purpose (`mower_coverage` fillGaps), and the robot drove it as planned.
+The e failure came from the mission's progress index (`_track_progress`, nearest pose within
+3 m ahead). It jumped from a filleted arc onto a fill pass 6 mm away and then onto the
+spur's way back. Every pocket spur did the same on the way in, real_run5 included. Resume
+poses, retry starts and guards use that index. Fix: `geometry.progress_index` moves to a later
+stretch only when it is more than 0.10 m closer. Sim: real_run5_cross e PASS (from 0.384 m),
+real_run5 PASS, real_run5_cross60 fails e/h/i as on master. Open: a 0.55 m coverage fillet cut
+at a row -> fill-pass hairpin. Details: `analysis/2026-11-25_cross_spur.md`.
+
+## Sub-path start approach: index-0 cross-track (2026-11-25, branch ws/approach1125, unit + sim; not field tested)
+
+The cross60 (h) tail was sub-paths that started 0.54-0.58 m from the robot. That is under
+`transit_gap_m`, so the leg-start pivot was made where the robot stood and the tracker cut in
+1.5 m down the leg. A gap over the new `leg_start_reach_m` 0.12 m now gets the final approach
+hop onto the start first. Also in this branch:
+
+- coverage pivots are aimed from where the rolling robot stops (a run5 lap-0 vertex pivot was
+  17 deg short);
+- progress no longer jumps to a later pass where a sub-path crosses itself (a hold there
+  would have skipped 3 m); merged with ws/spur1125, this uses its `geometry.progress_index`
+  (the branch's own `nearest_index(tie=)` was dropped).
+
+Sim: cross60 (h) line p99 went from 0.334 to 0.091 m; real_run5 PASS (master FAIL (i)). The
+cross60 (i) still fails at 0.123 (a transit final-approach Spin aimed from a rolling pose) and
+0.105 (the lap-0 convex arc). Details: `analysis/2026-11-25_approach_xte.md`.
+
+## Coast mode: keep mowing through a short RTK loss on dead reckoning (2026-11-25, branch ws/coast1125, unit + bag replay + sim; on by default, not field tested)
+
+An RTK loss (single, dropout, float under the sigma gate, or the ekf_map sigma gate alone)
+during a mow follow or a transit no longer stops the mower at once. It coasts on dead
+reckoning at 0.15 m/s with the blade unchanged while localization_monitor's `coast_left_m`
+lasts (5 m flat .. 1.5 m from 8 deg, 60 s, none after wheel slip or an RTK position more than
+0.15 m + est_drift from dead reckoning) and the body stays est_drift + 0.10 m inside the
+boundary guard's limits along the path ahead; then the existing hold. `est_drift_m` is the
+drift study's tilt-aware model (5 cm + 2 %/m flat .. 10 cm + 10 %/m at 11 deg, + 1 cm per
+pivot; VIO as a pluggable rate scale). gps_gate: a "fixed" fix with a float-sized sigma is
+fused as float (the 11-21 float-onset /fix arrived before its /fix_status and moved ekf_map
+3 m) and a 0.5 m position jump is held back until it persists 2 s. `coast_enabled: false`
+restores the 2026-11-03 degraded rule. Sim: a 15 s mid-row single dropout is coasted through
+(hold 5 s instead of 20 s; the dead-reckoning error tips tracking criteria h / i); the strip
+dropout holds and rejects the 0.3 m float as on master. Replay: inflating the float
+covariance does not keep ekf_map off a 0.3 m float after a dropout, so that is left to the
+monitor's gate and the hold. Details: `analysis/2026-11-25_coast_mode.md`,
+docs/localization.md "Coast mode".
+
+## Stock v1.3.33 glean: compatibility and ports (2026-11-25, branch ws/glean1125, unit only; not field tested)
+
+Compatibility: the RTK rover board 0.9.57 (flashed by stock) keeps every command, reply
+format and the 115200 port our driver and `rtk_pair.py` use; NRTK throttle is a host-side
+NTRIP policy with no board command. The EC200A beta modem firmware changes nothing we use
+(we never talk to the modem). The vendor `base_net_node`, left running under rosmaster, owns
+Wi-Fi profiles, BSSID lock, routes and DNS: documented in `handover.md`, no conflict with
+`wifi_monitor` or the Tailscale sidecar. Ported: dock on low voltage (<= 20 V at SOC >= 30 %,
+5 s) and resume at a full charge; seg_ros default model `pp37.rknn` (deploy step in
+`src/seg_ros/README.md`). Not ported: speed raises, `local_stop_dist`, omni shift (Tron is
+diff drive); left: the bumper back-up safety check against keepouts. Details and the
+candidate table: `analysis/2026-11-25_stock_v1.3.33_glean.md`.

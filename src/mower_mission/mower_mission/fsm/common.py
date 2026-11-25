@@ -498,6 +498,8 @@ class Inputs:
     camera_blocked: bool = False
     # /battery temperature (deg C, mcu_node BatteryInfo.temperature); None = not reported
     battery_temp_c: Optional[float] = None
+    # /battery voltage (V); None = not reported
+    battery_voltage_v: Optional[float] = None
     fix_type: Optional[int] = None
     hdop: Optional[float] = None        # /gps/status hdop (recorded-vertex quality)
     gps_quality: float = 0.0            # 0..1 (upstream publishes a fraction)
@@ -590,6 +592,7 @@ class Inputs:
     loc_stamp: Optional[float] = None
     loc_rtk: str = ''                       # receiver class: fixed|float|dgps|single|none|stale
     loc_est_drift: Optional[float] = None   # est_drift_m (None before the first RTK FIXED)
+    loc_coast_left: Optional[float] = None  # coast_left_m: dead-reckoning distance left (coast mode)
     # 2026-10-23 option C: /obstacle_tracker/nogo_zones (nogo.ZoneSet) + receipt time
     nogo_zones: Any = None
     nogo_stamp: Optional[float] = None
@@ -637,6 +640,14 @@ class Params:
     battery_critical_percent: float = 5.0
     battery_critical_grace_s: float = 120.0
     battery_critical_poweroff: bool = True
+    # Low voltage at a healthy SOC (stock v1.3.33 ChargeEnvCheck: "low voltage while SOC>=30%
+    # && V<=20V", held 5 s -> go docking, "resume requires full charge 100%"): a pack that
+    # sags this far while its SOC still reads >= min_percent is worn or miscalibrated, so a
+    # running mission docks and resumes only at min(100 %, battery_max_charge_percent).
+    # The 6S pack reads ~21.6 V at 52 %. 0 disables.
+    battery_low_voltage_v: float = 20.0
+    battery_low_voltage_min_percent: float = 30.0
+    battery_low_voltage_hold_s: float = 5.0
     preflight_min_fix_type_docked: int = 1
     rtk_fix_type: int = FIX_RTK_FIXED
     rtk_timeout_s: float = 120.0
@@ -785,6 +796,10 @@ class Params:
     # sub-path's own start pivot (_route_final_approach). 0 = off (revert).
     route_final_approach_m: float = 0.05
     route_final_approach_speed_mps: float = 0.1
+    # path_conditioning: a sub-path start within transit_gap_m but farther than this from the
+    # robot gets the same final approach hop (_leg_start_approach); nearer, the leg-start
+    # pivot is aimed from where the robot stops (_pivot_pose). 0 = off (revert).
+    leg_start_reach_m: float = 0.12
     # Sim 2026-10-09: the scripted person crossed Path 1, the route aborted (collision ahead)
     # and the /navigate_to_pose fallback after the wait cut across the lawn into a drawn
     # obstacle corner. An obstacle abort now waits (blocked wait) and re-sends the ROUTE
@@ -1491,6 +1506,13 @@ class Params:
     # sigma gate 0.3 m off truth and the boundary recovery resumed on it.
     loc_resume_require_fixed: bool = True
     loc_fixed_settle_s: float = 5.0
+    # coast mode (2026-11-25, analysis/2026-11-25_coast_mode.md): degraded during a mow follow
+    # or a transit keeps going on dead reckoning (speed cap, blade unchanged) while the
+    # monitor's coast_left_m > 0 and the path ahead keeps the body est_drift +
+    # coast_edge_margin_m off the boundary and keepouts; then the hold. false = the 2026-11-03
+    # degraded rule (finish the straight swath, loc_degraded_*).
+    coast_enabled: bool = True
+    coast_edge_margin_m: float = 0.10
     # ---- 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py) ----
     nogo_enabled: bool = True
     nogo_zones_max_age_s: float = 10.0       # /obstacle_tracker/nogo_zones receipt age

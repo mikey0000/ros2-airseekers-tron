@@ -1,6 +1,6 @@
 """PP-LiteSeg post-processing.
 
-The shipped ``pplite-seg_20260630-1-6cls.rknn`` has a single NCHW output
+The shipped ``pp37.rknn`` (like ``pplite-seg_20260630-1-6cls.rknn`` before it) has a single NCHW output
 ``[1, 6, H, W]`` (6 classes, dequantised to float). We argmax over the class axis to
 produce a class-index mask, matching the original `draw_segment_image` in
 `src/mower_perception/seg_ros/src/ppseg.cc`.

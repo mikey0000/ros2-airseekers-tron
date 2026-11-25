@@ -108,6 +108,8 @@ class ReactiveGuardsMixin:
             return True
         if self._battery_temp_tick():
             return True
+        if self._battery_low_voltage_tick():
+            return True
 
         b = i.battery_percent
         if b is not None and b < self.p.battery_low_percent and self.phase in MISSION_PHASES \
