@@ -253,8 +253,10 @@ ros2 topic info /fix_gated       # QoS reliable/10 on both ends
 ## RTK-loss policy (2026-11-03, unit-tested; RTK-loss sim scenario pending)
 
 `localization_monitor` publishes `ok` / `degraded` / `lost` from the drift budget
-(`localization_status_logic.py`: 3 cm + 3 %/m wheel or 1.5 %/m VIO since the last confirmed
-FIXED; degraded above 0.3 m, lost above 1.0 m). `ok` also needs the fused `ekf_map` xy sigma
+(`localization_status_logic.py`; degraded above 0.3 m, lost above 1.0 m). Since 2026-11-25 the
+estimate is the tilt-aware model of `drift_model.py` (5 cm + 2 %/m flat, rising to
+10 cm + 10 %/m at 11 deg, + 1 cm per pivot, the per-metre rate halved while VIO is fused; it was
+3 cm + 3 %/m), see "Coast mode" below. `ok` also needs the fused `ekf_map` xy sigma
 (`/odometry/filtered_map` pose covariance) at or below `loc_sigma_ok_m` (0.15 m). A larger
 sigma, or no finite covariance, reads `degraded` whatever the receiver reports, so a FIXED
 flag alone no longer makes `ok`. `loc_sigma_ok_m: 0.0` turns this gate off.
@@ -294,6 +296,47 @@ NAV_TO_DOCK_FAILED (alert `dockFailed`). `_dock()` ends any localization hold of
 interrupted mow.
 
 Stock Tron for comparison: wheels-only for 10 s, VIO for 100 m.
+
+### Coast mode (2026-11-25, sim-gated, not field tested)
+
+Details and evidence: `analysis/2026-11-25_coast_mode.md`. Before it, any RTK loss during a
+mow or transit stopped the mower within a second (the ekf_map sigma gate reads degraded at
+once). Now:
+
+- **Drift model** (`drift_model.py`, parameters in `config/localization_monitor.yaml`):
+  `est_drift_m` = 5 cm + 2 %/m on flat ground, rising linearly to 10 cm + 10 %/m at 11 deg of
+  tilt (`/tilt/status`; the base term from the mean tilt since the fix, the rate per step),
+  + 1 cm per pivot in place (>= 45 deg, |vx| < 0.05). Pluggable aid: `drift_rate_scale_vio`
+  (0.5) multiplies the per-metre rate while gated VIO is fused; another source adds one scale.
+- **Coast budget** (status `coast_left_m`): 5 m of driving on flat ground, 1.5 m from 8 deg,
+  linear in between, 60 s since the last confirmed FIXED; 0 after slip or a disagreeing RTK
+  position. While it is above 0 the `lost_after_s` rule waits (`coast_max_s: 0` restores it).
+- **Slip** (wheel yaw from `/mcu/measured_speed` against the gyro-led `/odometry/filtered`
+  yaw rate parting by 0.6 rad within 2 s) is `lost` until the next confirmed FIXED.
+- **RTK vs dead reckoning**: under RTK float or a fixed not yet confirmed, every
+  `/odometry/gps` sample is compared with the dead-reckoned pose (the map pose at the last fix
+  moved by the odom-frame motion since; ekf_map pulling onto a float does not move it). Two
+  samples in a row further than `float_gate_m` (0.15 m) + the drift estimate are `lost` until
+  the next confirmed FIXED, whatever the fix's own sigma (field 2026-11-13: float 0.3 m off;
+  2026-11-21: float onset 3.02 m off at sigma 0.08 m).
+- **Mission** (`fsm/holds.py` `_loc_coast_tick`, `coast_enabled`, `coast_edge_margin_m`):
+  degraded during a mow follow (spin-ups and pivots included) or a transit keeps going at the
+  degraded speed cap with the blade as it was, while `coast_left_m` > 0 and, along the path
+  ahead within that distance and at the robot, the body stays est_drift + 0.10 m inside the
+  boundary guard's limit (soft side 0.35 m over the outline, hard 0.10 m) and off the
+  keepouts. Otherwise the hold
+  starts as before (fix wait, settled-fix resume, retrace, give-up). The boundary guard trusts
+  the coasting pose (it is continuous with the wheels): a trip is a real BOUNDARY OUT unless
+  the map pose jumped against the wheels or RTK has just come back (float / fixed within
+  `loc_fixed_settle_s`). `coast_enabled: false` restores the 2026-11-03 degraded rule.
+- **gps_gate** (`rtk_quality.effective_class`, `gps_gate.JumpGate`): a fix classed FIXED with a
+  receiver sigma above 5 cm is fused as float (11-21: the float onset's /fix came 1 ms before
+  its /fix_status and was fused at 8 cm sigma; ekf_map jumped 3 m); a fix more than 0.5 m from
+  the last one passed is held back until the new position has held 2 s (`jump_gate_m`,
+  `jump_confirm_s`; a gap of 1 s without fixes lets anything through). The float covariance
+  (x4, 0.4 m floor) is unchanged: in the replay a 0.3 m float offset after a 15 s dropout is in
+  the ekf_map pose within 1-2 s at any floor up to 2 m, so the mission-side gate and hold are
+  what protect against a decimetre-level float error.
 
 Measured dead-reckoning drift (bag replay, 2026-11-13,
 `analysis/2026-11-13_dead_reckoning_drift.md`): with ekf_map's wheel vy, p90 0.20 m after
