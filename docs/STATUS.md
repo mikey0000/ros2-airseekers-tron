@@ -2167,3 +2167,15 @@ resume path waits for it; a boundary trip on an untrusted pose joins the hold in
 moving; ekf_map fuses wheel vy = 0 at 0.05 (m/s)^2 (bag replay: drift 0.53 -> 0.02 m,
 fixed-RTK tracking unchanged). New sim injection (`single`, fixed float offset) and world
 `owner_area4_strip_rtkdrop.yaml`. Details, tests and sim: `analysis/2026-11-13_rtk_dropout.md`.
+
+## Cross-plan "spur" e failure: mission progress jumped onto a later stretch (2026-11-25, branch ws/spur1125, unit + sim; not field tested)
+
+The 180 deg out-and-back at (-1.05, 3.95) on `real_run5_cross` is a gap-fill pocket spur that
+the planner places on purpose (`mower_coverage` fillGaps), and the robot drove it as planned.
+The e failure came from the mission's progress index (`_track_progress`, nearest pose within
+3 m ahead). It jumped from a filleted arc onto a fill pass 6 mm away and then onto the
+spur's way back. Every pocket spur did the same on the way in, real_run5 included. Resume
+poses, retry starts and guards use that index. Fix: `geometry.progress_index` moves to a later
+stretch only when it is more than 0.10 m closer. Sim: real_run5_cross e PASS (from 0.384 m),
+real_run5 PASS, real_run5_cross60 fails e/h/i as on master. Open: a 0.55 m coverage fillet cut
+at a row -> fill-pass hairpin. Details: `analysis/2026-11-25_cross_spur.md`.

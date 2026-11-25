@@ -65,6 +65,36 @@ def test_nearest_index_respects_start():
     assert geo.nearest_index(poses, (0, 0), start=1) == 3
 
 
+def _walk(*corners, step=0.05):
+    """Poses every ``step`` along the polyline ``corners``."""
+    out = [corners[0]]
+    for a, b in zip(corners, corners[1:]):
+        n = max(1, round(geo.dist(a, b) / step))
+        out += [(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n)
+                for k in range(1, n + 1)]
+    return out
+
+
+def test_progress_index_stays_on_a_spur_way_in_its_way_back_runs_over():
+    # sim 2026-11-12 cross: a fill pass arriving at a pocket spur's mouth, the spur 0.81 m in
+    # at -40 deg, about-turn, back out the same line from 0.02 m short of the tip (planner
+    # path, real_run5_cross run 2)
+    mouth, tip = (-1.667, 4.471), (-1.048, 3.951)
+    poses = _walk((-1.561, 4.029), mouth, tip) + _walk((-1.063, 3.964), mouth)
+    k_mouth, k_tip = poses.index(mouth), poses.index(tip)
+    robot = poses[-7]                        # a pose of the way back, 0.3 m in
+    assert geo.nearest_index(poses, robot, k_mouth, 3.0) > k_tip       # the jump
+    k = geo.progress_index(poses, robot, k_mouth, 3.0)
+    assert k_mouth < k < k_tip and geo.dist(poses[k], robot) < 0.03
+
+
+def test_progress_index_takes_a_later_stretch_clearly_closer():
+    poses = _walk((0.0, 0.0), (2.0, 0.0), (2.0, 2.0))
+    robot = (1.8, 0.6)                       # cut the corner: on the way up, 0.2 m off it
+    assert poses[geo.progress_index(poses, robot, 0, 3.0)] == (2.0, 0.6)
+    assert geo.progress_index(poses, (0.5, 0.0), 0) == 10
+
+
 def test_heading_of_fills_missing_yaw():
     poses = [(0, 0, 0.0), (0, 1, 0.0)]
     assert abs(geo.heading_of(poses, 0) - math.pi / 2) < 1e-9
