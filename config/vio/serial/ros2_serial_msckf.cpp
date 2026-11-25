@@ -12,7 +12,10 @@
 // -DOV_ROS2_SERIAL=ON (config/vio/patches/0003-*.patch; the mower build leaves it off).
 //
 //   ros2 run ov_msckf ros2_serial_msckf --ros-args -p config_path:=.../estimator_config.yaml
-//       -p bag:=BAG_DIR -p out_dir:=OUT -p verbosity:=WARNING
+//       -p bag:=BAG_DIR -p out_dir:=OUT -p verbosity:=WARNING [-p start_t:=STAMP]
+//
+// start_t (bag ROS time, s; default 0 = from the start) skips every message stamped before it,
+// e.g. the docked 1 Hz idle part before a mow (docs/vio.md 8.8).
 //
 // Output (CSV, seconds in the bag's ROS time):
 //   OUT/odomimu.csv  one row per IMU message once /ov_msckf/odomimu would publish (1 s after
@@ -102,6 +105,8 @@ int main(int argc, char **argv) {
   options.automatically_declare_parameters_from_overrides(true);
   auto node = std::make_shared<rclcpp::Node>("ros2_serial_msckf", options);
   std::string config_path, bag_path, out_dir = ".";
+  double start_t = 0.0;
+  node->get_parameter("start_t", start_t);
   node->get_parameter("config_path", config_path);
   node->get_parameter("bag", bag_path);
   node->get_parameter("out_dir", out_dir);
@@ -165,6 +170,8 @@ int main(int argc, char **argv) {
       auto imu = std::make_shared<sensor_msgs::msg::Imu>();
       ser_imu.deserialize_message(&sm, imu.get());
       double t = stamp_of(imu->header.stamp);
+      if (t < start_t)
+        continue;
       if (t_first < 0)
         t_first = t;
       t_last = t;
@@ -190,6 +197,8 @@ int main(int argc, char **argv) {
     int cam = (bm->topic_name == topic_cam0) ? 0 : 1;
     auto img = std::make_shared<sensor_msgs::msg::Image>();
     ser_img.deserialize_message(&sm, img.get());
+    if (stamp_of(img->header.stamp) < start_t)
+      continue;
     n_img[cam]++;
     int64_t key = stamp_ns(img->header.stamp);
     auto other = pending[1 - cam].find(key);

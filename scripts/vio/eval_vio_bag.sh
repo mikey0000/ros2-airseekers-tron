@@ -23,7 +23,9 @@
 #
 # Env: SPEED (ekf replay x real time, default 1: 12 filters + 200 Hz VIO in one Python
 #      publisher), PHASES (6), WH_LEN (100), WH_EVERY (120), MIN_N (budget table, 15),
-#      VIO_HZ (thin the gated VIO, default 0 = every message as live), CONFIG (OpenVINS
+#      VIO_HZ (thin the gated VIO, default 0 = every message as live), START_T (bag stamp
+#      where OpenVINS starts; default from eval_vio_bag.py start: skips a docked idle part),
+#      CONFIG (OpenVINS
 #      config dir, default config/vio_metoak), VIO_BUILD (.vio_build),
 #      ORACLE=1: skip OpenVINS and make odomimu.csv from RTK + noise (plumbing test on a bag
 #      without images; NOT a VIO result).
@@ -54,10 +56,11 @@ if [ "$ORACLE" = 1 ]; then
 else
   [ -x "$VIO_BUILD/install/ov_msckf/lib/ov_msckf/ros2_serial_msckf" ] || {
     echo "no ros2_serial_msckf in $VIO_BUILD: run scripts/vio/build_openvins_local.sh" >&2; exit 1; }
-  echo "== 1. OpenVINS (serial) over $BAG"
+  START_T="${START_T:-$(in_image "python3 /work/scripts/vio/eval_vio_bag.py start --bag /bag")}"
+  echo "== 1. OpenVINS (serial) over $BAG from stamp $START_T"
   in_image "ros2 run ov_msckf ros2_serial_msckf --ros-args \
     -p config_path:=/work/$CONFIG/estimator_config.yaml -p bag:=/bag -p out_dir:=/out/ov \
-    -p verbosity:=WARNING" 2>&1 | tee "$OUT/ov/run.log" | tail -4
+    -p verbosity:=WARNING -p start_t:=$START_T" 2>&1 | tee "$OUT/ov/run.log" | tail -4
   report_flags=
 fi
 

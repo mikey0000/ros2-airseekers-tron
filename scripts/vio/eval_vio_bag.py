@@ -3,9 +3,16 @@
 """Offline VIO evaluation steps (2026-11-14, docs/vio.md section 8). Driven by
 ``scripts/vio/eval_vio_bag.sh``; run in the dev image (rclpy for the bag reader).
 
+    eval_vio_bag.py start --bag BAG        stamp where OpenVINS should start (stdout)
     eval_vio_bag.py bridge OUT --bag BAG   OUT/ov/odomimu.csv -> OUT/vio.csv (+ live-RTK gate)
     eval_vio_bag.py oracle OUT --bag BAG   OUT/ov/odomimu.csv made from RTK (plumbing test)
     eval_vio_bag.py report OUT             VIO health report (markdown on stdout, report.json)
+
+``start``: a bag recorded from the dock begins in the camera nodes' idle duty cycle (1 Hz
+pairs, 100 Hz IMU) and stereo_imu drops up to 1.2 s of samples when the mission starts and it
+switches to 200 Hz. OpenVINS initialised in that gap diverged and never recovered (docs/vio.md
+8.8), so it starts at the first IMU stamp after the first non-idle activity that has 2 s of
+gap-free IMU behind it (0 when the bag does not start idle).
 
 ``bridge``: OpenVINS odomimu (``ros2_serial_msckf``) through vio_odom_bridge's conversion
 into /odometry/vio rows, plus vio_gate's verdict on the recorded /fix_status and /odom (what
@@ -43,6 +50,20 @@ PIVOT_WZ = 0.2         # rad/s with |vx| < MOVING
 STILL = 0.02           # m/s RTK speed and wheel speed for "stationary"
 SLOPE_DEG, FLAT_DEG = 8.0, 4.0
 SAMPLE_HZ = 5.0        # velocity comparison samples per second
+
+
+# ---------------------------------------------------------------------------- start
+def cmd_start(a):
+    import ekf_replay
+    msgs = ekf_replay.read_bag(a.bag, 0, 4e9, ('/mission/activity',))
+    acts = [(t, m.data) for t, _n, m in msgs]
+    t_act = vo.full_rate_activity(acts)
+    start = 0.0
+    if t_act:
+        imu = ekf_replay.read_bag(a.bag, t_act, t_act + 30.0, ('/stereo_imu/data',))
+        stamps = [m.header.stamp.sec + 1e-9 * m.header.stamp.nanosec for _t, _n, m in imu]
+        start = vo.imu_settled(stamps) or t_act
+    print('%.6f' % start)
 
 
 # ---------------------------------------------------------------------------- bridge
@@ -291,6 +312,8 @@ def cmd_report(a):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     sub = ap.add_subparsers(dest='cmd', required=True)
+    st = sub.add_parser('start')
+    st.add_argument('--bag', required=True)
     b = sub.add_parser('bridge')
     b.add_argument('out')
     b.add_argument('--bag', required=True)
@@ -304,7 +327,7 @@ def main(argv=None):
     r.add_argument('out')
     r.add_argument('--oracle', action='store_true')
     a = ap.parse_args(argv)
-    {'bridge': cmd_bridge, 'oracle': cmd_oracle, 'report': cmd_report}[a.cmd](a)
+    {'start': cmd_start, 'bridge': cmd_bridge, 'oracle': cmd_oracle, 'report': cmd_report}[a.cmd](a)
 
 
 if __name__ == '__main__':

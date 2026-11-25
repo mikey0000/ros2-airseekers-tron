@@ -33,11 +33,12 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STACK = os.path.dirname(os.path.dirname(HERE))
-for _pkg in ('mower_localization', 'stereo_vio_bridge'):
+for _pkg in ('mower_cameras', 'mower_localization', 'stereo_vio_bridge'):
     _p = os.path.join(STACK, 'src', _pkg)
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from mower_cameras.activity_gate import is_low_power  # noqa: E402
 from mower_localization.vio_gate_logic import VioGateLogic, VioGateParams  # noqa: E402
 from stereo_vio_bridge.odom_convert import (base_twist, body_twist_covariance,  # noqa: E402
                                             rpy_matrix)
@@ -142,6 +143,29 @@ def gate_summary(verdicts: Sequence[Tuple[float, Optional[str]]], max_dt: float 
             'share': {k: v / total for k, v in sorted(shares.items())} if total else {},
             'passing_share': shares.get('PASSING', 0.0) / total if total else 0.0,
             'diverged_episodes': episodes, 'diverged_s': div_s}
+
+
+# ---------------------------------------------------------------------------- start
+def full_rate_activity(activity: Sequence[Tuple[float, str]]) -> float:
+    """Time of the first /mission/activity [(t, text)] outside the camera nodes' idle duty
+    cycle (mower_cameras.activity_gate: 1 Hz stereo pairs, 100 Hz stereo IMU while idle);
+    0.0 when the bag does not start idle (no activity = full rate, as the nodes do)."""
+    if not activity or not is_low_power(activity[0][1]):
+        return 0.0
+    return next((t for t, a in activity if not is_low_power(a)), activity[-1][0])
+
+
+def imu_settled(stamps: Sequence[float], max_gap: float = 0.05, settle_s: float = 2.0
+                ) -> Optional[float]:
+    """First IMU stamp followed by ``settle_s`` without a gap over ``max_gap``: stereo_imu
+    reopens the IIO buffers at each rate change and loses 0.4-1.2 s of samples."""
+    start = stamps[0] if stamps else None
+    for a, b in zip(stamps, stamps[1:]):
+        if b - a > max_gap:
+            start = b
+        elif b - start >= settle_s:
+            return start
+    return None
 
 
 # ---------------------------------------------------------------------------- truth, stats

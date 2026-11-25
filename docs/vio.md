@@ -107,9 +107,8 @@ Topics: `/vio/{left,right}/image_raw`, `/vio/*/camera_info`, `/imu/data`,
    reliable QoS; `stereo_cam` publishes best effort -> ov_msckf would get no images.
    Patched (`config/vio/patches/0001-*.patch`, applied by the build script).
 6. **Possible eye swap:** the Metoak factory calibration gives `T_cam0_cam1` x = -0.060 m
-   (cam1 LEFT of cam0). Either `/vio/left` is physically the right eye or the naming is
-   swapped. Check on the daylight bag (5.1): if stereo triangulation fails / features
-   have negative depth, swap the two `rostopic` lines in `config/vio_wit/kalibr_imucam_chain.yaml`.
+   (cam1 LEFT of cam0). Resolved 2026-11-25 (8.8): the eyes are not swapped, the factory
+   (R, T) was inverted when the config was generated.
 7. **Extrinsics:** `config/vio_wit` uses the URDF's measured `base_link ->
    stereo_camera_optical` (0.466 0 0.240, 0.9 deg down-tilt) for cam0 and the factory
    cam0->cam1 transform; the WIT IMU is identity at base_link (URDF TODO(calib)).
@@ -472,3 +471,49 @@ These runs test the plumbing only. They are **not** a VIO quality test.
   passing inside the simulated dropouts (the rest is the 1 s hold-off); 22 dropout windows per
   variant set; distance to p90 0.10 m 0.75 m wheel only against 3.0 m with the oracle VIO (too few
   windows for the other thresholds). Upper bound only, as said in 8.4.
+
+### 8.8 First daylight bag (2026-11-25 mow, 17 min, 11 deg slope): ~0 features, fixed
+
+The first evaluation reported MSCKF / SLAM features p50 0, VIO vx error p90 4.3 m/s and the gate
+rejecting VIO 99 % of the time. The imagery was never the problem: in daylight every eye has
+8-17 k FAST corners at threshold 20 and 180-300 of 300 KLT tracks survive 84 ms; the tracker
+itself kept 55-150 tracks. OpenVINS diverged within 20 s of initialising, and a diverged filter
+rejects every feature in the update. Two causes, both ours:
+
+* **cam1 extrinsic inverted.** The factory stereo (R, T) (`stereo_params.yaml`, Tx = -60 mm) is
+  OpenCV's X_cam1 = R X_cam0 + T; `generate_vio_config.py` used it as the pose of cam1 in cam0,
+  which put cam1 6 cm LEFT of cam0. Data: disparity xL - xR is positive (+12 px median, the
+  eyes are not swapped), and the left-right epipolar residual is 0.39 px with the factory (R, T)
+  read the OpenCV way against 3.2 px read the config's way. cam0's rotation diag(-1, 1, -1) is
+  right (camera rotations against the gyro: 0.10 deg median residual, identity 0.59 deg).
+  Fixed in `config/vio_metoak`, `config/vio_wit` and `config/vio`.
+* **Initialised inside an IMU gap.** The bag starts docked (idle duty cycle: 1 stereo pair/s,
+  100 Hz IMU). When the mow starts, `stereo_imu` reopens the IIO buffers at 200 Hz and loses
+  0.4-1.2 s of samples (91.2-94.2 s into this bag; the same at every idle <-> active switch).
+  OpenVINS initialised at 91 s and propagated across the gap. `ros2_serial_msckf` takes
+  `start_t` now, and `eval_vio_bag.sh` starts at `eval_vio_bag.py start`: the first IMU stamp
+  after the first non-idle `/mission/activity` with 2 s of gap-free IMU behind it (`START_T`
+  overrides). Each fix alone still diverges; both together work.
+
+Also: the factory distortion is radtan with k3 = -0.05, which OpenVINS' 4-coefficient radtan
+cannot hold (dropping k3 moved the outer image by 13 px p90). The configs now use an
+equidistant fit to the factory model (0.09 px median, 0.5 px p99): slightly more features
+(SLAM p50 18 -> 19), same velocity error.
+
+Result (eval from 94 s, 926 s span): SLAM features p50 19 (report's msckf_feats counts only
+features used by the last MSCKF update and stays 0 at p50; not a health signal), init 8.6 s
+after the first image, camera-IMU offset -5 ms. VIO vx error against RTK p50 / p90
+0.002 / 0.059 m/s while moving (wheels 0.000 / 0.052), vy 0.001 / 0.038, side slope vx p90 0.064,
+pivots 0.063 (wheels 0.078). Gate inside the simulated dropouts: passing 74-77 %, warming up
+23-25 % (mostly the 5 min idle stop at 1 Hz pairs, where odomimu has gaps > 0.5 s), never
+diverged. Distance to p90 0.10 / 0.20 / 0.30 m, wheel only against wheel + VIO: all 0.25 / 0.50 /
+0.75 m against 0.25 / 0.25 / 0.50 m; no pivot 0.25 / 1.25 / 2.00 m against 0.25 / 0.25 / 1.25 m;
+>= 1 pivot 1.00 m either way. This bag is nearly all slope (16 flat moving samples).
+
+Open, before `vio:=true` on the mower:
+* The camera / IMU idle duty cycle breaks VIO at every switch (IMU gap) and while idle (1 Hz
+  pairs; OpenVINS' disparity ZUPT then freezes the last velocity, 0.16 m/s in this bag, until
+  motion resumes). With VIO on, `stereo_imu` and `stereo_cam` should stay at full rate, or
+  `stereo_imu` should switch rate without dropping samples.
+* OpenVINS has no reset: a divergence lasts until restart. The gate's wheel-agreement latch
+  catches it, but nothing restarts ov_msckf.

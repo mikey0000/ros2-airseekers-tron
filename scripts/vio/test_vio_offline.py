@@ -95,6 +95,21 @@ def test_reason_class_strips_numbers():
         vo.reason_class('RTK lost 0.9s ago (holdoff 1.0s)')
 
 
+def test_full_rate_activity_skips_the_idle_duty_cycle():
+    acts = [(10.0, 'docked_idle'), (100.0, 'mowing'), (600.0, 'idle'), (900.0, 'mowing')]
+    assert vo.full_rate_activity(acts) == 100.0
+    assert vo.full_rate_activity([(10.0, 'manual'), (50.0, 'idle')]) == 0.0
+    assert vo.full_rate_activity([]) == 0.0
+
+
+def test_imu_settled_waits_out_the_rate_switch_gap():
+    before = [100.0 + 0.005 * k for k in range(100)]           # 100.0 .. 100.495
+    after = [101.7 + 0.005 * k for k in range(1000)]           # 1.2 s gap, then 200 Hz
+    assert vo.imu_settled(before + after) == 101.7
+    assert vo.imu_settled(after) == 101.7
+    assert vo.imu_settled(before) is None
+
+
 def test_rtk_body_velocity_rotates_into_base_link():
     # driving north-east at 0.5 m/s with yaw 45 deg: pure forward body velocity
     fixes = [(0.1 * k, 0.05 * k * math.cos(math.pi / 4), 0.05 * k * math.sin(math.pi / 4))
