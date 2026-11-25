@@ -223,7 +223,9 @@ def coverage_route_params(st):
             'row_link_mode': str(st.get('row_link_mode', 'auto')),
             # stock-style edge layout per area edge_mode
             'edge_layout': str(st.get('edge_layout', st.get('edge_mode', 'soft'))),
-            'edge_laps': int(st.get('edge_laps', AREA_SETTINGS_DEFAULTS['edge_laps']))}
+            'edge_laps': int(st.get('edge_laps', AREA_SETTINGS_DEFAULTS['edge_laps'])),
+            # narrow strips are entered from their downhill end (-1 = no slope known)
+            'strip_downhill_deg': float(st.get('slope_downhill_deg', -1.0))}
 
 # action outcomes reported by the node
 SUCCEEDED = 'succeeded'
@@ -1303,6 +1305,14 @@ class Params:
     tangent_approach_base_m: float = 0.285
     tangent_approach_body_m: float = 0.26
     leg_start_align_deg: float = 15.0
+    # A narrow-strip plan always gets that straight (field 2026-11-13 / 11-24: pivots at the
+    # strip's narrow tip on an 11 deg slope slid 0.15 m each, SPIN DRIFT aborts, BOUNDARY OUT):
+    # the route's last pivot happens strip_approach_m behind the start, past the tip, where
+    # the body has room. Checked along the straight: base_link inside the allowed region and
+    # every body point at least strip_approach_margin_m under its soft guard limit.
+    strip_approach_margin_m: float = 0.10
+    # ... its length: the one of these whose pivot point has the most room (_strip_approach_len)
+    strip_approach_m: list = field(default_factory=lambda: [1.0, 0.8, 0.6])
     edge_join_m: float = 1.5     # ... then the leg's first metres fade from that inset onto the
     #                              lap (tangent join, round 4); 0 = join across from the inset
     # --- repeated bumper hits (field 2026-10-21 07:29: a real object just outside the line,

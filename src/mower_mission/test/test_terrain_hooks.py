@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Terrain-memory hooks of the mission FSM: incidents + slope-aware swath angle."""
+import pytest
+
 from mower_mission import mission_fsm as f
 
-from test_mission_fsm import (Harness, line, mowing_two_swaths, plan, policy,
-                              start_until_planning)
+from test_mission_fsm import (Harness, line, mowing_two_swaths, param_calls, plan,
+                              policy, start_until_planning)
 
 
 def incidents(h, mark=0):
@@ -93,3 +95,13 @@ def test_slope_angle_null_keeps_planner_choice():
     assert _plan_angle(h) == -1.0
     assert any('planner angle kept (not enough slope data yet)' in e.text
                for e in h.since(m, f.Log))
+
+
+@pytest.mark.parametrize('down, want', [(197.7, 197.7), (None, -1.0)])
+def test_downhill_direction_goes_to_the_coverage_server(down, want):
+    # the strip planner enters a narrow strip from its downhill end (terrain memory)
+    h = Harness()
+    h.area_settings = {0: {'slope_downhill_deg': down}}
+    m = h.mark()
+    start_until_planning(h)
+    assert param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]['strip_downhill_deg'] == want

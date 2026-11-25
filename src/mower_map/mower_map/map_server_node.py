@@ -1560,8 +1560,12 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             # keep the planner's own). The mission uses it only while
             # mow_angle_deg is auto (-1) and slope_mode != off.
             eff = dict(eff)
-            eff['slope_mow_angle_deg'], eff['slope_angle_why'] = self.terrain_mow_angle(
-                self.store.areas[idx].name, eff)
+            name = self.store.areas[idx].name
+            eff['slope_mow_angle_deg'], eff['slope_angle_why'] = self.terrain_mow_angle(name, eff)
+            # Derived, read-only: the signed downhill direction (null = none known); the
+            # narrow-strip planner enters a strip from its downhill end
+            eff['slope_downhill_deg'] = terr.fall_line_downhill(
+                self.terrain_axis(name), float(self.p('terrain_slope_min_deg')))
         else:
             res.success = False
             res.settings_json = '{}'
@@ -1949,17 +1953,28 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         return inc
 
     def terrain_mow_angle(self, name, eff):
-        t = self.terrain.get(name) if self.p('terrain_enabled') else None
         mode = str(eff.get('slope_mode', 'off'))
         if mode == 'off':
             return None, 'slope_mode off'
-        if t is None:
+        if self.terrain_memory(name) is None:
             return None, 'no terrain memory'
-        inside = self._area_inside_mask(name, t)
-        axis = terr.slope_axis(t.raster, inside, min_cells=t.p['min_slope_cells'],
-                               min_coverage=t.p['min_slope_coverage'])
-        return terr.choose_mow_angle(axis, mode, float(eff.get('slope_contour_above_deg', 10.0)),
+        return terr.choose_mow_angle(self.terrain_axis(name), mode,
+                                     float(eff.get('slope_contour_above_deg', 10.0)),
                                      float(self.p('terrain_slope_min_deg')))
+
+    def terrain_memory(self, name):
+        """The terrain memory of area ``name`` (None: none, or terrain off)."""
+        return self.terrain.get(name) if self.p('terrain_enabled') else None
+
+    def terrain_axis(self, name):
+        """terrain.slope_axis of area ``name`` inside its polygon (None: no memory or too
+        little slope data)."""
+        t = self.terrain_memory(name)
+        if t is None:
+            return None
+        return terr.slope_axis(t.raster, self._area_inside_mask(name, t),
+                               min_cells=t.p['min_slope_cells'],
+                               min_coverage=t.p['min_slope_coverage'])
 
     def _area_inside_mask(self, name, t):
         area = next((a for a in self.store.areas if a.name == name), None)

@@ -579,6 +579,11 @@ behavior_tree_node:
     tangent_approach_base_m: 0.285
     tangent_approach_body_m: 0.26
     leg_start_align_deg: 15.0
+    # narrow-strip plans always arrive on that straight (the pivot onto the pass axis happens
+    # tangent_approach_m behind the strip start, outside the narrow tip): base_link inside the
+    # allowed region along it, every body point this far under its soft guard limit
+    strip_approach_margin_m: 0.10
+    strip_approach_m: [1.0, 0.8, 0.6]    # its length: the one whose pivot point has the most room
     edge_join_m: 1.5                     # ... then merge onto the lap over this arc length (tangent join)
     bumper_skip_hits: 3                  # bumper hits within bumper_skip_radius_m -> skip
     bumper_skip_radius_m: 1.0

@@ -33,6 +33,12 @@ without any pivot inside the strip.
   lane change ended). The next pass starts from there with a forward lane change: a cosine S
   from the current line onto the next one over the shortest of ``lane_change_m`` whose poses
   all pass the checks. A pass no lane change reaches is left out.
+* Entry end (:func:`_choose`): a plan that ends where it began, then the most cut (to within
+  ``cut_tie``), then the end the fall line gives: on a known slope the strip is entered from
+  its downhill end, so the forward legs (lane changes included) run uphill and the straight
+  reverse retraces run down along the line just driven (field 2026-11-13 / 11-24, Area 4 on
+  11 deg: docs/analysis/2026-11-13_narrow_strip.md "Entry"); then the wider entry end, then
+  the shorter drive.
 * Output: one point chain with reverse flags, cut by :func:`splitter.split_reverse` into
   forward / reverse sub-paths sharing their cusp poses (no transit between them).
 """
@@ -41,7 +47,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -70,9 +76,12 @@ class StripParams:
     blade_r_m: float = BLADE_R_M
     # body point kind -> how far it may be outside the outline: the soft guard limits
     # (body_boundary.limits_for: nose 0.40, tail 0.30, front corners 0.55, rear corners 0.35)
-    # less a tracking margin
+    # less a tracking margin. Rear corners and tail 0.15 under theirs: field 2026-11-25, the
+    # reverse legs at the 0.48 m east tip tripped rear_right / rear_left 0.36 and tail 0.30
+    # with the planner at 0.25 / 0.20 (reverse tracking ~0.11 m); 0.20 / 0.15 costs 1 % of
+    # Area 4's cut
     out_limits: Dict[str, float] = field(default_factory=lambda: {
-        'nose': 0.28, 'tail': 0.20, 'front': 0.40, 'side': 0.25,
+        'nose': 0.28, 'tail': 0.15, 'front': 0.40, 'side': 0.20,
         # base_link itself stays inside: the guard trips it at 0.10 out (BOUNDARY OUT),
         # and a pass start on a slanted end put it 0.11 out in the sim (2026-11-13)
         'base': 0.0})
@@ -81,7 +90,9 @@ class StripParams:
     # retrace ends at the entry end and the plan ends there, never inside the strip
     entry_tol_m: float = 0.5
     entry_band_m: Tuple[float, float] = (0.3, 0.8)  # where the entry end's width is measured
-    cut_tie: float = 0.03                   # cut fractions this close: the wider entry wins
+    cut_tie: float = 0.03                   # cut fractions this close: fall line, entry width
+    # forward legs within this of the fall line count as up- / downhill (entry end choice)
+    fall_line_deg: float = 60.0
     min_gain_m2: float = 0.03               # a pass must add at least this much cut area
     station_step_m: float = 0.02
     offset_step_m: float = 0.01
@@ -526,13 +537,53 @@ def _shuttle(g: _Geom, passes, start_left: bool):
     return pts, flags, straight, skipped, home
 
 
+class _Candidate(NamedTuple):
+    """One shuttle plan: an axis entered from one end, starting at one long side."""
+    home: bool                  # ends where it began
+    cut: float                  # planned blade cut (m2)
+    uphill: int                 # forward legs: +1 uphill, -1 downhill, 0 across / flat
+    entry_width: float          # rounded to 0.01 m
+    length: float               # drive length (m)
+    ang: float
+    pts: list
+    flags: list
+    straight: list
+    skipped: int
+
+
+def _uphill(ang: float, downhill_deg: Optional[float], p: StripParams) -> int:
+    """+1 when the forward legs at ``ang`` (rad) run within ``fall_line_deg`` of uphill, -1
+    within it of downhill, 0 across the slope or with no slope known."""
+    if downhill_deg is None:
+        return 0
+    c = -math.cos(ang - math.radians(float(downhill_deg)))
+    lim = math.cos(math.radians(p.fall_line_deg))
+    return 1 if c >= lim else -1 if c <= -lim else 0
+
+
+def _choose(cands: Sequence[_Candidate], area: float,
+            p: StripParams) -> Optional[_Candidate]:
+    """The plan to drive: one that ends where it began first; among those, the plans within
+    ``cut_tie`` of the most cut; of these, forward legs uphill (entered from the downhill end:
+    the lane changes steer with the drive wheels' best grip, the retraces run down along the
+    line just driven, docs/analysis/2026-11-13_narrow_strip.md), then the wider entry end,
+    then the shorter drive."""
+    if not cands:
+        return None
+    pool = [c for c in cands if c.home] or list(cands)
+    top = max(c.cut for c in pool)
+    pool = [c for c in pool if c.cut >= top - p.cut_tie * area]
+    return max(pool, key=lambda c: (c.uphill, c.entry_width, -c.length))
+
+
 def plan_strip(outer: Sequence[Point], holes: Sequence[Sequence[Point]] = (),
                p: Optional[StripParams] = None,
-               extra_axes_deg: Sequence[float] = ()) -> StripPlan:
+               extra_axes_deg: Sequence[float] = (),
+               downhill_deg: Optional[float] = None) -> StripPlan:
     """The best shuttle plan over the candidate axes (the minimum-area rectangle's long side,
     the directions of the two long sides, ``extra_axes_deg`` within 20 deg of the axis), each
-    entered from either end. Best = most cut area (to within ``cut_tie``), then the wider entry
-    end, then the shortest drive."""
+    entered from either end (:func:`_choose`). ``downhill_deg``: the signed downhill direction
+    of the area (map frame), None = flat or unknown."""
     p = p or StripParams()
     ring = _ring(outer)
     if len(ring) < 3:
@@ -560,7 +611,7 @@ def plan_strip(outer: Sequence[Point], holes: Sequence[Sequence[Point]] = (),
         if abs(math.sin(a - axis)) < math.sin(math.radians(20.0)):
             axes.append(a)
     area = float(len(_Geom(outer, holes, axis, p).cells)) * p.raster_m ** 2
-    best = None
+    cands: List[_Candidate] = []
     tried = set()
     for a0 in axes:
         for ang in (a0, a0 + math.pi):
@@ -576,24 +627,24 @@ def plan_strip(outer: Sequence[Point], holes: Sequence[Sequence[Point]] = (),
                 pts, flags, straight, skipped, home = _shuttle(g, passes, start_left)
                 if len(pts) < 3:
                     continue
-                cut = float(np.count_nonzero(g.cut_cells(pts))) * g.cell_m2
-                length = sum(math.hypot(b[0] - a[0], b[1] - a[1])
-                             for a, b in zip(pts[:-1], pts[1:]))
-                # ending where it began first, then cut (to within cut_tie), then the wider
-                # entry end, then the shorter drive
-                score = (home, round(cut / area / p.cut_tie) if area > 0 else 0,
-                         round(g.entry_width(), 2), -length)
-                if best is None or score > best[0]:
-                    best = (score, ang, pts, flags, straight, skipped, cut)
+                cands.append(_Candidate(
+                    home, float(np.count_nonzero(g.cut_cells(pts))) * g.cell_m2,
+                    _uphill(ang, downhill_deg, p), round(g.entry_width(), 2),
+                    sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts[:-1], pts[1:])),
+                    ang, pts, flags, straight, skipped))
+    best = _choose(cands, area, p)
     if best is None:
         return StripPlan(False, 'no pass of at least %.1f m fits inside the body limits '
                                 '(%.2f x %.2f m)' % (p.min_pass_m, _l, _w))
-    _score, ang, pts, flags, straight, skipped, cut = best
+    ang, pts, flags, straight, skipped, cut = (best.ang, best.pts, best.flags, best.straight,
+                                               best.skipped, best.cut)
     world = _unrot(np.asarray(pts), ang)
     sw = [tuple(map(tuple, _unrot(np.asarray(s), ang))) for s in straight]
     frac = cut / area if area > 0 else 0.0
-    return StripPlan(True, STRIP_TAG + ' %d pass(es) at %.1f deg, %d skipped, cut %.0f %% of %.2f m2'
-                     % (len(straight), math.degrees(ang) % 360.0, skipped, 100.0 * frac, area),
+    slope = {1: ', entered from the downhill end', -1: ', entered from the uphill end'}
+    return StripPlan(True, STRIP_TAG + ' %d pass(es) at %.1f deg, %d skipped, cut %.0f %% of %.2f m2%s'
+                     % (len(straight), math.degrees(ang) % 360.0, skipped, 100.0 * frac, area,
+                        slope.get(best.uphill, '')),
                      math.degrees(ang) % 360.0,
                      [(tuple(map(float, a)), tuple(map(float, b))) for a, b in sw],
                      [(float(x), float(y)) for x, y in world], list(flags), frac, skipped)

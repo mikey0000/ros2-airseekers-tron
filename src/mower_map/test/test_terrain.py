@@ -124,6 +124,33 @@ def test_slope_axis_and_bias_cancels():
     assert np.nanmax(sl) == pytest.approx(12, abs=0.6)
 
 
+@pytest.mark.parametrize('downhill', [197.7, 30.0])
+def test_slope_axis_signed_downhill(downhill):
+    # the strip's entry end needs the sign the folded axis drops (11-24 strip: downhill ~198)
+    a = T.AreaTerrain('A', SQUARE, t=0)
+    _tilted(a, downhill, 11, bias=(math.radians(2), math.radians(-1.5)))
+    ax = T.slope_axis(a.raster)
+    assert ax['downhill_deg'] == pytest.approx(downhill, abs=1.0)
+    assert T.fall_line_downhill(ax) == pytest.approx(downhill, abs=1.0)
+
+
+def test_fall_line_downhill_needs_one_dominant_slope():
+    # a ridge: the two halves fall opposite ways, the gradients do not agree on a direction
+    a = T.AreaTerrain('A', SQUARE, t=0)
+    g = math.tan(math.radians(10))
+    for x in np.arange(0.05, 10, 0.1):
+        for y in np.arange(0.05, 10, 0.1):
+            a.raster.add_tilt(x, y, g if x < 5 else -g, 0.0)
+    ax = T.slope_axis(a.raster)
+    assert ax['slope_deg'] == pytest.approx(10, abs=0.5) and ax['downhill_deg'] is None
+    assert T.fall_line_downhill(ax) is None
+    one = {'axis_deg': 18.0, 'downhill_deg': 198.0, 'slope_deg': 11.0, 'anisotropy': 0.9}
+    assert T.fall_line_downhill(one) == 198.0
+    assert T.fall_line_downhill(dict(one, slope_deg=2.0)) is None      # flat
+    assert T.fall_line_downhill(dict(one, anisotropy=0.1)) is None     # no dominant direction
+    assert T.fall_line_downhill(None) is None
+
+
 def test_choose_mow_angle_modes():
     ax = {'axis_deg': 30.0, 'slope_deg': 12.0, 'anisotropy': 0.9}
     assert T.choose_mow_angle(ax, 'updown')[0] == 30.0

@@ -155,9 +155,13 @@ def test_get_area_settings_adds_derived_slope_angle(msn, tmp_path):  # noqa: F81
     eff = json.loads(res.settings_json)
     assert eff['slope_mow_angle_deg'] == pytest.approx(0.0, abs=0.5)   # contour = along x
     assert 'contour' in eff['slope_angle_why']
+    # gradient +y points uphill: downhill is -y (270 deg), for the strip planner's entry end
+    assert eff['slope_downhill_deg'] == pytest.approx(270.0, abs=0.5)
     n.settings.set_area('Lawn', {'slope_mode': None})
     n.srv_get_area_settings(types.SimpleNamespace(area_index=0), res)
-    assert json.loads(res.settings_json)['slope_mow_angle_deg'] is None
+    eff = json.loads(res.settings_json)
+    assert eff['slope_mow_angle_deg'] is None
+    assert eff['slope_downhill_deg'] == pytest.approx(270.0, abs=0.5)   # whatever slope_mode
 
 
 def test_area_resize_keeps_memory(msn, tmp_path):  # noqa: F811

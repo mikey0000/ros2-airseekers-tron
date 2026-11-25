@@ -108,6 +108,10 @@ class CoverageServer(Node):
         # A forward sub-path shorter than this that joins neither neighbour (a transit both
         # ways) is left out of the plan (splitter.drop_fragments; about one body length)
         p('min_fragment_m', 0.70)
+        # Signed downhill direction of the area (deg, map frame; the mission sets it per area
+        # from the terrain memory, -1 = none known): a narrow strip is entered from its
+        # downhill end (strip.plan_strip)
+        p('strip_downhill_deg', -1.0)
         self.add_on_set_parameters_callback(self._on_set_parameters)
         # Coverage verification of the last plan (the action result has no
         # field for it): latched JSON {coverage_fraction, gap_count,
@@ -368,8 +372,10 @@ class CoverageServer(Node):
         """The strip shuttle plan of the goal's area (strip.plan_strip); the goal's or the
         node's mow angle is one more candidate axis."""
         angle = goal.mow_angle_deg if goal.mow_angle_deg >= 0.0 else self._float('mow_angle_deg')
+        down = self._float('strip_downhill_deg')
         plan = strip.plan_strip(outer, holes, self._strip_params(),
-                                extra_axes_deg=[angle] if angle >= 0.0 else [])
+                                extra_axes_deg=[angle] if angle >= 0.0 else [],
+                                downhill_deg=down if down >= 0.0 else None)
         self.get_logger().info(plan.message)
         return plan
 

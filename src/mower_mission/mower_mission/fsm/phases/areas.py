@@ -133,6 +133,11 @@ class AreasMixin:
                 self._log('info', 'slope_mode %s: planner angle kept (%s)'
                           % (st['slope_mode'], got.get('slope_angle_why', 'no slope angle')
                              if src == 'map_server' else 'map_server unavailable'))
+        # Signed downhill direction (terrain memory; -1 = none known): the coverage server
+        # enters a narrow strip from its downhill end (strip.py)
+        dh = got.get('slope_downhill_deg') if src == 'map_server' else None
+        st['slope_downhill_deg'] = float(dh) % 360.0 if isinstance(dh, (int, float)) and \
+            not isinstance(dh, bool) else -1.0
         # Global mow_angle_deg parameter: fallback for areas left on auto.
         if float(st['mow_angle_deg']) < 0.0 and self.p.mow_angle_deg >= 0.0:
             st['mow_angle_deg'] = float(self.p.mow_angle_deg)

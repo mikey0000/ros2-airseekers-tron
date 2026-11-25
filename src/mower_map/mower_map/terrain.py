@@ -284,13 +284,16 @@ SLOPE_MODES = ('off', 'auto', 'contour', 'updown')
 
 
 def slope_axis(raster: TerrainRaster, inside: Optional[np.ndarray] = None, min_w=1.0,
-               min_cells=50, min_coverage=0.25):
+               min_cells=50, min_coverage=0.25, min_consistency=0.5):
     """Dominant slope axis of an area from its gradient cells.
 
     Uses the structure tensor of the per-cell gradients (sign-free, so a ridge
     or a valley does not cancel out). Returns None when there is too little data,
-    else ``{axis_deg, slope_deg, p90_slope_deg, anisotropy, cells, coverage}``
-    with ``axis_deg`` the uphill/downhill direction folded to [0, 180).
+    else ``{axis_deg, downhill_deg, slope_deg, p90_slope_deg, anisotropy, cells, coverage}``
+    with ``axis_deg`` the uphill/downhill direction folded to [0, 180) and ``downhill_deg``
+    the signed downhill direction in [0, 360) of the mean gradient, or None where the
+    gradients do not agree on one (a ridge or a valley: the mean is under
+    ``min_consistency`` of the dominant slope).
     """
     ok = raster.gw >= min_w
     total = int(ok.size if inside is None else inside.sum())
@@ -309,8 +312,12 @@ def slope_axis(raster: TerrainRaster, inside: Optional[np.ndarray] = None, min_w
     l1, l2 = tr / 2 + disc, tr / 2 - disc
     axis = 0.5 * math.atan2(2 * sxy, sxx - syy)
     mag = np.hypot(gx, gy)
+    mx, my = float(gx.mean()), float(gy.mean())
+    downhill = round(math.degrees(math.atan2(-my, -mx)) % 360.0, 2) \
+        if math.hypot(mx, my) >= min_consistency * math.sqrt(l1) else None
     return {
         'axis_deg': round(math.degrees(axis) % 180.0, 2),
+        'downhill_deg': downhill,
         'slope_deg': round(math.degrees(math.atan(math.sqrt(l1))), 2),
         'p90_slope_deg': round(math.degrees(math.atan(float(np.percentile(mag, 90)))), 2),
         'anisotropy': round((l1 - l2) / (l1 + l2), 3) if l1 + l2 > 0 else 0.0,
@@ -340,6 +347,16 @@ def choose_mow_angle(axis: Optional[dict], mode: str, contour_above_deg=10.0,
     ang = axis['axis_deg'] + (90.0 if mode == 'contour' else 0.0)
     return round(ang % 180.0, 2), '%s: slope %.1f deg, fall line %.0f deg' % (
         mode, axis['slope_deg'], axis['axis_deg'])
+
+
+def fall_line_downhill(axis: Optional[dict], min_slope_deg=3.0, min_anisotropy=0.3):
+    """Signed downhill direction (deg, [0, 360), map frame) of an area with one dominant
+    slope (the gates of :func:`choose_mow_angle`), else None. The narrow-strip planner enters
+    a strip from its downhill end with it (docs/analysis/2026-11-13_narrow_strip.md)."""
+    if axis is None or axis['slope_deg'] < min_slope_deg or \
+            axis['anisotropy'] < min_anisotropy:
+        return None
+    return axis.get('downhill_deg')
 
 
 # --------------------------------------------------------------------------- per-area memory

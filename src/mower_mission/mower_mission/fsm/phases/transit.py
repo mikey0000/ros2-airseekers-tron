@@ -321,15 +321,19 @@ class TransitMixin:
         where it comes within that distance of the start and joined to the point that far
         back along the leg; kept only when base_link stays tangent_approach_base_m inside the
         line along the straight (inside along the join) and the body at most
-        tangent_approach_body_m out. Already arriving within leg_start_align_deg, an
-        edge-approach target or no room: the route unchanged."""
+        tangent_approach_body_m out. A narrow-strip plan always gets it, with the strip's
+        checks (_strip_approach_ok): the straight then runs from past the strip's tip. Already
+        arriving within leg_start_align_deg, an edge-approach target or no room: the route
+        unchanged."""
         m = self.mission
         if m is not None:
             m.tangent = None
         st = (m.settings or {}) if m is not None else {}
         tgt = m.transit_target if m is not None else None
         L = float(self.p.tangent_approach_m)
-        if not st.get('tangent_approach') or L <= 0.0 or len(poses) < 2 or tgt is None or \
+        strip = m is not None and m.strip
+        if not (st.get('tangent_approach') or strip) or L <= 0.0 or len(poses) < 2 or \
+                tgt is None or \
                 len(tgt) < 3 or not self._region_areas or m.step != 'transit' or \
                 not (0 <= m.sub_i < len(m.subpaths or [])):
             return poses
@@ -348,6 +352,11 @@ class TransitMixin:
         run_in = math.atan2(sy - poses[k][1], sx - poses[k][0])
         if abs(geo.wrap_angle(run_in - yaw)) < align:
             return poses                       # already tangent
+        polys = self._region()
+        if strip:
+            L = self._strip_approach_len((sx, sy, yaw), polys)
+            if L is None:
+                return poses
         ux, uy = math.cos(yaw), math.sin(yaw)
         P = (sx - L * ux, sy - L * uy)
         # keep the route up to its last pose farther than L + 0.2 m from the start
@@ -356,13 +365,14 @@ class TransitMixin:
             keep.pop()
         if not keep:
             return poses
-        polys = self._region()
         base_in, body_out = float(self.p.tangent_approach_base_m), \
             float(self.p.tangent_approach_body_m)
         zero = {'side': 0.0, 'front': 0.0, 'nose': 0.0, 'tail': 0.0}
         n = max(2, int(math.ceil(L / 0.1)))
         for i in range(n + 1):
             x, y = P[0] + (sx - P[0]) * i / n, P[1] + (sy - P[1]) * i / n
+            if strip:
+                continue                       # checked by _strip_approach_len
             e = bbody.nearest_edge_point(x, y, polys)
             if bbody.point_outside(x, y, polys) > 0.0 or e is None or e[2] < base_in:
                 return poses
@@ -386,6 +396,60 @@ class TransitMixin:
                           'off it)' % (sx, sy, L, math.degrees(yaw),
                                        math.degrees(abs(geo.wrap_angle(run_in - yaw)))))
         return out
+
+    def _strip_approach_len(self, start, polys):
+        """Length of a strip's straight approach onto ``start`` (x, y, yaw), from
+        strip_approach_m: the one whose straight has room (_strip_approach_ok) and whose
+        pivot point leaves the most room for the pivot: the body swept round in full there
+        and spin_drift_hard_m further downhill (the area's downhill direction, else back
+        along the approach: a strip mowed along its fall line creeps along its axis; sim
+        2026-11-25, the pivot 1.0 m behind the tip slid 0.3 m toward the path edge and
+        SPIN DRIFT stopped it twice). None: no length fits."""
+        sx, sy, yaw = start
+        ux, uy = math.cos(yaw), math.sin(yaw)
+        dh = float((self.mission.settings or {}).get('slope_downhill_deg', -1.0))
+        down = math.radians(dh) if dh >= 0.0 else yaw + math.pi
+        shift = float(self.p.spin_drift_hard_m)
+        best = None
+        for L in self.p.strip_approach_m:
+            L = float(L)
+            n = max(2, int(math.ceil(L / 0.1)))
+            if not all(self._strip_approach_ok((sx - L * ux * (1 - i / n),
+                                                sy - L * uy * (1 - i / n), yaw), polys)
+                       for i in range(n + 1)):
+                continue
+            px, py = sx - L * ux, sy - L * uy
+            room = min(self._pivot_room((x, y), polys) for x, y in (
+                (px, py), (px + shift * math.cos(down), py + shift * math.sin(down))))
+            if best is None or room > best[0]:
+                best = (room, L)
+        return None if best is None else best[1]
+
+    def _pivot_room(self, xy, polys):
+        """How far the body swept through a full turn at ``xy`` stays under its soft guard
+        limits (m; negative = over)."""
+        lim = self._soft_body_limits()
+        return -max((bbody.evaluate((xy[0], xy[1], math.radians(a)), polys, lim)
+                     or {'excess': -math.inf})['excess'] for a in range(0, 360, 10))
+
+    def _soft_body_limits(self):
+        p = self.p
+        return bbody.limits_for('soft', float(p.hard_boundary_body_soft_side_m),
+                                float(p.hard_boundary_body_soft_nose_m),
+                                float(p.hard_boundary_body_soft_tail_m),
+                                float(p.hard_boundary_body_hard_m),
+                                float(p.hard_boundary_body_soft_front_m))
+
+    def _strip_approach_ok(self, pose, polys):
+        """A pose of a strip's straight approach has room: base_link inside the allowed
+        region (the strip U the paths and lawns past its tip) and every body point at least
+        strip_approach_margin_m under its soft guard limit. The strip's own planner allows
+        the body past the outline (lawn ends), so the plain tangent checks (base_link 0.285 m
+        inside the line) never pass in a 0.5-0.7 m strip."""
+        if bbody.point_outside(pose[0], pose[1], polys) > 0.0:
+            return False
+        ev = bbody.evaluate(pose, polys, self._soft_body_limits())
+        return ev is None or ev['excess'] <= -float(self.p.strip_approach_margin_m)
 
     def _split_route(self, poses):
         """Route poses -> FollowPath legs. Task 0.4 (d), route_corner_turn_rad > 0: split at

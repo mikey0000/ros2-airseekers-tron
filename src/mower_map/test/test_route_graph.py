@@ -657,3 +657,48 @@ def test_obstacle_beside_path_band_does_not_block():
     route = g.plan((-3.0, 0.0, 0.0), (15.0, 0.0, 0.0))
     assert isinstance(route, rg.Route), route
     assert any(lg['kind'] == rg.PATH and lg['length'] > 10.0 for lg in route.legs)
+
+
+# ------------------------------------------------------------------ merging onto a path
+
+_OWNER_FAR = os.path.join(os.path.dirname(__file__), '..', '..', 'mower_sim', 'worlds',
+                          'owner_far_areas.dat')
+
+
+def _strip_tip_graph(**kw):
+    """The owner's Path 2 beside Area 4 (the narrow strip); its start (-17.19, 1.00) lies in
+    the path band 0.12 m beside the centreline (field 2026-11-24)."""
+    areas, _ = core.load_areas_file(_OWNER_FAR)
+    keep = ('Area 1', 'lawn section', 'Area 4', 'Dock path', 'Path 2', 'Path 3', 'Path 4')
+    return rg.RouteGraph([a for a in areas if a.name in keep], None, rg.RouteParams(**kw))
+
+
+def _headings(poses, n):
+    return [math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+            for a, b in zip(poses[:n], poses[1:n + 1])]
+
+
+@pytest.mark.parametrize('merge, square', [(15.0, False), (0.0, True)])
+def test_route_from_beside_a_path_merges_onto_it(merge, square):
+    # the square hop onto the centreline then a 90 deg turn along it were two pivots a few cm
+    # apart at the strip tip; the merge meets the line 15 deg ahead, inside the band
+    start, goal = (-17.194, 1.001, math.radians(17.7)), (-12.0, 2.75, 0.3)
+    route = _strip_tip_graph(merge_angle_deg=merge).plan(start, goal)
+    assert not isinstance(route, str), route
+    line = math.degrees(math.atan2(3.94 - 0.79, -8.98 + 18.18))     # Path 2's centreline
+    first = _headings(route.poses, 1)[0]
+    if square:
+        assert abs(_wrap(math.radians(first - line))) > math.radians(80.0)
+        return
+    assert abs(first - line) <= 15.5
+    hs = _headings(route.poses, 15)                  # no turn over 16 deg in the first metres
+    assert all(abs(math.degrees(_wrap(math.radians(b - a)))) <= 16.0 for a, b in zip(hs, hs[1:]))
+    xy = np.array([p[:2] for p in route.poses[:15]])
+    assert _strip_tip_graph()._inside_union(xy[:, 0], xy[:, 1]).all()
+
+
+def test_route_to_beside_a_path_merges_off_it():
+    route = _strip_tip_graph().plan((-12.0, 2.75, 3.4), (-17.194, 1.001, math.radians(17.7)))
+    hs = _headings(route.poses[-6:], 5)
+    line = math.degrees(math.atan2(0.79 - 3.94, -18.18 + 8.98))
+    assert all(abs(math.degrees(_wrap(math.radians(h - line)))) <= 15.5 for h in hs)

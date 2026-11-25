@@ -1,0 +1,35 @@
+# owner_area4_strip.yaml + the field slope (2026-11-25, docs/analysis/2026-11-13_narrow_strip.md
+# "Entry"): the strip lies on an ~11 deg slope whose fall line runs along it. Field bag
+# 2026-11-24: pitch -10.5 deg on headings 0-30 deg (nose up), the terrain memory's fall line
+# 15-19 deg; downhill is the west tip, where the strip is entered. The region covers the strip,
+# the Path 2 band beside it and the lawn past the west tip, so the entry, the strip passes and
+# the exit / dock-route pivots all run on the slope (mower_sim/terrain.py: pivots slide
+# downhill, as the field's SPIN DRIFT aborts at the tip did).
+# Slip: the defaults (calibrated on the area 1 side slope) lose 95 % of a reverse and 25 % of a
+# forward drive at 10 deg and stalled master's first uphill pass (STUCK). Along the fall line
+# the field strip drove its passes cleanly both ways (pass ends within 0.02 m of the plan,
+# 2026-11-24; wheel odometry off by 16 % downhill, a few % uphill: 2026-11-13 drift study), so
+# forward / reverse slip is set to that; the pivot creep stays the calibrated 0.045 m/s (a
+# 90 deg pivot slides ~0.2 m, the field's 0.15 m SPIN DRIFT aborts).
+# Gate: SIM_GATE_OUT=<abs> ./scripts/sim_gate.sh -w src/mower_sim/worlds/owner_area4_strip_slope.yaml \
+#   -n stripslope -l -x 3 -s 1 -t 4000
+name: owner_area4_strip_slope
+datum: {lat: 48.0, lon: 9.0}
+areas_file: owner_far_areas.dat
+areas_select: [Area 1, lawn section, Area 4, Dock path, Path 2, Path 3, Path 4]
+lawn_area: Area 4
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+obstacles: []
+battery: {voltage: 25.0, percentage: 0.9}
+area_settings:
+  Area 4: {edge_mode: soft, edge_laps: 3, perimeter_laps: 2, edge_margin_m: 0.05,
+           path_mode: zigzag, route_order: racetrack, mow_angle_deg: 17.74}
+terrain:
+  regions:
+    - name: strip_fall_line
+      polygon: [[-19.5, -1.0], [-10.0, -1.0], [-10.0, 3.5], [-19.5, 3.5]]
+      slope_deg: 11.0
+      downhill_deg: 197.7
+      fade_m: 0.4
+  slip: {fwd_max: 0.05, rev_max: 0.15}

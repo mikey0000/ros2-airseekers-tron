@@ -96,6 +96,10 @@ class RouteParams:
     # 2026-10-13 (a no-op on 0.7 m bands, off-centre on wider ones).
     perimeter_margin_m: float = 0.05   # perimeter ring = area inset by clearance + this
     perimeter_max_factor: float = 2.0  # perimeter variant at most this x the direct leg
+    # A route that starts / ends beside a path's centreline merges onto / off it at this
+    # angle instead of square to it (the square hop made two ~90 deg pivots 0.1 m apart,
+    # which slid on the 11 deg strip slope, field 2026-11-24); 0 = square hops
+    merge_angle_deg: float = 15.0
     overlap_step_m: float = 0.5    # overlapping paths are joined this often along the overlap    # mid-path portal spacing (0 = ends / junctions only)
 
     @classmethod
@@ -1035,6 +1039,50 @@ class RouteGraph:
             v = u
         return seq[::-1], dist[g]
 
+    def _merge_ends(self, verts):
+        """Route vertices (x, y, kind, area) with a square hop at either end (start / goal
+        beside a path centreline: a hop of at most a band's half width, then a turn of 45 deg
+        or more onto the line) replaced by a straight merge that meets the line
+        merge_angle_deg ahead, where that merge stays inside the areas / paths. The square
+        hop made two ~90 deg pivots a few cm apart (field 2026-11-24 strip tip on an 11 deg
+        slope: each slid 0.15 m, SPIN DRIFT, BOUNDARY OUT)."""
+        ang = math.radians(float(self.p.merge_angle_deg))
+        if ang <= 0.0 or len(verts) < 3:
+            return verts
+        out = self._merge_start(list(verts), ang)
+        return self._merge_start(out[::-1], ang)[::-1]
+
+    def _merge_start(self, verts, ang):
+        """_merge_ends for the first vertex of ``verts``."""
+        hw = max((p.half_width for p in self.paths), default=0.0) + float(self.p.tolerance_m)
+        q, t = verts[0], verts[1]
+        d = math.hypot(t[0] - q[0], t[1] - q[1])
+        if d < 0.03 or d > hw or t[2] != PATH:
+            return verts
+        h0 = math.atan2(t[1] - q[1], t[0] - q[0])
+        h1 = math.atan2(verts[2][1] - t[1], verts[2][0] - t[0])
+        if abs(math.atan2(math.sin(h1 - h0), math.cos(h1 - h0))) < math.radians(45.0):
+            return verts
+        # the merge point: d / tan(ang) along the straight run of the line after the foot
+        left = d / math.tan(ang)
+        for j in range(1, len(verts) - 1):
+            a, b = verts[j], verts[j + 1]
+            L = math.hypot(b[0] - a[0], b[1] - a[1])
+            h = math.atan2(b[1] - a[1], b[0] - a[0])
+            if b[2] != PATH or abs(math.atan2(math.sin(h - h1), math.cos(h - h1))) > 0.1:
+                return verts                  # the line bends or ends before the merge
+            if L > left:
+                m = (a[0] + (b[0] - a[0]) * left / L, a[1] + (b[1] - a[1]) * left / L)
+                break
+            left -= L
+        else:
+            return verts
+        k = max(2, int(math.ceil(math.hypot(m[0] - q[0], m[1] - q[1]) / self.p.sample_m)))
+        f = np.linspace(0.0, 1.0, k + 1)
+        if not self._inside_union(q[0] + (m[0] - q[0]) * f, q[1] + (m[1] - q[1]) * f).all():
+            return verts
+        return [q, (m[0], m[1], PATH, t[3])] + verts[j + 1:]
+
     def _fillet_ok(self, px, py):
         """Fillet samples: inside a path polygon, or with full clearance in a region."""
         px, py = np.asarray(px, dtype=float), np.asarray(py, dtype=float)
@@ -1256,7 +1304,7 @@ class RouteGraph:
                 if verts and math.hypot(q[0] - verts[-1][0], q[1] - verts[-1][1]) < 1e-3:
                     continue
                 verts.append((float(q[0]), float(q[1]), lg['kind'], region_area))
-        verts = self._fillet(verts)
+        verts = self._fillet(self._merge_ends(verts))
         poses, kinds, areas = [], [], []
         step = max(0.02, float(self.p.resample_m))
         for i, v in enumerate(verts):

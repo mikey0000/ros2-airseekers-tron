@@ -2166,3 +2166,28 @@ resume path waits for it; a boundary trip on an untrusted pose joins the hold in
 moving; ekf_map fuses wheel vy = 0 at 0.05 (m/s)^2 (bag replay: drift 0.53 -> 0.02 m,
 fixed-RTK tracking unchanged). New sim injection (`single`, fixed float offset) and world
 `owner_area4_strip_rtkdrop.yaml`. Details, tests and sim: `analysis/2026-11-13_rtk_dropout.md`.
+
+## Narrow strips: entry by the fall line, aligned arrival, shallow path merges (2026-11-25, branch ws/stripentry1125, unit + sim; not field tested)
+
+Field 11-24 / 11-25, Area 4 strip on an 11 deg fall-line slope. The mowing legs were clean,
+but entry took 4.5 min: about 9 pivots and 4 SPIN DRIFT aborts at the west tip, BOUNDARY
+OUT, STUCK_NEEDS_HELP. The exit pivots beside the strip had the same cause: square hops
+onto Path 2. The reverse legs at the east tip tripped the rear corners at 0.36.
+
+- The strip planner enters from the downhill end: forward legs uphill (wheel odometry 12-16 %
+  off downhill against a few % uphill; 11-24 pass ends within 0.02 m). Width is the
+  tie-breaker. The downhill direction comes from the terrain memory as
+  `slope_downhill_deg` and reaches the planner as `strip_downhill_deg`. On Area 4 the
+  downhill end and the wide end are both the west tip.
+- Rear corners and tail are planned 0.15 under the guard (0.20 / 0.15), at 1 % of the cut.
+- A strip plan always arrives along its first pass from 0.6-1.0 m past the tip. The length
+  is the one whose turning point has the most room for the slope creep.
+- Routes merge onto and off a path's centreline at 15 deg instead of a square hop.
+- Sim: the flat strip passes (one turn past the tip instead of two at it; exit 9 s with no
+  pivot). real_run5 passes. The new slope world `owner_area4_strip_slope.yaml` fails (e, i):
+  - the exit is fixed;
+  - the turn onto the pass still slides and stops twice, because the mapped region past the
+    tip leaves about 0.10 m of room;
+  - mapping the lawn past the tip (owner: it is lawn) would give it about 0.28 m.
+- Details: `analysis/2026-11-13_narrow_strip.md` section 5.
+

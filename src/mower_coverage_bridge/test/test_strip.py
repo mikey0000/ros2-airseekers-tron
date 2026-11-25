@@ -137,6 +137,40 @@ def test_strip_plan_keeps_the_body_within_the_soft_limits(strip_plan):
                 _seg(x, y, ring[i - 1], ring[i]) for i in range(len(ring))) < 0.01, (x, y)
 
 
+# a 6 x 0.6 m strip along x: both ends equally wide, so only the fall line can pick the end
+_EVEN = [(0.0, 0.0), (6.0, 0.0), (6.0, 0.6), (0.0, 0.6)]
+
+
+@pytest.mark.parametrize('downhill, entry_x', [(180.0, 0.0), (0.0, 6.0), (200.0, 0.0),
+                                               (-20.0, 6.0)])
+def test_strip_is_entered_from_its_downhill_end(downhill, entry_x):
+    # forward legs (lane changes included) uphill, the straight retraces back down the line
+    # just driven (field 2026-11-24, Area 4 on 11 deg: docs/analysis/2026-11-13_narrow_strip.md)
+    pl = strip.plan_strip(_EVEN, downhill_deg=downhill)
+    assert pl.ok, pl.message
+    assert abs(pl.points[0][0] - entry_x) < 1.0
+    assert pl.message.endswith('entered from the downhill end')
+    fwd = pl.split().subpaths[0].points
+    up = math.radians(downhill + 180.0)
+    assert (fwd[-1][0] - fwd[0][0]) * math.cos(up) + (fwd[-1][1] - fwd[0][1]) * math.sin(up) > 0
+
+
+def test_fall_line_across_the_strip_or_unknown_leaves_the_entry_to_the_width():
+    # wedge: 0.8 m wide at x = 0, 0.55 m at x = 6; across the slope / no slope: the wide end
+    wedge = [(0.0, 0.0), (6.0, 0.125), (6.0, 0.675), (0.0, 0.8)]
+    for downhill in (None, 90.0, 270.0):
+        pl = strip.plan_strip(wedge, downhill_deg=downhill)
+        assert pl.ok and pl.points[0][0] < 1.0, (downhill, pl.message)
+        assert 'end' not in pl.message.split('m2')[-1]
+
+
+def test_field_strip_is_entered_at_its_downhill_west_tip(strip_plan):
+    # the 11-24 terrain: downhill ~198 deg, i.e. the west tip, which is also the wide end
+    pl = strip.plan_strip(STRIP, extra_axes_deg=[17.74], downhill_deg=197.7)
+    assert pl.points[0] == pytest.approx(strip_plan.points[0])
+    assert 'entered from the downhill end' in pl.message
+
+
 def test_too_narrow_strip_is_refused_with_a_reason():
     # 0.25 m wide: the nose / tail / side limits leave no pass of 0.7 m
     thin = [(0, 0), (0.6, 0), (0.6, 0.25), (0, 0.25)]

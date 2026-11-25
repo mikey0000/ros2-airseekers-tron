@@ -1370,6 +1370,52 @@ def test_tangent_approach_off_aligned_or_no_room_keeps_the_route():
     assert m.tangent is None
 
 
+# a 6 x 0.6 m strip with lawn past its west tip and a path band north of it; its plan
+# starts 0.15 m in
+_STRIP = [(0.0, 0.0), (6.0, 0.0), (6.0, 0.6), (0.0, 0.6)]
+_TIP_LAWN = [(-2.0, -1.0), (0.0, -1.0), (0.0, 0.6), (0.5, 0.6), (0.5, 4.0), (-2.0, 4.0)]
+# route from the north down onto the strip start: arrives 90 deg off the pass
+_STRIP_ROUTE = [(0.15, 3.0 - 0.1 * k, -math.pi / 2) for k in range(28)]
+
+
+def _strip_harness(regions):
+    h, m = _tangent_harness(enabled=False)
+    m.strip = True
+    h.fsm._region_areas = {i: {'outer': r} for i, r in enumerate(regions)}
+    m.transit_target = (0.15, 0.3, 0.0)
+    m.subpaths[m.sub_i] = [(0.15, 0.3, 0.0), (5.8, 0.3, 0.0)]
+    return h, m
+
+
+def test_strip_plan_arrives_along_the_pass_from_past_the_tip():
+    # field 2026-11-24: route-corner and leg-start pivots at the strip's narrow tip slid on the
+    # slope (SPIN DRIFT, BOUNDARY OUT); a strip plan's route ends on a straight along the
+    # first pass, from 1 m behind its start, without the tangent_approach area setting
+    h, m = _strip_harness([_STRIP, _TIP_LAWN])
+    h.fsm._begin(h.t)
+    out = h.fsm._route_tangent(list(_STRIP_ROUTE))
+    h._apply(h.fsm._end())
+    assert out[-1][:3] == (0.15, 0.3, 0.0)
+    assert geo.dist(out[-2], (-0.85, 0.3)) < 1e-9           # the pivot happens past the tip
+    assert m.tangent == (0.15, 0.3)
+
+
+def test_strip_approach_pivots_where_it_has_room_for_the_creep():
+    # a short lawn past the tip: 1.0 m back the pivot (and its downhill creep back along the
+    # axis, sim 2026-11-25) would reach the lawn's west edge; 0.6 m back it has room
+    short = [(-1.4, -0.6), (0.0, -0.6), (0.0, 0.6), (0.5, 0.6), (0.5, 4.0), (-1.4, 4.0)]
+    h, m = _strip_harness([_STRIP, short])
+    out = h.fsm._route_tangent(list(_STRIP_ROUTE))
+    assert geo.dist(out[-2], (-0.45, 0.3)) < 1e-9
+    assert out[-1][:3] == (0.15, 0.3, 0.0)
+
+
+def test_strip_plan_keeps_the_route_without_room_past_the_tip():
+    h, m = _strip_harness([_STRIP])                          # nothing past the tip
+    assert h.fsm._route_tangent(list(_STRIP_ROUTE)) == _STRIP_ROUTE
+    assert m.tangent is None
+
+
 @pytest.mark.parametrize('near_y', [0.15, 0.85])
 def test_spur_about_turn_overhang_is_the_way_round_that_stays_inside(near_y):
     # a pocket spur along a 1 m strip, 0.15 from one long side: in to x 7, about-turn, out.
