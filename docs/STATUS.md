@@ -20,6 +20,7 @@ mid-mow re-plan, obstacle detours on labelled detections, docking by day, and re
 | Open work, tidy-up, stock comparison, next two weeks | `analysis/2026-11-04_open_work_audit.md` |
 | Owner decisions A1-A6 and queue B1-B13 (with status) | `analysis/2026-10-21_independent_review.md` |
 | Stock firmware behaviour and lessons | `analysis/2026-10-21_stock_firmware_findings.md` |
+| Switching to stock / handover / reinstall (`scripts/switch_stack.sh`) | `handover.md` |
 | Sim gate, criteria, baselines | `simulation.md` |
 | Field mow evidence | `analysis/` (one doc per field problem), `wheel_smoothness_field_tests.md` (lapsed after 2026-10-23, B4) |
 
