@@ -22,7 +22,8 @@
 #   masked), mower-bluetooth (factory: disabled), /userdata data. A reboot afterwards is advised.
 #
 # ros2: the reverse. Stops + disables the vendor robot units and foxglove (keeps rosmaster,
-#   LTE, network switching, vmstat, cam-firewall), install_host_services.sh, then restart
+#   network-auto (base_net_node), vmstat, cam-firewall; mower-lte is left as found, the v1.3.33
+#   install disables it and base_net repairs LTE), install_host_services.sh, then restart
 #   policy back to unless-stopped and starts mower_jazzy + mower_gui. Nothing here commands motion.
 #   rosmaster stays: from v1.3.33 mower-network-auto runs the vendor's base_net_node with
 #   `roslaunch --wait`, which never starts a master itself; without it nothing sets usb0's

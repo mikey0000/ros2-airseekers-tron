@@ -133,6 +133,27 @@ The `ros2` mode does the following:
 - It reinstalls our host pieces (`install_host_services.sh`).
 - It starts `mower_jazzy` and `mower_gui` with `restart=unless-stopped`.
 
+What the vendor `base_net_node` does while our stack runs (strings of the v1.3.33 binary, its
+source is not shipped; `analysis/2026-11-25_stock_v1.3.33_glean.md` section 3):
+- It owns the Wi-Fi profile, routes and DNS: `nmcli` profile add/modify/delete
+  (`deleteOtherWifiConnections`), a BSSID lock and MAC denylist on its profile, `wl roam_off`,
+  `wpa_cli` bssid_ignore, policy routing per interface, `rp_filter=2`, `resolvectl`, and
+  restarts of systemd-resolved, NetworkManager (`repair_wifi.sh`) and the modem
+  (`repair_lte.py`, GPIO reset) when its pings fail. Expect wlan0/usb0 drops of up to about a
+  minute during a repair.
+- It only serves `/base_net/*` services; it does not need the other vendor nodes.
+- Our side is compatible: `wifi_monitor` only reads (`iw`, `/proc/net/wireless`), the
+  `mowgli-remote` Tailscale is userspace with `TS_ACCEPT_DNS=false`, and nothing of ours sets
+  routes, rules, sysctls or resolved.
+- Do not add Wi-Fi BSSID or band locks with `nmcli con modify` yourself: base_net rewrites
+  them. A Wi-Fi network added from the GUI's Settings -> Network may be deleted by base_net's
+  "other connections" cleanup (not verified); if it does not survive, add networks with the
+  vendor app.
+- `mower-lte.service` is disabled by the v1.3.33 install; LTE repair is base_net's job.
+- Checks after a switch (by hand, on the mower): `ip rule`, `ip route show table all`,
+  `resolvectl status`, `/userdata/log/net_manager.log`, and that `mowgli-remote` reaches the
+  tailnet with the Wi-Fi AP off (LTE only).
+
 Then:
 1. Check the GUI on port 4006: status, RTK fixed, docked.
 2. If `/userdata/ros2` was wiped: set the datum and NTRIP in the GUI, record the areas again, and
