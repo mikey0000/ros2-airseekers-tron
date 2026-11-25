@@ -90,7 +90,7 @@ grid_x: 5 # extraction sub-grid count for horizontal direction (uniform tracking
 grid_y: 5 # extraction sub-grid count for vertical direction (uniform tracking)
 min_px_dist: 10 # distance between features (features near each other provide less information)
 knn_ratio: 0.70 # descriptor knn threshold for the top two descriptor matches
-track_frequency: 10.0 # frequency we will perform feature tracking at (in frames per second / hertz) -- = stereo_cam pair rate
+track_frequency: 20.0 # ROS2Visualizer drops a pair closer than 1/track_frequency to the last one; stereo_cam keeps frames 84/126 ms apart (10 Hz average), so 10.0 dropped every other pair (4.8 Hz, ros2_serial_msckf 2026-11-14). 20 keeps all of them
 downsample_cameras: false # will downsample image in half if true
 num_opencv_threads: 1 # < 1 core budget # -1: auto, 0-1: serial, >1: number of threads
 histogram_method: "HISTOGRAM" # NONE, HISTOGRAM, CLAHE

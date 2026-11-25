@@ -17,23 +17,14 @@ Started only with ``vio:=true`` (launch/vio.launch.py); see docs/vio.md.
 
 from __future__ import annotations
 
-import math
 from typing import List, Optional
 
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 
-from stereo_vio_bridge.odom_convert import (base_twist, body_twist_covariance,
+from stereo_vio_bridge.odom_convert import (base_twist, body_twist_covariance, rpy_matrix,
                                             unused_pose_covariance)
-
-
-def _rpy_matrix(r: float, p: float, y: float):
-    cr, sr, cp, sp, cy, sy = (math.cos(r), math.sin(r), math.cos(p), math.sin(p),
-                              math.cos(y), math.sin(y))
-    return [[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr]]
 
 
 class VioOdomBridge(Node):
@@ -52,7 +43,7 @@ class VioOdomBridge(Node):
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self.odom_frame = str(g("odom_frame"))
         self.base_frame = str(g("base_frame"))
-        self.r_base_imu = _rpy_matrix(*[float(v) for v in g("imu_to_base_rpy")])
+        self.r_base_imu = rpy_matrix(*[float(v) for v in g("imu_to_base_rpy")])
         self.imu_xyz = [float(v) for v in g("imu_xyz_in_base")]
         self.cov_scale = float(g("cov_scale"))
         self.min_twist_var = float(g("min_twist_var"))

@@ -1,0 +1,42 @@
+diff --color -ru a/ov_msckf/src/ros/ROS2Visualizer.h b/ov_msckf/src/ros/ROS2Visualizer.h
+--- a/ov_msckf/src/ros/ROS2Visualizer.h	2026-11-14 17:47:33.709346550 +1300
++++ b/ov_msckf/src/ros/ROS2Visualizer.h	2026-11-14 17:47:33.710548502 +1300
+@@ -25,7 +25,7 @@
+ #include <geometry_msgs/msg/pose_stamped.hpp>
+ #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+ #include <geometry_msgs/msg/transform_stamped.hpp>
+-#include <image_transport/image_transport.h>
++#include <image_transport/image_transport.hpp>
+ #include <message_filters/subscriber.h>
+ #include <message_filters/sync_policies/approximate_time.h>
+ #include <message_filters/time_synchronizer.h>
+@@ -42,7 +42,7 @@
+ #include <std_msgs/msg/float64.hpp>
+ #include <tf2/LinearMath/Quaternion.h>
+ #include <tf2/transform_datatypes.h>
+-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
++#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+ #include <tf2_ros/transform_broadcaster.h>
+ 
+ #include <atomic>
+@@ -53,7 +53,7 @@
+ #include <Eigen/Eigen>
+ #include <boost/date_time/posix_time/posix_time.hpp>
+ #include <boost/filesystem.hpp>
+-#include <cv_bridge/cv_bridge.h>
++#include <cv_bridge/cv_bridge.hpp>
+ 
+ namespace ov_core {
+ class YamlParser;
+diff --color -ru a/ov_msckf/src/ros/ROSVisualizerHelper.h b/ov_msckf/src/ros/ROSVisualizerHelper.h
+--- a/ov_msckf/src/ros/ROSVisualizerHelper.h	2026-11-14 17:47:33.711593784 +1300
++++ b/ov_msckf/src/ros/ROSVisualizerHelper.h	2026-11-14 17:47:33.712835938 +1300
+@@ -34,7 +34,7 @@
+ #include <sensor_msgs/msg/point_cloud2.hpp>
+ #include <sensor_msgs/point_cloud2_iterator.hpp>
+ #include <tf2/transform_datatypes.h>
+-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
++#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+ #endif
+ 
+ namespace ov_type {

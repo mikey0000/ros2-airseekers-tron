@@ -1,0 +1,22 @@
+--- a/ov_msckf/cmake/ROS2.cmake	2026-11-14 17:43:39.664577371 +1300
++++ b/ov_msckf/cmake/ROS2.cmake	2026-11-14 17:43:39.675948865 +1300
+@@ -108,6 +108,19 @@
+ target_link_libraries(test_sim_repeat ov_msckf_lib ${thirdparty_libraries})
+ install(TARGETS test_sim_repeat DESTINATION lib/${PROJECT_NAME})
+ 
++# ros2_serial_msckf (airseekers, config/vio/serial/ros2_serial_msckf.cpp copied in by
++# scripts/vio/stage_openvins.sh): offline serial bag runner, the ROS 2 counterpart of
++# ros1_serial_msckf. Off unless -DOV_ROS2_SERIAL=ON (dev-box evaluation builds only).
++option(OV_ROS2_SERIAL "Build the ROS 2 serial bag runner" OFF)
++if (OV_ROS2_SERIAL)
++    find_package(rosbag2_cpp REQUIRED)
++    find_package(rosbag2_storage REQUIRED)
++    add_executable(ros2_serial_msckf src/ros2_serial_msckf.cpp)
++    ament_target_dependencies(ros2_serial_msckf ${ament_libraries} rosbag2_cpp rosbag2_storage)
++    target_link_libraries(ros2_serial_msckf ov_msckf_lib ${thirdparty_libraries})
++    install(TARGETS ros2_serial_msckf DESTINATION lib/${PROJECT_NAME})
++endif ()
++
+ # Install launch and config directories
+ install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch/)
+ install(DIRECTORY ../config/ DESTINATION share/${PROJECT_NAME}/config/)

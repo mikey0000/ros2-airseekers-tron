@@ -415,6 +415,10 @@ def generate_launch_description() -> LaunchDescription:
         arg('vio_capture', 'stereo_cam', 'With vio:=true, who owns the stereo device: stereo_cam '
             '(default, cameras.launch.py keeps running it) | bridge (legacy stereo_vio_bridge '
             'capture node; cameras.launch.py then does not start stereo_cam).'),
+        arg('vio_imu', 'metoak', 'With vio:=true, the IMU OpenVINS uses: metoak (default, the stereo '
+            "module's own ICM-40608 on /stereo_imu/data, 200 Hz, config/vio_metoak; needs "
+            'scripts/setup_stereo_host.sh) | wit (JY61P on /imu/data, config/vio_wit). Passed '
+            'to launch/vio.launch.py, which defaults to wit when launched on its own.'),
         arg('video', 'true', 'web_video_server MJPEG on :8080 (GUI camera page via /api/cameras; source for the RTSP relay).'),
         arg('perception', 'true', 'Include mower_vision/perception.launch.py (det_ros on both OA cameras + obstacle_guard; seg off). '
             'det_ros publishes /ai/det/detections and /<camera_ns>/image_annotated (GUI Perception page).'),
@@ -684,7 +688,8 @@ def generate_launch_description() -> LaunchDescription:
 
     vio = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(launch_dir, 'vio.launch.py')),
-        launch_arguments={'capture': LaunchConfiguration('vio_capture')}.items(),
+        launch_arguments={'capture': LaunchConfiguration('vio_capture'),
+                          'vio_imu': LaunchConfiguration('vio_imu')}.items(),
         condition=enabled('vio'),
     )
 
