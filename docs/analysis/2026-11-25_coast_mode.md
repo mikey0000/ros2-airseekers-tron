@@ -94,6 +94,9 @@ pose as untrusted.
   spin-up, spin pause, corner pivot) or a transit, no fix wait is pending, `coast_left_m` > 0,
   and the clearance check passes. Logs the start (`coasting on dead reckoning`) and the end
   (`coast ended after N s, M m from its start: <why>`).
+  A hold (dynamic obstacle, path blocked, localization), a stop or any change to a phase
+  other than MOWING / TRANSIT also ends it (2026-11-28); the resume starts a fresh coast
+  with its own clearance check instead of inheriting the old one.
 - `_loc_coast_check` (query): the reason the coast may not go on, or ''.
 - `_coast_path_ahead(horizon)`: the sub-path from the tracked progress (follow) or the step's
   start (spin-up, pivot), a route transit from its nearest pose, else the line to the transit

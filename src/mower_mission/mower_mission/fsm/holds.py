@@ -231,6 +231,7 @@ class HoldsMixin:
             if self._blocked_limit(b) <= 0:
                 return False
             self._blk = b
+            self._loc_coast_end('path blocked')
             self._log('warn', 'path blocked (%s): waiting up to %.0f s, re-sending every %.0f s '
                               'once no collision is reported (no retry used)'
                       % (why, self._blocked_limit(b), self.p.blocked_resend_s))

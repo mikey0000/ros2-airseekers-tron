@@ -31,6 +31,7 @@ class Hold:
         turned heading (field 2026-11-04 23:42 / 23:53: loc hold mid-pivot, resume sent
         /follow_path with no spin, BOUNDARY OUT 8 s later). Cleared, the resume pivots the
         rest of the way from the pose then (nothing when within the pivot threshold)."""
+        fsm._loc_coast_end('held: %s' % why)    # the resume starts a fresh, re-checked coast
         m = fsm.mission
         if m is not None and fsm.phase == 'MOWING' and m.step == 'corner_pivot':
             m.pivot_done, m.pivot_target = None, None

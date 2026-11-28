@@ -11,7 +11,7 @@ from mower_mission import mission_fsm as f   # noqa: E402
 from test_body_boundary import feed, mowing_h   # noqa: E402
 from test_loc_hold import held, transit   # noqa: E402
 from test_loc_policy import big_mow, speed_calls   # noqa: E402
-from test_mission_fsm import Harness   # noqa: E402
+from test_mission_fsm import Harness, tick_seen   # noqa: E402
 from test_rtk_dropout import LEG, logged, step, strip_mow   # noqa: E402
 
 SINGLE = 'ekf_map sigma 0.50 m > 0.15 m (rtk single)'
@@ -191,3 +191,26 @@ def test_pose_jump_while_coasting_is_not_trusted():
         h.tick(dt=0.1)
     assert h.fsm._hb is None and h.fsm._hb_count == 0 and held(h) and not h.blade
     assert logged(h, m, 'pose not trusted')
+
+
+def test_a_dynamic_obstacle_hold_ends_the_coast():
+    """The coast's clearance was checked for the drive it started on; the resume after a
+    hold starts a fresh, re-checked one."""
+    h = big_mow(coast_enabled=True)
+    run(h, 2.0)
+    assert h.fsm._loc_coast is not None
+    m = h.mark()
+    coast_loc(h)
+    tick_seen(h, 'dynamic', 'person', 1.0)
+    assert h.fsm._dyn is not None and h.fsm._loc_coast is None
+    assert logged(h, m, 'coast ended') and logged(h, m, 'held: dynamic obstacle')
+
+
+def test_stop_ends_the_coast():
+    h = big_mow(coast_enabled=True)
+    run(h, 2.0)
+    assert h.fsm._loc_coast is not None
+    m = h.mark()
+    assert h.cmd(f.CMD_STOP)
+    h.tick()
+    assert h.fsm._loc_coast is None and logged(h, m, 'coast ended')
