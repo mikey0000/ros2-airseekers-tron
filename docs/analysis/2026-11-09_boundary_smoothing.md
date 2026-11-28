@@ -266,3 +266,34 @@ branch was rebased on master and re-gated with `-l -x 3 -s 1` (output
 Before the owner applies a proposal, the e corner on the smoothed Area 1 needs a fix or an
 accepted waiver, and then a re-gate.
 
+
+### Lap start and lap-0 fillet cap (2026-11-28)
+
+e9682d3 moved lap 0's start so the edge-start join has 2.3 m of straight lap before the
+first corner. That fixed e and i on real_run5_smooth, but lawn cut dropped (96.2 -> 93.5 %
+smooth, 97.9 -> 96.9 % real_run5). The moved start gave the runs room for wide convex fillets
+(`path_conditioning_convex_r_max_m` 2.0) at sharp lap-0 corners. An r 1.5 fillet at Area 1's
+-118 deg tip (-0.34, 5.52) passed 1.4 m inside the tip, and an r 2.0 fillet at the -67 deg
+corner (-6.04, 1.43) passed 0.39 m inside its tip.
+
+Fix: at a lap-0 corner ON the line that turns at least `kturn_min_rad`, the widening stops at
+`path_conditioning_lap0_sharp_r_max_m` (1.0 = r_max; 2.0 reverts). The r 1.0 fillet is over
+the 0.35 body cap there, so the existing corner cut takes it: 0.60 m inside the -118 deg tip
+and 0.30 m inside the -67 deg one. Gentle corners and inset (hard) laps keep their wide
+fillets. Output `ros2_stack-wt/simout_cap1128`, `-l -x 3 -s 1`:
+
+| Run | a | b | c | d | e | f | g | h p99 line | i side / nose / sweep | cut % (gt) | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| real_run5_smooth | 0.055 m, 0 | 0 | pass | 0 | 0 of 20 (0.095) | 0 | 16 % | 0.064 | 0.066 / 0.029 / 0.092 | 96.4 (e9682d3 93.5, before 96.2) | PASS |
+| real_run5 | 0.057 m, 0 | 0 | pass | 0 | 0 of 17 (0.129) | 0 | 17 % | 0.074 | **0.103** / 0.051 / 0.100 | 97.1 (e9682d3 96.9, before 97.9) | FAIL (i) |
+| real_run5, re-run | 0.097 m, 0 | 0 | pass | 0 | 0 of 17 (0.127) | 0 | 16 % | 0.081 | 0.071 / 0.033 / 0.097 | 97.2 | PASS |
+
+- real_run5_smooth is back at its pre-e9682d3 coverage, and e and i still pass.
+- The real_run5 i fail (side 0.103, limit 0.10) is the rejoin leg of the -114 deg corner
+  cut at (-0.61, 3.70), where the plan was 0.294 m out. That cut is the same before and after
+  this change, and the re-run passes with side 0.071, so the fail is run-to-run spread at an
+  existing cut.
+- real_run5 recovers only 0.2-0.3 of the 1.0 point. That corner was the only real_run5 corner
+  this change touched (-64 deg at (-6.04, 1.43), now cut 0.30 m inside). The rest of the loss
+  is probably the other cluster around (-3, 4.5), next to the new lap start (-3.27, 4.37).
+  This cap does not change it.

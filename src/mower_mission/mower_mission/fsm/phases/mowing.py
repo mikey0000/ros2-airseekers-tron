@@ -491,6 +491,7 @@ class MowingMixin:
                     else p.path_conditioning_body_cap_soft_m)
         prm.body_cap_m = cap if cap >= 0.0 else None
         prm.convex_r_max = float(p.path_conditioning_convex_r_max_m)
+        prm.lap0_sharp_r_max = float(p.path_conditioning_lap0_sharp_r_max_m)
         prm.kturn = bool(p.path_conditioning_kturn)
         prm.kturn_min_rad = float(p.path_conditioning_kturn_min_rad)
         prm.kturn_gentle_m = float(p.path_conditioning_kturn_gentle_m)

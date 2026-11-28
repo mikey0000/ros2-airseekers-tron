@@ -1025,6 +1025,9 @@ class Params:
     path_conditioning_body_cap_soft_m: float = 0.35
     path_conditioning_body_cap_hard_m: float = 0.09
     path_conditioning_convex_r_max_m: float = 2.0
+    # lap 0 ON the line, corners >= kturn_min_rad: wider fillets only up to this (a wider
+    # arc leaves the tip uncut; the body cap cuts it closer). 2.0 = convex_r_max (revert)
+    path_conditioning_lap0_sharp_r_max_m: float = 1.0
     path_conditioning_kturn: bool = True
     path_conditioning_kturn_min_rad: float = 1.05
     path_conditioning_kturn_gentle_m: float = 0.33   # gentler corners: K-turn when over this

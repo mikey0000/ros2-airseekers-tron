@@ -357,6 +357,10 @@ behavior_tree_node:
     path_conditioning_body_cap_soft_m: 0.35   # over the cap a corner is cut inside (tip uncut); field 2026-10-23 K-turn 0.54 out
     path_conditioning_body_cap_hard_m: 0.09
     path_conditioning_convex_r_max_m: 2.0
+    # lap 0 ON the line, corners >= kturn_min_rad: wider fillets only up to this (sim
+    # 2026-11-28: r 1.5 at Area 1's -118 deg tip left 1.4 m of it uncut, -2.7 % lawn cut;
+    # the body cap cuts the corner 0.6 m inside instead). 2.0 = convex_r_max (revert)
+    path_conditioning_lap0_sharp_r_max_m: 1.0
     path_conditioning_kturn: true
     path_conditioning_kturn_min_rad: 1.05
     # a gentler corner K-turns too when its best fillet / pivot is over this (retracing

@@ -1249,6 +1249,24 @@ def test_body_cap_cuts_a_spike_that_no_kturn_fits():
     assert c.choice == 'kturn' and c.body_m > 0.45
 
 
+def test_lap0_sharp_corner_is_cut_not_filleted_wide():
+    # sim 2026-11-28 (real_run5_smooth, lap start moved 2.3 m before the -118 deg tip): with
+    # room on both runs lap 0 took an r 1.5 fillet there, 1.4 m inside the tip, -2.7 % lawn
+    # cut. A sharp lap-0 corner fillets at most lap0_sharp_r_max; the body cap then cuts it
+    # closer to the tip. Gentle corners keep their wide (lower overhang) fillets.
+    poly = [(0, 0), (8, 0), (8, 4), (4.5, 10), (0, 4)]
+    p = pc.Params(edge_pivot_rad=0.0, body_limit_m=0.26)
+    res = pc.condition(_lap(poly, mid=True), [poly], p)
+    assert res.valid, res.errors
+    tip = corner_at(res, (4.5, 10))
+    assert tip.choice == 'cut' and tip.cut_m <= 0.6 and tip.body_m <= 0.35 + 1e-3
+    assert all(c.r > 1.0 + 1e-9 for c in res.corners if c.choice == 'fillet')
+    wide = pc.condition(_lap(poly, mid=True), [poly],
+                        pc.Params(edge_pivot_rad=0.0, body_limit_m=0.26, lap0_sharp_r_max=2.0))
+    tip = corner_at(wide, (4.5, 10))
+    assert tip.choice == 'fillet' and tip.r > 1.0 and tip.cut_m > 1.0
+
+
 # =====================================================================
 # field 2026-10-28 (area 4 re-plan, 04:11): a near-U corner's long fillet tangent snapped
 # onto a later pass of the same sub-path -> a 0.03 m piece and a 3.9 m hop to the next

@@ -42,7 +42,9 @@ hard 0.0, well under the body trip limits). Where a corner's fillet or pivot exc
 
 * a convex corner (the region is on the inside of the turn) first tries wider fillets, up to
   ``convex_r_max`` (lap 0 ON the line: the outer front corner rides
-  sqrt((r + hw)^2 + front^2) - r past it on an arc of r, 0.41 at r 0.7, 0.31 at r 2);
+  sqrt((r + hw)^2 + front^2) - r past it on an arc of r, 0.41 at r 0.7, 0.31 at r 2; a
+  corner there turning ``kturn_min_rad`` or more only up to ``lap0_sharp_r_max``: the
+  wider arc leaves the tip uncut, the body cap below cuts it closer);
 * a corner turning ``kturn_min_rad`` or more (a gentler one: when its fillet / pivot is
   over ``kturn_gentle_m``) then becomes a K-turn (3-point turn, 2 cusps): forward to P1, the
   point ``a`` m of arc length back along the path into the vertex (a the least of
@@ -157,6 +159,10 @@ class Params:
     body_rear_m: float = rgeo.FOOTPRINT_REAR_M     # 0.10
     body_limit_m: Optional[float] = None   # planning limit, m outside the region (None = off)
     convex_r_max: float = 2.0      # body-limited convex corners: fillets up to this radius
+    # ... but at a corner >= kturn_min_rad on lap 0 ON the line only up to this: a wider
+    # fillet leaves the tip uncut (r 1.5 at a -118 deg tip: 1.4 m), the body cap cuts it
+    # closer (0.6 m; sim 2026-11-28). convex_r_max = off
+    lap0_sharp_r_max: float = 1.0
     kturn: bool = True
     kturn_min_rad: float = 1.05    # K-turns at corners turning this much (60 deg) ...
     kturn_gentle_m: float = 0.33   # ... or at gentler ones whose pivot is over this
@@ -754,9 +760,12 @@ def condition(poses, region, params: Optional[Params] = None, ring=None, turn_si
             h_in = math.atan2(u_in[1], u_in[0])
             if chosen is not None:
                 simple_ov = br.drive(_arc_poses(chosen[2]))
-                if simple_ov > lim + 1e-3 and p.convex_r_max > chosen[3] + 1e-9 and \
-                        _convex(v, u_in, u_out, region):
-                    r = p.convex_r_max
+                convex = _convex(v, u_in, u_out, region)
+                on_line = convex and clearance(pts[vi], region) <= 0.05
+                r_wide = min(p.convex_r_max, p.lap0_sharp_r_max) \
+                    if on_line and abs(turn) >= p.kturn_min_rad else p.convex_r_max
+                if simple_ov > lim + 1e-3 and r_wide > chosen[3] + 1e-9 and convex:
+                    r = r_wide
                     while r > chosen[3] + 1e-9:
                         alt = try_fillet(r)
                         if alt is not None:
@@ -765,7 +774,7 @@ def condition(poses, region, params: Optional[Params] = None, ring=None, turn_si
                                 chosen, simple_ov = alt, ov
                             break
                         r = round(r - 0.25, 6)
-                if clearance(pts[vi], region) <= 0.05 and _convex(v, u_in, u_out, region):
+                if on_line:
                     # a fillet r on a lap ON the line (soft lap 0; not an inset lap, not
                     # hard): the outer front corner rides
                     # sqrt((r + hw)^2 + front^2) - r past it, as on any curve of r the owner
