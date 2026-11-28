@@ -13,8 +13,8 @@
 
 namespace mower_coverage {
 
-Point2D lapStartPoint(const std::vector<Point2D>& loop, const Point2D& target, double window_m,
-                      double max_turn_deg) {
+Point2D lapStartPoint(const std::vector<Point2D>& loop, const Point2D& target, double behind_m,
+                      double ahead_m, double max_turn_deg) {
   // closed loop (first == last, or implicitly closed): arc length per vertex, turning per vertex
   std::vector<Point2D> pts(loop);
   if (pts.size() >= 2 && std::hypot(pts.front().first - pts.back().first,
@@ -51,8 +51,9 @@ Point2D lapStartPoint(const std::vector<Point2D>& loop, const Point2D& target, d
   }
   const double max_turn = max_turn_deg * M_PI / 180.0;
   const double step = 0.05;
-  Point2D best_ok = target, best_any = target;
+  Point2D best_ok = target, best_near = target, best_any = target;
   double best_ok_d = std::numeric_limits<double>::infinity();
+  double best_near_d = std::numeric_limits<double>::infinity();
   double best_any_turn = std::numeric_limits<double>::infinity();
   double best_any_d = std::numeric_limits<double>::infinity();
   size_t seg = 0;
@@ -65,32 +66,45 @@ Point2D lapStartPoint(const std::vector<Point2D>& loop, const Point2D& target, d
     const double sl = cum[seg + 1] - cum[seg];
     const double u = sl > 1e-12 ? (s - cum[seg]) / sl : 0.0;
     const Point2D p{a.first + u * (b.first - a.first), a.second + u * (b.second - a.second)};
-    // total turning of the vertices within +-window_m of arc length (circular)
-    double tot = 0.0;
+    // total turning of the vertices from behind_m before to ahead_m after (circular, loop
+    // order); tot_near: the same within +-behind_m
+    double tot = 0.0, tot_near = 0.0;
     for (size_t i = 0; i < n; ++i) {
-      double d = std::fabs(cum[i] - s);
-      d = std::min(d, L - d);
-      if (d <= window_m) {
-        tot += turn[i];
-      }
+      const double ahead = std::fmod(cum[i] - s + L, L);
+      const double behind = L - ahead;
+      tot += ahead <= ahead_m || behind <= behind_m ? turn[i] : 0.0;
+      tot_near += std::min(ahead, behind) <= behind_m ? turn[i] : 0.0;
     }
     const double d = std::hypot(p.first - target.first, p.second - target.second);
     if (tot <= max_turn && d < best_ok_d) {
       best_ok_d = d;
       best_ok = p;
     }
-    if (tot < best_any_turn - 1e-9 || (std::fabs(tot - best_any_turn) <= 1e-9 && d < best_any_d)) {
-      best_any_turn = tot;
+    if (tot_near <= max_turn && d < best_near_d) {
+      best_near_d = d;
+      best_near = p;
+    }
+    if (tot_near < best_any_turn - 1e-9 ||
+        (std::fabs(tot_near - best_any_turn) <= 1e-9 && d < best_any_d)) {
+      best_any_turn = tot_near;
       best_any_d = d;
       best_any = p;
     }
   }
-  return std::isfinite(best_ok_d) ? best_ok : best_any;
+  if (std::isfinite(best_ok_d)) {
+    return best_ok;
+  }
+  return std::isfinite(best_near_d) ? best_near : best_any;
 }
 
 namespace {
-// lap starts / hand-offs: at most kLapStartMaxTurnDeg of total turning within +-kLapStartWindowM
+// lap starts / hand-offs: at most kLapStartMaxTurnDeg of total turning from kLapStartWindowM
+// before to kLapStartAheadM after. Ahead: the mission reaches an edge-lap start from 0.30 m
+// inside and merges onto the lap over edge_join_m 1.5, then wants 0.8 m on the line before a
+// bend (real_run5_smooth 2026-11-28: a start 1.75 m before a -118 deg vertex, whose conditioned
+// corner cut pivots 0.55 m before the tip, reached that pivot 0.22 m off the line).
 constexpr double kLapStartWindowM = 1.2;
+constexpr double kLapStartAheadM = 2.3;
 constexpr double kLapStartMaxTurnDeg = 10.0;
 
 // Ring sanitization tolerances. Operator-recorded field boundaries carry
@@ -501,7 +515,7 @@ std::vector<Point2D> rotateLoopToPoint(const std::vector<Point2D>& loop,
 // while the tracker was still joining) is moved along the lap to a straight stretch (see
 // lapStartPoint). Thin wrapper kept for the call sites.
 Point2D clearOfCorners(const std::vector<Point2D>& loop, const Point2D& target) {
-  return lapStartPoint(loop, target, kLapStartWindowM, kLapStartMaxTurnDeg);
+  return lapStartPoint(loop, target, kLapStartWindowM, kLapStartAheadM, kLapStartMaxTurnDeg);
 }
 
 // Ray-casting point-in-polygon on a closed loop.

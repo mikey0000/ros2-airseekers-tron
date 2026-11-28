@@ -209,8 +209,10 @@ A strip with no pass of at least 0.7 m inside the limits is refused with the rea
   0.45 start; 0 is treated as 1.
 * All outer laps run the same direction (clockwise). Lap 0 keeps the polygon's sharp
   vertices (F2C `Cells::buffer` mitres; the round-1 r 0.7 rounding never rounded). Lap
-  starts / hand-offs sit >= 0.6 m from a vertex, so a ring-to-ring step is -90 / 0.15 / +90
-  mid-edge instead of a large pivot at a corner.
+  starts / hand-offs sit on a stretch with <= 10 deg of turning from 1.2 m before to 2.3 m
+  after them (the mission's 1.5 m edge-start join plus 0.8 m on the line before a bend; where
+  none exists, +-1.2 m), so a ring-to-ring step is -90 / 0.15 / +90 mid-edge instead of a
+  large pivot at a corner.
 * Fill passes (gap fill, after the rows) must be >= 1.0 m long and add >= 35 % new area
   (round 1 stacked ~20 sliver passes 0.02 m apart, which drove the -174 deg "hairpins"; round
   3-4 raised the length from 0.30). Rows under 1.2 m are dropped.

@@ -1571,7 +1571,7 @@ TEST(EdgeLayout, LapStartOnAStraightStretchRun5) {
       {-1.147, 5.265}, {-3.348, 4.334}, {-4.366, 3.801}, {-4.751, 3.250}, {-5.489, 2.178},
       {-6.042, 1.430}, {-5.591, 0.666}, {-5.363, 0.178}, {-5.151, -0.027}, {-5.387, -0.585},
       {-4.746, -1.389}, {-3.290, 0.250}, {-1.924, 1.307}};
-  const Point2D p = mower_coverage::lapStartPoint(loop, {-0.61, 3.23}, 1.2, 10.0);
+  const Point2D p = mower_coverage::lapStartPoint(loop, {-0.61, 3.23}, 1.2, 1.2, 10.0);
   EXPECT_LE(turnWithin(loop, p, 1.2), 10.0) << p.first << ", " << p.second;
   EXPECT_GE(std::hypot(p.first + 0.684, p.second - 2.606), 1.2 - 1e-6);
   EXPECT_LT(std::hypot(p.first + 0.61, p.second - 3.23), 1.5);   // stays on that edge
@@ -1592,16 +1592,53 @@ TEST(EdgeLayout, LapStartCountsBendsOfSmallVertices) {
   loop.push_back({10, y});
   loop.push_back({10, 4});
   loop.push_back({0, 4});
-  const Point2D p = mower_coverage::lapStartPoint(loop, {x + 0.5, y}, 1.2, 10.0);
+  const Point2D p = mower_coverage::lapStartPoint(loop, {x + 0.5, y}, 1.2, 1.2, 10.0);
   EXPECT_LE(turnWithin(loop, p, 1.2), 10.0);
   EXPECT_GE(p.first, x + 1.1 - 1e-6);   // 1.2 m past the last turning vertex (0.1 m before x)
+}
+
+// 2026-11-28 (real_run5_smooth, Area 1 smoothed to 14 vertices): lap 0 started 1.75 m before
+// the -118 deg vertex; its conditioned corner cut put a pivot vertex 1.2 m after the start,
+// inside the mission's 1.5 m edge-start join, and the robot reached it 0.22 m off the line.
+// The lap start now has 2.3 m of straight lap ahead of it (the join plus 0.8 m on the line).
+TEST(EdgeLayout, LapStartLeavesRoomForTheJoinAhead) {
+  const std::vector<Point2D> area = {
+      {-1.61954, 1.81719}, {-0.891224, 2.25271}, {-0.684406, 2.6065}, {-0.475308, 4.42287},
+      {-0.335033, 5.52028}, {-3.34799, 4.33405}, {-4.36569, 3.80114}, {-5.48879, 2.17825},
+      {-6.0423, 1.4301}, {-5.15124, -0.0268646}, {-5.38696, -0.585309}, {-4.74587, -1.38861},
+      {-3.28978, 0.250287}, {-1.92367, 1.30651}};
+  mower_coverage::RouteOptions route;
+  ASSERT_TRUE(mower_coverage::parseRouteOrder("racetrack", &route.order));
+  route.min_turn_radius = 0.5;
+  route.min_drivable_turn_radius = 0.40;
+  route.fill_gaps = true;
+  route.min_gap_area_m2 = 0.01;
+  route.target_inset = 0.05;
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &route));
+  const CoveragePlan plan = mower_coverage::planCoverage(
+      field(area), 0.18, 0.18, 2, 0.14, -1.0, 0.15, mower_coverage::PathMode::kZigzag, true,
+      route);
+  ASSERT_FALSE(plan.rings.empty());
+  const std::vector<Point2D>& lap = plan.rings[0];   // closed, in drive order from its start
+  double ahead = 0.0, turned = 0.0;
+  for (size_t i = 1; i + 1 < lap.size(); ++i) {
+    ahead += std::hypot(lap[i].first - lap[i - 1].first, lap[i].second - lap[i - 1].second);
+    turned += std::fabs(std::remainder(
+        std::atan2(lap[i + 1].second - lap[i].second, lap[i + 1].first - lap[i].first) -
+            std::atan2(lap[i].second - lap[i - 1].second, lap[i].first - lap[i - 1].first),
+        2.0 * M_PI));
+    if (turned > 10.0 * M_PI / 180.0) break;
+  }
+  EXPECT_GE(ahead, 2.3 - 1e-6) << "lap 0 start " << lap[0].first << ", " << lap[0].second;
+  const std::vector<Point2D> open(lap.begin(), lap.end() - 1);
+  EXPECT_LE(turnWithin(open, lap[0], 1.2), 10.0);   // the round-3 window still holds behind
 }
 
 TEST(EdgeLayout, LapStartFallsBackToTheStraightestPoint) {
   std::vector<Point2D> circle;
   for (int k = 0; k < 72; ++k)
     circle.push_back({std::cos(k * M_PI / 36), std::sin(k * M_PI / 36)});
-  const Point2D p = mower_coverage::lapStartPoint(circle, {1.2, 0.0}, 1.2, 10.0);
+  const Point2D p = mower_coverage::lapStartPoint(circle, {1.2, 0.0}, 1.2, 1.2, 10.0);
   EXPECT_NEAR(std::hypot(p.first, p.second), 1.0, 0.01);          // on the loop
   EXPECT_LT(std::hypot(p.first - 1.0, p.second), 0.1);            // nearest of the equals
 }
