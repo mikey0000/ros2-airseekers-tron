@@ -251,6 +251,8 @@ class MissionFSM(PreviewMixin,
         if sub is not None:
             self.sub_state = sub
         if name != self.phase:
+            if name not in ('MOWING', 'TRANSIT'):
+                self._loc_coast_end('state -> %s' % name)
             self._log('info', 'state %s -> %s%s' % (
                 self.phase, name, (' (%s)' % self.sub_state) if self.sub_state else ''))
             self.phase = name
